@@ -91,7 +91,7 @@ subsystem, split out of the agnos kernel's framebuffer console.
   modules=["src/font_data.cyr"]` — out of scope for this repo; kashi only
   makes itself consumable.
 - The full library face (PSF import, runtime loading, additional fonts) is
-  developed by a separate agent — see `docs/development/roadmap.md`.
+  built out along the roadmap — see `docs/development/roadmap.md`.
 
 [Unreleased]: https://github.com/MacCracken/kashi/compare/0.1.0...HEAD
 [0.1.0]: https://github.com/MacCracken/kashi/releases/tag/0.1.0

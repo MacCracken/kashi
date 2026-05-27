@@ -4,8 +4,8 @@
 >
 > Milestone plan through v1.0. Live status lives in [`state.md`](state.md);
 > this file is the sequencing — what ships, in what order, against what
-> dependency gates. The freestanding core (M0) is done; M1+ is the
-> **parallel agent's** domain (the stdlib-using library face).
+> dependency gates. The freestanding core (M0) is done; M1+ builds out the
+> stdlib-using library face.
 
 ## v1.0 criteria
 
@@ -37,7 +37,7 @@
 - Demo, unit + integration tests (81 assertions), fuzz harness, benchmarks.
 - ADR 0001 (freestanding split), architecture note 001 (u64-unit BSS).
 
-### M1 — PSF import path (0.2.0) — parallel agent
+### M1 — PSF import path (0.2.0)
 
 - **PSF1** import (`kashi_load_psf` for 0x36 0x04 magic): 8×N glyphs,
   256/512 glyph banks. Parse header, validate `charsize`, copy glyph
@@ -51,7 +51,7 @@
   loaded font store — added to `cyrius.cyml [deps]` when this lands.
 - Reference: [PSF format note in genesis memory `reference_psf_font_format`].
 
-### M2 — Runtime font registry + additional fonts (0.3.0) — parallel agent
+### M2 — Runtime font registry + additional fonts (0.3.0)
 
 - `kashi_register_font` implemented: register a runtime (loaded) font, get a
   `font_id`; query it through the same accessors as the built-ins.

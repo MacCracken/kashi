@@ -83,8 +83,8 @@ extracted bytes are verified byte-for-byte against that kernel source (see
 runtime surface — PSF1/PSF2 import (`kashi_load_psf`), runtime font
 registration (`kashi_register_font`). As of 0.1.0 these return
 `KASHI_ENOSYS` ("booked, not built"); the implementation is tracked in
-[`docs/development/roadmap.md`](docs/development/roadmap.md) and developed by
-a separate agent.
+[`docs/development/roadmap.md`](docs/development/roadmap.md) and built out
+along that roadmap.
 
 ## Build & test
 

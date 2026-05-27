@@ -49,7 +49,7 @@ nothing archived, no open strategic questions.
 |---|---|---|---|
 | `README.md` | 2026-05-27 | ✅ Fresh | Two-faces architecture, built-in font table, freestanding-core API, agnos consumption contract, build/test. |
 | `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]` entry + `[Unreleased]` P(-1) hardening (audit, fset guard, ready reader, `0x7F` comment fix). SemVer + Keep a Changelog. |
-| `CLAUDE.md` | 2026-05-27 | ✅ Fresh | Durable-only; freestanding-vs-full-lib split, parallel-agent note, standard constraints. State deferred to state.md. |
+| `CLAUDE.md` | 2026-05-27 | ✅ Fresh | Durable-only; freestanding-vs-full-lib split, one-owner/two-faces boundary discipline, standard constraints. State deferred to state.md. |
 | `CONTRIBUTING.md` | 2026-05-27 | ✅ Fresh | The two faces, accessor-bounds rule, glyph-fidelity rule, Cyrius enum/style notes. |
 | `SECURITY.md` | 2026-05-27 | ✅ Fresh | Accessor-bounds = kernel trust boundary; buffer sizing; future PSF-parse validation. |
 | `CODE_OF_CONDUCT.md` | 2026-05-27 | 🔵 Evergreen | Contributor Covenant v2.1 reference. |

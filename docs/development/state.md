@@ -31,7 +31,7 @@ console. No git tag yet (user handles all git operations).
   (return `KASHI_ENOSYS` until implemented).
 - **Demo** — `src/main.cyr` (~54 lines), renders 'A' in both fonts.
 
-## What's booked (not built — parallel agent / future)
+## What's booked (not built — future)
 
 - PSF1/PSF2 import (M1, 0.2.0) — needs stdlib `io`/`fs` + heap.
 - Runtime font registry + additional fonts (M2, 0.3.0).

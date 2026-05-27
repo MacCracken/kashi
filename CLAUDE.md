@@ -43,14 +43,16 @@ kashi has a **hard, file-level boundary** (see [`docs/adr/0001`](docs/adr/0001-f
 A new built-in font → freestanding core (so the kernel sees it). Runtime
 loading / PSF import → library face.
 
-## Parallel development
+## One codebase, two faces
 
-A **separate agent develops the full library face** (PSF import, runtime
-loading, additional fonts). This repo's 0.1.0 baseline ships the
-freestanding core + the booked library skeleton. When working here, do not
-assume the library face is unowned — coordinate via the roadmap, and keep
-the freestanding boundary intact so the parallel work can't accidentally
-break the kernel consumer.
+A single owner develops **both** faces — the freestanding core and the
+stdlib-using library face — kept coherent by hand. A new built-in font
+lands in the freestanding core (so the kernel sees it); runtime loading /
+PSF import lands in the library face. The discipline that matters is
+one-directional: library-face work must **never** leak an `include` or
+stdlib call into `src/font_data.cyr` (verify with `cyrius vet`). The 0.1.0
+baseline shipped the freestanding core + a booked library skeleton; the
+library face is built out along the roadmap.
 
 ## Current State
 

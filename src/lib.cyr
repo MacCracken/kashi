@@ -16,23 +16,23 @@
 #
 #   2. FULL LIBRARY       — this file (src/lib.cyr) + future modules
 #      stdlib-using. Runtime font loading, PSF1/PSF2 import, font registries,
-#      glyph-set queries. Skeleton only as of 0.1.0 — the implementation is
-#      the PARALLEL AGENT's domain (see docs/development/roadmap.md). Do NOT
-#      let any of it leak `include`s into font_data.cyr.
+#      glyph-set queries. Skeleton only as of 0.1.0 — built out along the
+#      roadmap (see docs/development/roadmap.md). Do NOT let any of it leak
+#      `include`s into font_data.cyr.
 #
 # As of 0.1.0 the library face re-exports the freestanding core (so a
 # stdlib-linked consumer gets the built-in fonts through `include "src/lib.cyr"`)
 # and stubs the future runtime-loading surface. Everything below the core
-# include is a placeholder the parallel agent fills in.
+# include is a placeholder to be filled in.
 
 include "src/font_data.cyr"
 
 # ---------------------------------------------------------------------------
-# Future full-library surface (skeleton — parallel agent's domain).
+# Future full-library surface (skeleton — booked, not yet built).
 #
 # These are intentional NO-OPS / NOT-IMPLEMENTED markers so the API shape is
 # booked and consumers see a stable symbol set, without committing behavior
-# the parallel agent hasn't built yet. Each returns a sentinel rather than
+# that isn't built yet. Each returns a sentinel rather than
 # panicking — library code never panics (first-party standard).
 # ---------------------------------------------------------------------------
 
@@ -40,11 +40,11 @@ include "src/font_data.cyr"
 # Cyrius enum values must be plain non-negative integer literals, so the
 # error codes use a small positive namespace (1xx) rather than negative
 # errnos. 0 = ok; any non-zero = error. KASHI_ENOSYS marks "booked, not
-# built". The parallel agent may switch to a sakshi Result type when the
-# runtime surface lands; until then this keeps the skeleton stdlib-light.
+# built". This may switch to a sakshi Result type when the runtime surface
+# lands; until then this keeps the skeleton stdlib-light.
 enum KashiResult {
     KASHI_OK = 0;
-    KASHI_ENOSYS = 101;         # not implemented yet (parallel agent's bite)
+    KASHI_ENOSYS = 101;         # not implemented yet (booked for M1)
     KASHI_EINVAL = 102;         # invalid argument
     KASHI_EFORMAT = 103;        # malformed font file
 }
@@ -58,7 +58,7 @@ enum KashiPsfMagic {
 }
 
 # Load a PSF1/PSF2 font from an in-memory buffer into a runtime font slot.
-# BOOKED — M1 (parallel agent). Returns KASHI_ENOSYS until implemented.
+# BOOKED — M1. Returns KASHI_ENOSYS until implemented.
 fn kashi_load_psf(buf, len) {
     # Silence unused-arg lints without doing work.
     if (len < 0) { return KASHI_EINVAL; }
