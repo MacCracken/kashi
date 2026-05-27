@@ -1,0 +1,83 @@
+# === kashi — library root ===
+#
+# kashi (काशि, "shining") is the AGNOS console-font subsystem: bitmap glyph
+# data plus the machinery to load and query console fonts. This file is the
+# stdlib-using LIBRARY face — the surface consumers who CAN link the Cyrius
+# stdlib (userland tools, the future TTY/console stack) use.
+#
+# --- The two faces of kashi (the load-bearing split — see docs/adr/0001) ---
+#
+#   1. FREESTANDING CORE  — src/font_data.cyr
+#      No stdlib, no heap, no syscalls. Built-in 8x16 + 8x8 glyph tables and
+#      pure-arithmetic accessors. A freestanding kernel (agnos, which has
+#      `[deps] stdlib = []` and a vendored klib/) `include`s this file
+#      DIRECTLY and never touches the rest of kashi. This is the only part
+#      kashi guarantees a freestanding consumer.
+#
+#   2. FULL LIBRARY       — this file (src/lib.cyr) + future modules
+#      stdlib-using. Runtime font loading, PSF1/PSF2 import, font registries,
+#      glyph-set queries. Skeleton only as of 0.1.0 — the implementation is
+#      the PARALLEL AGENT's domain (see docs/development/roadmap.md). Do NOT
+#      let any of it leak `include`s into font_data.cyr.
+#
+# As of 0.1.0 the library face re-exports the freestanding core (so a
+# stdlib-linked consumer gets the built-in fonts through `include "src/lib.cyr"`)
+# and stubs the future runtime-loading surface. Everything below the core
+# include is a placeholder the parallel agent fills in.
+
+include "src/font_data.cyr"
+
+# ---------------------------------------------------------------------------
+# Future full-library surface (skeleton — parallel agent's domain).
+#
+# These are intentional NO-OPS / NOT-IMPLEMENTED markers so the API shape is
+# booked and consumers see a stable symbol set, without committing behavior
+# the parallel agent hasn't built yet. Each returns a sentinel rather than
+# panicking — library code never panics (first-party standard).
+# ---------------------------------------------------------------------------
+
+# Return code convention for the not-yet-implemented runtime surface.
+# Cyrius enum values must be plain non-negative integer literals, so the
+# error codes use a small positive namespace (1xx) rather than negative
+# errnos. 0 = ok; any non-zero = error. KASHI_ENOSYS marks "booked, not
+# built". The parallel agent may switch to a sakshi Result type when the
+# runtime surface lands; until then this keeps the skeleton stdlib-light.
+enum KashiResult {
+    KASHI_OK = 0;
+    KASHI_ENOSYS = 101;         # not implemented yet (parallel agent's bite)
+    KASHI_EINVAL = 102;         # invalid argument
+    KASHI_EFORMAT = 103;        # malformed font file
+}
+
+# PSF (PC Screen Font) magic constants — booked for the import path.
+# PSF1: 0x36 0x04 ; PSF2: 0x72 0xB5 0x4A 0x86. See docs/roadmap M1.
+enum KashiPsfMagic {
+    KASHI_PSF1_MAGIC0 = 0x36;
+    KASHI_PSF1_MAGIC1 = 0x04;
+    KASHI_PSF2_MAGIC = 0x864AB572;  # little-endian dword
+}
+
+# Load a PSF1/PSF2 font from an in-memory buffer into a runtime font slot.
+# BOOKED — M1 (parallel agent). Returns KASHI_ENOSYS until implemented.
+fn kashi_load_psf(buf, len) {
+    # Silence unused-arg lints without doing work.
+    if (len < 0) { return KASHI_EINVAL; }
+    if (buf == 0) { return KASHI_EINVAL; }
+    return KASHI_ENOSYS;
+}
+
+# Register a runtime (loaded) font and return its font_id, or a negative
+# error. BOOKED — M1. Until then, only the two built-in fonts exist.
+fn kashi_register_font(width, height, glyph_data, glyph_count) {
+    if (width <= 0) { return KASHI_EINVAL; }
+    if (height <= 0) { return KASHI_EINVAL; }
+    if (glyph_count <= 0) { return KASHI_EINVAL; }
+    if (glyph_data == 0) { return KASHI_EINVAL; }
+    return KASHI_ENOSYS;
+}
+
+# Number of fonts kashi currently knows. As of 0.1.0 exactly the two
+# built-ins (VGA 8x16, CGA 8x8). Grows once runtime registration lands.
+fn kashi_font_total() {
+    return 2;
+}

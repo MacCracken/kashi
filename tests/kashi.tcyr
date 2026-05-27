@@ -1,0 +1,110 @@
+# kashi — integration test suite (cross-module behavior).
+# Stdlib auto-included via cyrius.cyml. The src/test.cyr entry holds the
+# bulk of the unit assertions; this file exercises the public surface the
+# way a consumer would: init once, then iterate the whole glyph range and
+# check structural invariants that span the two fonts.
+
+include "src/lib.cyr"
+
+# Count set bits in one glyph row byte (population count over 8 bits).
+fn popcount8(b) {
+    var n = 0;
+    var i = 0;
+    while (i < 8) {
+        if ((b & (1 << i)) != 0) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+# Total set pixels across a whole glyph (sum of popcounts over its rows).
+fn glyph_ink(font_id, ch) {
+    var h = kashi_font_height(font_id);
+    var total = 0;
+    var row = 0;
+    while (row < h) {
+        total = total + popcount8(kashi_glyph_row(font_id, ch, row));
+        row = row + 1;
+    }
+    return total;
+}
+
+# Invariant: a font's render width is 8, so no glyph row can have a set bit
+# outside the low 8 bits. (kashi_glyph_row returns a single byte, but verify
+# the value really is byte-bounded.)
+fn test_row_byte_bounded() {
+    test_group("row byte-bounded");
+    var ch = 0x20;
+    var ok = 1;
+    while (ch <= 0x7F) {
+        var row = 0;
+        while (row < 16) {
+            if (kashi_glyph_row(KASHI_FONT_VGA_8X16, ch, row) > 0xFF) { ok = 0; }
+            row = row + 1;
+        }
+        ch = ch + 1;
+    }
+    assert_eq(ok, 1, "all vga rows <= 0xFF");
+    return 0;
+}
+
+# Invariant: SPACE (0x20) is blank ink in BOTH fonts; a visible glyph like
+# 'M' (0x4D) has ink in both. This catches a whole-table off-by-one in the
+# (ch - first) index math (which would shift every glyph by one slot).
+fn test_space_vs_visible() {
+    test_group("space vs visible");
+    assert_eq(glyph_ink(KASHI_FONT_VGA_8X16, 0x20), 0, "vga space no ink");
+    assert_eq(glyph_ink(KASHI_FONT_CGA_8X8, 0x20), 0, "cga space no ink");
+    assert_gt(glyph_ink(KASHI_FONT_VGA_8X16, 0x4D), 0, "vga M has ink");
+    assert_gt(glyph_ink(KASHI_FONT_CGA_8X8, 0x4D), 0, "cga M has ink");
+    # 'M' is a dense glyph; both fonts should carry substantial ink.
+    assert_gt(glyph_ink(KASHI_FONT_VGA_8X16, 0x4D), 20, "vga M dense");
+    assert_gt(glyph_ink(KASHI_FONT_CGA_8X8, 0x4D), 15, "cga M dense");
+    return 0;
+}
+
+# Invariant: the index math is monotone — glyph N's pointer is exactly one
+# glyph-height past glyph N-1's, across the full range, for both fonts.
+fn test_pointer_monotone() {
+    test_group("pointer monotone");
+    var ok16 = 1;
+    var ok8 = 1;
+    var ch = 0x21;
+    while (ch <= 0x7F) {
+        var prev16 = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, ch - 1);
+        var cur16 = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, ch);
+        if (cur16 - prev16 != 16) { ok16 = 0; }
+        var prev8 = kashi_glyph_ptr(KASHI_FONT_CGA_8X8, ch - 1);
+        var cur8 = kashi_glyph_ptr(KASHI_FONT_CGA_8X8, ch);
+        if (cur8 - prev8 != 8) { ok8 = 0; }
+        ch = ch + 1;
+    }
+    assert_eq(ok16, 1, "vga ptrs 16 apart");
+    assert_eq(ok8, 1, "cga ptrs 8 apart");
+    return 0;
+}
+
+# Re-init idempotency: calling kashi_font_init twice yields identical bytes.
+fn test_reinit_idempotent() {
+    test_group("reinit idempotent");
+    var before = kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x40, 7);
+    kashi_font_init();
+    var after = kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x40, 7);
+    assert_eq(before, after, "reinit stable");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    kashi_font_init();
+
+    test_row_byte_bounded();
+    test_space_vs_visible();
+    test_pointer_monotone();
+    test_reinit_idempotent();
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(SYS_EXIT, exit_code);

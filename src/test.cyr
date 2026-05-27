@@ -1,0 +1,203 @@
+# kashi — top-level test entry (referenced by cyrius.cyml [build].test).
+# Runs the freestanding font-data core tests plus library-skeleton checks.
+# Uses the stdlib assert harness (assert / assert_eq / assert_summary) so
+# the summary line is the canonical "N passed, M failed" CI greps for.
+#
+# Note: the code UNDER TEST (src/font_data.cyr) is freestanding — these
+# tests link stdlib only for the assertion harness, never the core itself.
+# Add new cases here or in tests/kashi.tcyr.
+
+include "src/lib.cyr"
+
+# --- font_data core: identity / metadata ---
+
+fn test_metadata() {
+    test_group("metadata");
+    assert_eq(kashi_font_width(KASHI_FONT_VGA_8X16), 8, "vga width 8");
+    assert_eq(kashi_font_height(KASHI_FONT_VGA_8X16), 16, "vga height 16");
+    assert_eq(kashi_font_first(KASHI_FONT_VGA_8X16), 0x20, "vga first 0x20");
+    assert_eq(kashi_font_count(KASHI_FONT_VGA_8X16), 96, "vga count 96");
+
+    assert_eq(kashi_font_width(KASHI_FONT_CGA_8X8), 8, "cga width 8");
+    assert_eq(kashi_font_height(KASHI_FONT_CGA_8X8), 8, "cga height 8");
+    assert_eq(kashi_font_first(KASHI_FONT_CGA_8X8), 0x20, "cga first 0x20");
+    assert_eq(kashi_font_count(KASHI_FONT_CGA_8X8), 96, "cga count 96");
+
+    assert_eq(kashi_font_width(99), 0, "unknown width 0");
+    assert_eq(kashi_font_height(99), 0, "unknown height 0");
+    assert_eq(kashi_font_first(99), 0, "unknown first 0");
+    assert_eq(kashi_font_count(99), 0, "unknown count 0");
+    return 0;
+}
+
+# --- font_data core: encoded-range gate ---
+
+fn test_encoded_gate() {
+    test_group("encoded gate");
+    assert_eq(kashi_glyph_encoded(0x1F), 0, "0x1F not encoded");
+    assert_eq(kashi_glyph_encoded(0x20), 1, "0x20 encoded");
+    assert_eq(kashi_glyph_encoded(0x41), 1, "A encoded");
+    assert_eq(kashi_glyph_encoded(0x7F), 1, "0x7F encoded");
+    assert_eq(kashi_glyph_encoded(0x80), 0, "0x80 not encoded");
+    assert_eq(kashi_glyph_encoded(0), 0, "NUL not encoded");
+    return 0;
+}
+
+# --- font_data core: exact byte fidelity vs agnos fb_console.cyr source ---
+#
+# These literals are read straight from the published tables. If kashi's
+# extraction ever drifts from the bytes agnos renders, these fail.
+
+fn test_vga_8x16_bytes() {
+    test_group("vga 8x16 bytes");
+    # space (0x20) — all 16 rows blank.
+    var i = 0;
+    var space_blank = 1;
+    while (i < 16) {
+        if (kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x20, i) != 0) { space_blank = 0; }
+        i = i + 1;
+    }
+    assert_eq(space_blank, 1, "vga space all-blank");
+
+    # 'A' (0x41) = hi 0x000010386CC6C6FE, lo 0xC6C6C6C600000000.
+    # Rows: 00 00 10 38 6C C6 C6 FE | C6 C6 C6 C6 00 00 00 00.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 0), 0x00, "vga A row0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 2), 0x10, "vga A row2");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 3), 0x38, "vga A row3");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 4), 0x6C, "vga A row4");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 5), 0xC6, "vga A row5");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), 0xFE, "vga A row7");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 8), 0xC6, "vga A row8");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 11), 0xC6, "vga A row11");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 12), 0x00, "vga A row12");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 15), 0x00, "vga A row15");
+
+    # '0' (0x30) = hi 0x0000386CC6C6D6D6, lo 0xC6C66C3800000000.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x30, 2), 0x38, "vga 0 row2");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x30, 6), 0xD6, "vga 0 row6");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x30, 7), 0xD6, "vga 0 row7");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x30, 10), 0x6C, "vga 0 row10");
+
+    # '_' (0x5F) = hi 0, lo 0x0000000000FF0000 -> 0xFF lands at row 13
+    # ((lo>>16)&0xFF), all other rows blank (underscore near the baseline).
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x5F, 0), 0x00, "vga _ row0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x5F, 10), 0x00, "vga _ row10");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x5F, 13), 0xFF, "vga _ row13");
+
+    # '~' (0x7E) = hi 0x0076DC0000000000, lo 0.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x7E, 1), 0x76, "vga ~ row1");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x7E, 2), 0xDC, "vga ~ row2");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x7E, 3), 0x00, "vga ~ row3");
+    return 0;
+}
+
+fn test_cga_8x8_bytes() {
+    test_group("cga 8x8 bytes");
+    # space (0x20) — all 8 rows blank.
+    var i = 0;
+    var space_blank = 1;
+    while (i < 8) {
+        if (kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x20, i) != 0) { space_blank = 0; }
+        i = i + 1;
+    }
+    assert_eq(space_blank, 1, "cga space all-blank");
+
+    # 'A' (0x41) = 0x386CC6C6FEC6C600 -> 38 6C C6 C6 FE C6 C6 00.
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x41, 0), 0x38, "cga A row0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x41, 1), 0x6C, "cga A row1");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x41, 4), 0xFE, "cga A row4");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x41, 7), 0x00, "cga A row7");
+
+    # '1' (0x31) = 0x18381818181818FF -> last row 0xFF (long bottom bar).
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x31, 0), 0x18, "cga 1 row0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x31, 1), 0x38, "cga 1 row1");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x31, 7), 0xFF, "cga 1 row7");
+
+    # '_' (0x5F) = 0x00000000000000FF -> only bottom row set.
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x5F, 0), 0x00, "cga _ row0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x5F, 7), 0xFF, "cga _ row7");
+    return 0;
+}
+
+# --- font_data core: accessor bounds + ptr round-trip ---
+
+fn test_accessor_bounds() {
+    test_group("accessor bounds");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x1F, 0), 0, "row oob-char-lo 0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x80, 0), 0, "row oob-char-hi 0");
+    assert_eq(kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x1F), 0, "ptr oob-char-lo null");
+    assert_eq(kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x80), 0, "ptr oob-char-hi null");
+
+    assert_eq(kashi_glyph_row(7, 0x41, 0), 0, "row unknown-font 0");
+    assert_eq(kashi_glyph_ptr(7, 0x41), 0, "ptr unknown-font null");
+
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 0 - 1), 0, "row neg 0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 16), 0, "row >=16 0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x41, 8), 0, "row >=8 0");
+
+    # ptr round-trip: glyph_row(ch,row) == load8(glyph_ptr(ch)+row).
+    var p = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x41);
+    assert_neq(p, 0, "A ptr non-null");
+    assert_eq(load8(p + 5), kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 5), "ptr/row agree");
+    assert_eq(load8(p + 7), 0xFE, "ptr row7 0xFE");
+
+    # ptr spacing: consecutive glyphs are exactly height bytes apart.
+    var pa = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x41);
+    var pb = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x42);
+    assert_eq(pb - pa, 16, "vga glyph stride 16");
+    var qa = kashi_glyph_ptr(KASHI_FONT_CGA_8X8, 0x41);
+    var qb = kashi_glyph_ptr(KASHI_FONT_CGA_8X8, 0x42);
+    assert_eq(qb - qa, 8, "cga glyph stride 8");
+    return 0;
+}
+
+# --- font_data core: every encoded glyph has a non-null ptr in range ---
+
+fn test_full_coverage() {
+    test_group("full coverage");
+    var ch = 0x20;
+    var all_ok16 = 1;
+    var all_ok8 = 1;
+    while (ch <= 0x7F) {
+        if (kashi_glyph_ptr(KASHI_FONT_VGA_8X16, ch) == 0) { all_ok16 = 0; }
+        if (kashi_glyph_ptr(KASHI_FONT_CGA_8X8, ch) == 0) { all_ok8 = 0; }
+        ch = ch + 1;
+    }
+    assert_eq(all_ok16, 1, "all 96 vga glyphs present");
+    assert_eq(all_ok8, 1, "all 96 cga glyphs present");
+    return 0;
+}
+
+# --- library skeleton (src/lib.cyr): booked-not-built surface ---
+
+fn test_lib_skeleton() {
+    test_group("library skeleton");
+    assert_eq(kashi_font_total(), 2, "two built-in fonts");
+    assert_eq(kashi_load_psf(&kashi_font16, 100), KASHI_ENOSYS, "psf load enosys");
+    assert_eq(kashi_load_psf(0, 100), KASHI_EINVAL, "psf load null einval");
+    assert_eq(kashi_register_font(8, 16, &kashi_font16, 96), KASHI_ENOSYS, "register enosys");
+    assert_eq(kashi_register_font(0, 16, &kashi_font16, 96), KASHI_EINVAL, "register bad-w einval");
+    assert_eq(KASHI_OK, 0, "ok is zero");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+
+    # kashi_font_init() must run before any glyph access (freestanding
+    # consumers call it explicitly; a stdlib consumer does the same).
+    kashi_font_init();
+
+    test_metadata();
+    test_encoded_gate();
+    test_vga_8x16_bytes();
+    test_cga_8x8_bytes();
+    test_accessor_bounds();
+    test_full_coverage();
+    test_lib_skeleton();
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(SYS_EXIT, exit_code);

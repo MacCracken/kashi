@@ -1,0 +1,54 @@
+# kashi — demo entry point.
+#
+# kashi is primarily a LIBRARY (see src/lib.cyr); this binary is a small
+# demo that renders a string with the built-in fonts as ASCII art, so you
+# can eyeball the glyph data. Real consumers `include` the library (or, for
+# freestanding kernels, src/font_data.cyr directly) — they don't run this.
+#
+# Stdlib auto-included via cyrius.cyml. The font core itself is freestanding.
+
+include "src/lib.cyr"
+
+# Render one glyph of `ch` from `font_id` as ASCII art: '#' for a set bit,
+# space for a clear bit, one line per row. Bit 7 is the leftmost pixel.
+fn demo_render_glyph(font_id, ch) {
+    var h = kashi_font_height(font_id);
+    var w = kashi_font_width(font_id);
+    if (h == 0) { return 0; }
+    var row = 0;
+    while (row < h) {
+        var bits = kashi_glyph_row(font_id, ch, row);
+        var col = 0;
+        while (col < w) {
+            # bit (w-1-col): leftmost pixel is bit 7 for 8-wide fonts.
+            var mask = 1 << (w - 1 - col);
+            if ((bits & mask) != 0) {
+                syscall(1, 1, "#", 1);
+            }
+            if ((bits & mask) == 0) {
+                syscall(1, 1, " ", 1);
+            }
+            col = col + 1;
+        }
+        syscall(1, 1, "\n", 1);
+        row = row + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    kashi_font_init();
+
+    println("kashi — AGNOS console-font subsystem");
+    println("Built-in fonts: VGA 8x16 (id 0), CGA 8x8 (id 1).");
+    println("");
+    println("'A' in VGA 8x16:");
+    demo_render_glyph(KASHI_FONT_VGA_8X16, 0x41);
+    println("'A' in CGA 8x8:");
+    demo_render_glyph(KASHI_FONT_CGA_8X8, 0x41);
+    return 0;
+}
+
+var r = main();
+syscall(SYS_EXIT, r);

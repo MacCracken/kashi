@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Cyrius toolchain
+        run: |
+          CYRIUS_VERSION="${CYRIUS_VERSION:-$(grep 'cyrius *= *"' cyrius.cyml 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+          echo "Installing Cyrius $CYRIUS_VERSION"
+          curl -sLO "https://github.com/MacCracken/cyrius/releases/download/$CYRIUS_VERSION/cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
+          tar xzf "cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
+          CYRIUS_DIR="cyrius-$CYRIUS_VERSION-x86_64-linux"
+          mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
+          cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/" 2>/dev/null || true
+          cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/" 2>/dev/null || true
+          chmod +x "$HOME/.cyrius/bin/"* 2>/dev/null || true
+          echo "$HOME/.cyrius/bin" >> $GITHUB_PATH
+          echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
+
+      - name: Resolve dependencies
+        run: cyrius deps
+
+      - name: Format check
+        run: |
+          for f in src/*.cyr tests/*.tcyr tests/*.bcyr tests/*.fcyr; do
+            cyrius fmt "$f" --check
+          done
+
+      - name: Lint
+        run: |
+          for f in src/*.cyr; do cyrius lint "$f"; done
+
+      - name: Vet — freestanding core must have ZERO deps
+        # Load-bearing invariant (ADR 0001): src/font_data.cyr is what the
+        # agnos kernel includes; it must never gain a dependency. This step
+        # fails the build if the boundary leaks.
+        run: |
+          out="$(cyrius vet src/font_data.cyr 2>&1)"
+          echo "$out"
+          echo "$out" | grep -q "no dependencies" || { echo "FAIL: src/font_data.cyr gained a dependency"; exit 1; }
+
+      - name: Build
+        run: |
+          mkdir -p build
+          cyrius build src/main.cyr build/${{ github.event.repository.name }}
+
+      - name: Test
+        # v5.6.28: bare `cyrius test` picks up the [build].test entry
+        # AND auto-discovers tests/*.tcyr — avoids the previous
+        # `cyrius test src/test.cyr` form that hard-failed when the
+        # stub didn't exist (Issue 1) and also wouldn't ever exercise
+        # tests/${proj}.tcyr.
+        run: cyrius test
