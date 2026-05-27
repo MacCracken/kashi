@@ -90,8 +90,21 @@ jobs:
         # Load-bearing invariant (ADR 0001): src/font_data.cyr is what the
         # agnos kernel includes; it must never gain a dependency. This step
         # fails the build if the boundary leaks.
+        #
+        # We call the auditor `cyaudit` directly rather than `cyrius vet`:
+        # in the released 6.0.3 toolchain `cyrius vet` dispatches to a
+        # `cybs` binary that emits an ELF instead of auditing (a cyrius
+        # packaging bug — cmd_vet runs `cybs vet`, but the shipped `cybs`
+        # is not the auditor). `cyaudit vet` produces the documented
+        # "no dependencies" contract. Fall back to `cyrius vet` only if
+        # `cyaudit` is ever absent (e.g. a future release that fixes the
+        # dispatch and drops the standalone tool).
         run: |
-          out="$(cyrius vet src/font_data.cyr 2>&1)"
+          if command -v cyaudit >/dev/null 2>&1; then
+            out="$(cyaudit vet src/font_data.cyr 2>&1)"
+          else
+            out="$(cyrius vet src/font_data.cyr 2>&1)"
+          fi
           echo "$out"
           echo "$out" | grep -q "no dependencies" || { echo "FAIL: src/font_data.cyr gained a dependency"; exit 1; }
 

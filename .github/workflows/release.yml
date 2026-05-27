@@ -52,9 +52,15 @@ jobs:
       - name: Vet — freestanding core must have ZERO deps
         # Re-assert the headline invariant (ADR 0001) at release time: the
         # font_data.cyr asset we ship is what the agnos kernel includes, so
-        # it must carry no dependency.
+        # it must carry no dependency. Call `cyaudit` directly — the
+        # released 6.0.3 `cyrius vet` dispatches to a `cybs` that emits an
+        # ELF instead of auditing (see ci.yml's vet step for the full note).
         run: |
-          out="$(cyrius vet src/font_data.cyr 2>&1)"
+          if command -v cyaudit >/dev/null 2>&1; then
+            out="$(cyaudit vet src/font_data.cyr 2>&1)"
+          else
+            out="$(cyrius vet src/font_data.cyr 2>&1)"
+          fi
           echo "$out"
           echo "$out" | grep -q "no dependencies" || { echo "FAIL: src/font_data.cyr gained a dependency"; exit 1; }
 
