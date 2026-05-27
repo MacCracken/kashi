@@ -5,45 +5,87 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
-    name: Build & Test
+  # ── Build smoke ──
+  build:
+    name: Build smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install Cyrius toolchain
+        # CLAUDE.md hard rule: the toolchain version is NOT hardcoded here —
+        # it is derived from cyrius.cyml's [package].cyrius pin (the single
+        # source of truth) and fed to the official install.sh.
+        run: |
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          echo "Installing Cyrius $CYRIUS_VERSION"
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+      - name: Resolve deps
+        run: cyrius deps
+      - name: Build library
+        run: |
+          mkdir -p build
+          cyrius build src/lib.cyr build/kashi
+      - name: Build & run demo (DCE)
+        run: |
+          CYRIUS_DCE=1 cyrius build src/main.cyr build/kashi-demo
+          echo "demo: $(wc -c < build/kashi-demo) bytes"
+          ./build/kashi-demo
+      - name: Verify ELF
+        run: xxd -l 4 build/kashi-demo | grep -q "7f45 4c46"
 
+  # ── Tests ──
+  test:
+    name: Test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - name: Install Cyrius toolchain
         run: |
-          CYRIUS_VERSION="${CYRIUS_VERSION:-$(grep 'cyrius *= *"' cyrius.cyml 2>/dev/null | head -1 | sed 's/.*"\(.*\)"/\1/')}"
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
           echo "Installing Cyrius $CYRIUS_VERSION"
-          curl -sLO "https://github.com/MacCracken/cyrius/releases/download/$CYRIUS_VERSION/cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          tar xzf "cyrius-$CYRIUS_VERSION-x86_64-linux.tar.gz"
-          CYRIUS_DIR="cyrius-$CYRIUS_VERSION-x86_64-linux"
-          mkdir -p "$HOME/.cyrius/bin" "$HOME/.cyrius/lib"
-          cp "$CYRIUS_DIR/bin/"* "$HOME/.cyrius/bin/" 2>/dev/null || true
-          cp -r "$CYRIUS_DIR/lib/"* "$HOME/.cyrius/lib/" 2>/dev/null || true
-          chmod +x "$HOME/.cyrius/bin/"* 2>/dev/null || true
-          echo "$HOME/.cyrius/bin" >> $GITHUB_PATH
-          echo "CYRIUS_HOME=$HOME/.cyrius" >> $GITHUB_ENV
-
-      - name: Resolve dependencies
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+      - name: Resolve deps
         run: cyrius deps
+      - name: Test
+        # Bare `cyrius test` picks up the [build].test entry (src/test.cyr)
+        # AND auto-discovers tests/*.tcyr — one command covers the unit
+        # suite and the integration suite (tests/kashi.tcyr).
+        run: cyrius test
 
+  # ── Lint / format / freestanding boundary ──
+  lint:
+    name: Lint & vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Cyrius toolchain
+        run: |
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          echo "Installing Cyrius $CYRIUS_VERSION"
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+      - name: Resolve deps
+        run: cyrius deps
       - name: Format check
         run: |
           for f in src/*.cyr tests/*.tcyr tests/*.bcyr tests/*.fcyr; do
             cyrius fmt "$f" --check
           done
-
       - name: Lint
         run: |
           for f in src/*.cyr; do cyrius lint "$f"; done
-
       - name: Vet — freestanding core must have ZERO deps
         # Load-bearing invariant (ADR 0001): src/font_data.cyr is what the
         # agnos kernel includes; it must never gain a dependency. This step
@@ -53,15 +95,109 @@ jobs:
           echo "$out"
           echo "$out" | grep -q "no dependencies" || { echo "FAIL: src/font_data.cyr gained a dependency"; exit 1; }
 
-      - name: Build
+  # ── Benchmarks ──
+  benchmarks:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Cyrius toolchain
+        run: |
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          echo "Installing Cyrius $CYRIUS_VERSION"
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+      - name: Resolve deps
+        run: cyrius deps
+      - name: Run .bcyr suite
+        run: CYRIUS_DCE=1 cyrius bench tests/kashi.bcyr
+
+  # ── Fuzz ──
+  fuzz:
+    name: Fuzz (quick)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Cyrius toolchain
+        run: |
+          CYRIUS_VERSION="$(grep '^cyrius = ' cyrius.cyml | head -1 | sed 's/cyrius = "\(.*\)"/\1/')"
+          echo "Installing Cyrius $CYRIUS_VERSION"
+          curl -sSf https://raw.githubusercontent.com/MacCracken/cyrius/main/scripts/install.sh | \
+            CYRIUS_VERSION="$CYRIUS_VERSION" sh
+          echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
+      - name: Resolve deps
+        run: cyrius deps
+      - name: Run fuzz harnesses (30s budget each)
         run: |
           mkdir -p build
-          cyrius build src/main.cyr build/${{ github.event.repository.name }}
+          pass=0; fail=0
+          for f in tests/*.fcyr; do
+            name=$(basename "$f" .fcyr)
+            printf "  %-25s " "$name"
+            if CYRIUS_DCE=1 cyrius build "$f" "build/$name" >/dev/null 2>&1; then
+              timeout 30 "build/$name" >/dev/null 2>&1
+              rc=$?
+              # exit 0 = clean run, 124 = hit the timeout budget without
+              # crashing — both are a pass. Any other code is a fuzz crash.
+              if [ "$rc" -eq 0 ] || [ "$rc" -eq 124 ]; then
+                echo "OK"; pass=$((pass+1))
+              else
+                echo "FAIL (exit $rc)"; fail=$((fail+1))
+              fi
+            else
+              echo "COMPILE FAIL"; fail=$((fail+1))
+            fi
+          done
+          echo "$pass passed, $fail failed"
+          test $fail -eq 0
 
-      - name: Test
-        # v5.6.28: bare `cyrius test` picks up the [build].test entry
-        # AND auto-discovers tests/*.tcyr — avoids the previous
-        # `cyrius test src/test.cyr` form that hard-failed when the
-        # stub didn't exist (Issue 1) and also wouldn't ever exercise
-        # tests/${proj}.tcyr.
-        run: cyrius test
+  # ── Security ──
+  security:
+    name: Security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for dangerous patterns
+        # Informational scan (warn-only): kashi is bitmap font data with a
+        # freestanding core, so these should never fire. Present for parity
+        # with sibling repos and to catch regressions if the library face
+        # ever grows process/path handling.
+        run: |
+          WARN=0
+          if grep -rn 'syscall(59' src/ 2>/dev/null | grep -v "# "; then
+            echo "WARN: raw execve"; WARN=1
+          fi
+          if grep -rn '"/etc/' src/ 2>/dev/null; then
+            echo "WARN: hardcoded /etc paths"; WARN=1
+          fi
+          echo "security scan complete (warnings: $WARN)"
+
+  # ── Documentation ──
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check required docs
+        run: |
+          MISSING=0
+          for doc in README.md CHANGELOG.md VERSION CONTRIBUTING.md SECURITY.md LICENSE CODE_OF_CONDUCT.md cyrius.cyml; do
+            if [ -f "$doc" ]; then echo "  OK: $doc"; else echo "  MISSING: $doc"; MISSING=1; fi
+          done
+          exit $MISSING
+      - name: Verify version consistency
+        run: |
+          FILE_VERSION=$(cat VERSION | tr -d '[:space:]')
+          CYML_RAW=$(grep '^version = ' cyrius.cyml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          # ${file:VERSION} template means cyml derives version from the
+          # VERSION file — VERSION is the single source of truth. Resolve
+          # the template to the file content for the consistency check.
+          if [ "$CYML_RAW" = "\${file:VERSION}" ]; then
+              CYML_VERSION="$FILE_VERSION"
+          else
+              CYML_VERSION="$CYML_RAW"
+          fi
+          [ "$FILE_VERSION" = "$CYML_VERSION" ] || { echo "VERSION ($FILE_VERSION) != cyrius.cyml ($CYML_RAW)"; exit 1; }
+          grep -q "$FILE_VERSION" CHANGELOG.md || { echo "version not in changelog"; exit 1; }
+          echo "Version consistent: $FILE_VERSION (cyml: $CYML_RAW)"
