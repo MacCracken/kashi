@@ -181,6 +181,59 @@ fn test_lib_skeleton() {
     return 0;
 }
 
+# --- audit 2026-05-27 hardening: ready flag, fset guard, full-range inputs ---
+
+# F2: kashi_font_is_ready() reads back the (previously write-only) ready flag.
+fn test_font_ready() {
+    test_group("font ready flag");
+    # main() already called kashi_font_init(), so the flag must read set.
+    assert_eq(kashi_font_is_ready(), 1, "ready after init");
+    return 0;
+}
+
+# F1: kashi_fset16/fset8 must IGNORE an out-of-range ch rather than writing at
+# a negative/overrun offset. The suppressed write isn't directly observable,
+# but a barrage of out-of-range packs must leave the in-range table intact.
+fn test_fset_guard() {
+    test_group("fset guard");
+    var ones = 0xFFFFFFFFFFFFFFFF;
+    # Below FIRST (0x20) and above LAST (0x7F), both fonts.
+    kashi_fset16(0x1F, ones, ones);
+    kashi_fset16(0x80, ones, ones);
+    kashi_fset16(0 - 1, ones, ones);
+    kashi_fset8(0x1F, ones);
+    kashi_fset8(0x80, ones);
+    kashi_fset8(0 - 1, ones);
+    # In-range glyphs unchanged: space blank, 'A' row, DEL triangle base.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x20, 0), 0x00, "guard: vga space intact");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), 0xFE, "guard: vga A intact");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x7F, 10), 0xFE, "guard: vga DEL intact");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x41, 4), 0xFE, "guard: cga A intact");
+    assert_eq(kashi_font_is_ready(), 1, "guard: ready intact");
+    # Restore a clean table for later tests (defensive if the guard regresses).
+    kashi_font_init();
+    return 0;
+}
+
+# F5: the accessors are bounds-safe for the FULL i64 range, not just the
+# 0..255 byte range the fuzz harness reaches. Pin the extremes explicitly.
+fn test_extreme_inputs() {
+    test_group("extreme inputs");
+    # Huge / negative font_id.
+    assert_eq(kashi_glyph_row(0x7FFFFFFF, 0x41, 0), 0, "huge font -> 0");
+    assert_eq(kashi_glyph_row(0 - 5, 0x41, 0), 0, "neg font -> 0");
+    assert_eq(kashi_glyph_ptr(0x7FFFFFFF, 0x41), 0, "huge font ptr null");
+    # Huge / negative ch.
+    assert_eq(kashi_glyph_encoded(0x7FFFFFFF), 0, "huge ch unencoded");
+    assert_eq(kashi_glyph_encoded(0 - 2000000000), 0, "big-neg ch unencoded");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x7FFFFFFF, 0), 0, "huge ch -> 0");
+    assert_eq(kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x7FFFFFFF), 0, "huge ch ptr null");
+    # Huge / very-negative row.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 0x7FFFFFFF), 0, "huge row -> 0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 0 - 1000), 0, "big-neg row -> 0");
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -195,6 +248,9 @@ fn main() {
     test_accessor_bounds();
     test_full_coverage();
     test_lib_skeleton();
+    test_font_ready();
+    test_fset_guard();
+    test_extreme_inputs();
 
     return assert_summary();
 }

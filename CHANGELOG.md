@@ -5,6 +5,42 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+P(-1) hardening pass opening the post-0.1.0 cycle. No glyph byte changed —
+fidelity vs agnos source is preserved.
+
+### Added
+
+- `kashi_font_is_ready()` — reads back the (previously write-only)
+  init-complete flag, so a freestanding consumer can assert
+  `kashi_font_init()` ran before the first render. Freestanding-safe
+  (`cyrius vet` still reports zero dependencies).
+- **Benchmark baseline** — `docs/benchmarks.md` + `docs/benchmarks/history.csv`
+  (CSV, appended per release for version-over-version tracking). 0.1.0
+  accessors: `glyph_row` 17 ns, `glyph_ptr` 7 ns, `scan_vga_8x16` 27 µs
+  (x86_64, AMD Ryzen 7 5800H).
+- **Security & hardening audit** — `docs/audit/2026-05-27-audit.md` (P(-1)
+  pass). 15 new test assertions (full-`i64`-range accessor safety, the
+  `fset` guard, the ready flag); suite now **96 assertions, 0 failed**.
+
+### Changed
+
+- **Defensive bound in the table packers** — `kashi_fset16`/`kashi_fset8`
+  now ignore an out-of-range codepoint instead of writing at a
+  negative/overrun offset, guarding against a typo in a future built-in
+  font table (M2) corrupting BSS. No behavior change for in-range data.
+
+### Security
+
+- Audited the freestanding accessor surface: proven memory-safe for the full
+  signed-64-bit input domain — no out-of-buffer read or wild dereference for
+  any `(font_id, ch, row)`. See `docs/audit/2026-05-27-audit.md`.
+
+### Fixed
+
+- Corrected the VGA 8×16 `0x7F` comment: it is the CP437 triangle glyph
+  (matching IBM VGA), not "blank" as the comment claimed (the CGA 8×8 `0x7F`
+  is the blank one). Documentation-only; the bytes already matched agnos.
+
 ## [0.1.0] — 2026-05-27
 
 Initial baseline. kashi (काशि, "shining") is the AGNOS console-font

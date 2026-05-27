@@ -6,7 +6,8 @@ type: state
 
 # Documentation Health — kashi
 
-> **Last refresh**: 2026-05-27 (0.1.0 baseline — initial full inventory).
+> **Last refresh**: 2026-05-27 (0.1.0 baseline + post-0.1.0 P(-1) hardening:
+> `docs/audit/` and `docs/benchmarks*` now exist; CHANGELOG/state refreshed).
 > **Refresh cadence**: when a doc is touched, update its row. Full-tree
 > sweep at minor-version closeouts.
 >
@@ -33,7 +34,7 @@ nothing archived, no open strategic questions.
 
 | Bucket | Count | What it means |
 |---|---|---|
-| ✅ **Fresh** | 14 | Everything below — all written/verified at 0.1.0. |
+| ✅ **Fresh** | 17 | Everything below — 0.1.0 inventory + the 3 hardening docs (audit, benchmarks.md, benchmarks/history.csv). |
 | 🟡 **Stale** | 0 | — |
 | 🟠 **Read-through outstanding** | 0 | — |
 | 🔵 **Probably evergreen** | 2 | `CODE_OF_CONDUCT.md`, `LICENSE` — standard; re-read annually. |
@@ -47,7 +48,7 @@ nothing archived, no open strategic questions.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-05-27 | ✅ Fresh | Two-faces architecture, built-in font table, freestanding-core API, agnos consumption contract, build/test. |
-| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | Real `[0.1.0]` entry; SemVer + Keep a Changelog. |
+| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]` entry + `[Unreleased]` P(-1) hardening (audit, fset guard, ready reader, `0x7F` comment fix). SemVer + Keep a Changelog. |
 | `CLAUDE.md` | 2026-05-27 | ✅ Fresh | Durable-only; freestanding-vs-full-lib split, parallel-agent note, standard constraints. State deferred to state.md. |
 | `CONTRIBUTING.md` | 2026-05-27 | ✅ Fresh | The two faces, accessor-bounds rule, glyph-fidelity rule, Cyrius enum/style notes. |
 | `SECURITY.md` | 2026-05-27 | ✅ Fresh | Accessor-bounds = kernel trust boundary; buffer sizing; future PSF-parse validation. |
@@ -76,7 +77,7 @@ nothing archived, no open strategic questions.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `development/roadmap.md` | 2026-05-27 | ✅ Fresh | M0 (done) → M4 (v1.0); books PSF import / runtime registry / agnos-1.38.0 consumption. |
-| `development/state.md` | 2026-05-27 | ✅ Fresh | 0.1.0 live state: impl-vs-booked, tests (81 assertions), sizes, fidelity. |
+| `development/state.md` | 2026-05-27 | ✅ Fresh | 0.1.0 live state + post-audit refresh: impl-vs-booked, tests (96 assertions), sizes, fidelity, audit pointer. |
 
 ## Tier 5 — `docs/guides/` + `docs/examples/`
 
@@ -85,14 +86,22 @@ nothing archived, no open strategic questions.
 | `guides/getting-started.md` | 2026-05-27 | ✅ Fresh | Build/test/add-a-font, reflecting the two-faces layout. |
 | `examples/.gitkeep` | (scaffold) | ✅ Fresh | Placeholder; the demo lives in `src/main.cyr` for now. Backfill `docs/examples/*.cyr` as the API surface grows. |
 
+## Tier 6 — `docs/audit/` + `docs/benchmarks*`
+
+| File | Last touched | Status | Notes |
+|---|---|---|---|
+| `audit/2026-05-27-audit.md` | 2026-05-27 | ✅ Fresh | First P(-1) security/hardening pass. 3 findings fixed, 2 noted; accessor surface proven `i64`-safe. |
+| `benchmarks.md` | 2026-05-27 | ✅ Fresh | Methodology + 0.1.0 baseline table; points at the CSV. |
+| `benchmarks/history.csv` | 2026-05-27 | ✅ Fresh | Per-`(version,benchmark)` rows; append each release. |
+
 ---
 
 ## Carry-forward / open items
 
-- **`docs/audit/`** — not yet created. First security-audit pass produces
-  `docs/audit/YYYY-MM-DD-audit.md` (P(-1) before a real release).
-- **`docs/benchmarks.md`** — not yet created. Bench numbers currently live
-  inline in state.md / CHANGELOG; promote to a CSV-backed `benchmarks.md`
-  once a version-over-version trend exists.
+- ~~**`docs/audit/`**~~ — ✅ created 2026-05-27 (`2026-05-27-audit.md`, first
+  P(-1) pass). Re-audit when M2 fonts / PSF import land.
+- ~~**`docs/benchmarks.md`**~~ — ✅ created 2026-05-27, CSV-backed
+  (`benchmarks/history.csv`). 0.1.0 is the first row; append per release to
+  build the version-over-version trend.
 - **`docs/api/`** — defer until the library face (PSF import, registry) lands
   and the surface is large enough that grepping beats reading.

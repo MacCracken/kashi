@@ -1,7 +1,8 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-27 (0.1.0 baseline) | **Refresh cadence**:
-> bumped every release (ideally by the release post-hook).
+> **Last refresh**: 2026-05-27 (0.1.0 baseline + post-0.1.0 P(-1) hardening
+> pass — see `docs/audit/2026-05-27-audit.md`) | **Refresh cadence**: bumped
+> every release (ideally by the release post-hook).
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
@@ -17,12 +18,14 @@ console. No git tag yet (user handles all git operations).
 
 ## What's implemented (0.1.0)
 
-- **Freestanding font-data core** — `src/font_data.cyr` (~392 lines). NO
+- **Freestanding font-data core** — `src/font_data.cyr` (~410 lines). NO
   stdlib (`cyrius vet` → "no dependencies"). Two built-in fonts:
   - `KASHI_FONT_VGA_8X16` (id 0) — IBM VGA BIOS 8×16, 96 glyphs.
   - `KASHI_FONT_CGA_8X8` (id 1) — hand-drawn CGA 8×8, 96 glyphs.
-  - Accessors: `kashi_font_init`, `kashi_glyph_row`, `kashi_glyph_ptr`,
-    `kashi_font_{width,height,first,count}`, `kashi_glyph_encoded`.
+  - Accessors: `kashi_font_init`, `kashi_font_is_ready`, `kashi_glyph_row`,
+    `kashi_glyph_ptr`, `kashi_font_{width,height,first,count}`,
+    `kashi_glyph_encoded`. All bounds-safe for the full `i64` input domain
+    (audited 2026-05-27).
 - **Library face** — `src/lib.cyr` (~83 lines). Re-exports the core; books
   `kashi_load_psf`, `kashi_register_font`, `kashi_font_total` + result codes
   (return `KASHI_ENOSYS` until implemented).
@@ -45,25 +48,34 @@ See [`roadmap.md`](roadmap.md).
 
 ## Tests
 
-- `src/test.cyr` — 71 assertions (metadata, encoded gate, **exact-byte
+- `src/test.cyr` — 86 assertions (metadata, encoded gate, **exact-byte
   fidelity vs agnos source**, accessor bounds, full 96-glyph coverage,
-  library skeleton). `cyrius test` → **0 failed**.
+  library skeleton, + post-0.1.0 audit: ready flag, `fset` guard,
+  full-`i64`-range input safety). `cyrius test` → **0 failed**.
 - `tests/kashi.tcyr` — 10 assertions (byte-bounded rows, space-vs-visible
   ink, pointer monotonicity, reinit idempotency). **0 failed**.
-- **81 assertions total, 0 failed.**
-- `tests/kashi.fcyr` — fuzz harness over the accessor bounds contract.
-- `tests/kashi.bcyr` — `glyph_row` ~18 ns, `glyph_ptr` ~7 ns,
-  `scan_vga_8x16` ~27 µs (x86_64 Linux, indicative — no CSV trail yet).
+- **96 assertions total, 0 failed.**
+- `tests/kashi.fcyr` — fuzz harness over the accessor bounds contract
+  (byte-range inputs; the `i64` extremes are covered by `src/test.cyr`).
+- `tests/kashi.bcyr` — `glyph_row` ~17 ns, `glyph_ptr` ~7 ns,
+  `scan_vga_8x16` ~27 µs (x86_64). CSV trail now in
+  [`benchmarks.md`](../benchmarks.md) / `docs/benchmarks/history.csv`.
 
 ## Cleanliness (P(-1) gates)
 
 - `cyrius build` — clean (no warnings).
 - `cyrius fmt <file> --check` — clean on all src + test files.
 - `cyrius lint` — 0 warnings on all src files.
-- `cyrius vet src/font_data.cyr` — "no dependencies" (freestanding boundary
-  proven); `cyrius vet src/lib.cyr` — 2 deps (core + self), 0 untrusted.
+- `cyaudit vet src/font_data.cyr` — "no dependencies" (freestanding boundary
+  proven); `cyaudit vet src/lib.cyr` — 2 deps (core + self), 0 untrusted.
+  **NB**: invoke `cyaudit` directly — the released 6.0.3 `cyrius vet`
+  dispatches to a `cybs` that emits an ELF instead of auditing (a cyrius
+  packaging bug; CI works around it the same way).
 - `cyrius audit` — not run (the `check.sh` helper isn't present in this
   toolchain install); individual gates above cover P(-1).
+- **Security audit** — `docs/audit/2026-05-27-audit.md`: accessor surface
+  proven memory-safe for the full `i64` domain; 3 findings fixed (fset
+  guard, ready-flag reader, `0x7F` comment), 2 noted.
 
 ## Glyph fidelity
 

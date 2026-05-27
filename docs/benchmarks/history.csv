@@ -1,0 +1,4 @@
+version,benchmark,avg_ns,min_ns,max_ns,iters,date,arch,host
+0.1.0,glyph_row,17,17,17,1000000,2026-05-27,x86_64,AMD Ryzen 7 5800H
+0.1.0,glyph_ptr,7,7,7,1000000,2026-05-27,x86_64,AMD Ryzen 7 5800H
+0.1.0,scan_vga_8x16,27000,27000,27000,10000,2026-05-27,x86_64,AMD Ryzen 7 5800H

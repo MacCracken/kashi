@@ -66,7 +66,7 @@ enum KashiFontId {
 # Both fonts cover the same printable-ASCII range.
 enum KashiGlyphRange {
     KASHI_GLYPH_FIRST = 0x20;  # first encoded codepoint (space)
-    KASHI_GLYPH_LAST = 0x7F;   # last encoded codepoint (DEL=blank)
+    KASHI_GLYPH_LAST = 0x7F;   # last encoded codepoint (DEL; blank in CGA 8x8, CP437 triangle in VGA 8x16)
     KASHI_GLYPH_COUNT = 96;    # 0x7F - 0x20 + 1
 }
 
@@ -80,6 +80,13 @@ var kashi_font_ready = 0; # 1 after kashi_font_init() has run
 # hi = rows 0-7 (top first), lo = rows 8-15. Byte (hi>>56) is the top row.
 # Internal — callers use kashi_font_init(). ch is trusted (table-internal).
 fn kashi_fset16(ch, hi, lo) {
+    # Defensive bound (audit 2026-05-27, F1): a table-authoring typo with
+    # ch outside [FIRST, LAST] would compute a negative or overrun offset
+    # and silently corrupt BSS before/after the buffer. init runs once, so
+    # this guard is free. All current calls are in-range; this protects the
+    # additional built-in fonts booked for M2.
+    if (ch < KASHI_GLYPH_FIRST) { return 0; }
+    if (ch > KASHI_GLYPH_LAST) { return 0; }
     var g = &kashi_font16 + (ch - KASHI_GLYPH_FIRST) * 16;
     store8(g + 0, (hi >> 56) & 0xFF);
     store8(g + 1, (hi >> 48) & 0xFF);
@@ -103,6 +110,9 @@ fn kashi_fset16(ch, hi, lo) {
 # Pack one 8x8 glyph's 8 row-bytes into kashi_font8[(ch-0x20)*8 .. +7].
 # val = rows 0-7, byte (val>>56) is the top row. Internal.
 fn kashi_fset8(ch, val) {
+    # Defensive bound — see kashi_fset16 (audit 2026-05-27, F1).
+    if (ch < KASHI_GLYPH_FIRST) { return 0; }
+    if (ch > KASHI_GLYPH_LAST) { return 0; }
     var g = &kashi_font8 + (ch - KASHI_GLYPH_FIRST) * 8;
     store8(g + 0, (val >> 56) & 0xFF);
     store8(g + 1, (val >> 48) & 0xFF);
@@ -218,7 +228,7 @@ fn kashi_font_init() {
     kashi_fset16(0x7C, 0x0000181818181818, 0x1818181800000000);  # |
     kashi_fset16(0x7D, 0x0000701818180E18, 0x1818187000000000);  # }
     kashi_fset16(0x7E, 0x0076DC0000000000, 0x0000000000000000);  # ~
-    kashi_fset16(0x7F, 0x0000000010386CC6, 0xC6C6FE0000000000);  # DEL=blank
+    kashi_fset16(0x7F, 0x0000000010386CC6, 0xC6C6FE0000000000);  # DEL: CP437 triangle, not blank (matches IBM VGA)
 
     # --- Font 1: hand-drawn 8x8 CGA-style bitmap (public domain). ---
     # val = rows 0-7, byte (val>>56) is the top row. Byte-for-byte the
@@ -322,6 +332,14 @@ fn kashi_font_init() {
 
     kashi_font_ready = 1;
     return 0;
+}
+
+# 1 once kashi_font_init() has populated the tables, else 0. Lets a
+# freestanding consumer assert init ran before the first render (audit
+# 2026-05-27, F2 — previously the flag was write-only). Pre-init the
+# buffers are zeroed BSS, so access is bounds-safe and renders blank.
+fn kashi_font_is_ready() {
+    return kashi_font_ready;
 }
 
 # --- Metadata accessors (freestanding; pure arithmetic) ---
