@@ -1107,6 +1107,284 @@ fn test_bdf_load_errors() {
     return 0;
 }
 
+# --- 0.7.1: PCF parser + load path (src/font_pcf.cyr, src/lib.cyr) ---
+
+# Build a synthetic 3-glyph 8x8 PCF in `buf`. Layout:
+#   - LE byte order (format bit 2 = 0)
+#   - bit_order: 0 = LSB, 1 = MSB. MSB matches our convention so no bit-reverse.
+#   - compressed: 0 = uncompressed metrics, 1 = compressed metrics
+# Glyph bitmap bytes are written in CANONICAL (MSB-bit) form, then for
+# `lsb_bit == 1` the helper bit-reverses each byte before storing so the
+# parser must bit-reverse on load to recover the canonical form.
+# Returns total file length.
+fn _mk_pcf(buf, lsb_bit, compressed) {
+    var p = 0;
+    # --- Header: magic + table_count (LE) ---
+    store8(buf + 0, 0x01); store8(buf + 1, 0x66);
+    store8(buf + 2, 0x63); store8(buf + 3, 0x70);
+    _put32(buf, 4, 3);   # 3 tables
+
+    # bit_order in format byte: bit 3 = MSB if 1, LSB if 0.
+    var bm_fmt = 0x08;
+    if (lsb_bit == 1) { bm_fmt = 0x00; }
+    var m_fmt = bm_fmt;
+    if (compressed == 1) { m_fmt = bm_fmt | 0x100; }
+
+    # --- TOC at offset 8 (3 × 16 = 48 bytes) ---
+    var metrics_off = 56;
+    var per_glyph_metric = 5;
+    if (compressed == 0) { per_glyph_metric = 12; }
+    var metrics_count_bytes = 2;
+    if (compressed == 0) { metrics_count_bytes = 4; }
+    var metrics_size = 4 + metrics_count_bytes + 3 * per_glyph_metric;
+    _put32(buf, 8 + 0, 0x04);             # PCF_TYPE_METRICS
+    _put32(buf, 8 + 4, m_fmt);
+    _put32(buf, 8 + 8, metrics_size);
+    _put32(buf, 8 + 12, metrics_off);
+
+    var bitmaps_off = metrics_off + metrics_size;
+    var bitmaps_size = 4 + 4 + 3 * 4 + 16 + 3 * 8;   # format + count + offs[3] + 4 pad sizes + 24 data
+    _put32(buf, 24 + 0, 0x08);            # PCF_TYPE_BITMAPS
+    _put32(buf, 24 + 4, bm_fmt);
+    _put32(buf, 24 + 8, bitmaps_size);
+    _put32(buf, 24 + 12, bitmaps_off);
+
+    var enc_off = bitmaps_off + bitmaps_size;
+    var enc_size = 4 + 5 * 2 + 3 * 2;      # format + 5 u16 fields + 3 indices
+    _put32(buf, 40 + 0, 0x20);            # PCF_TYPE_BDF_ENCODINGS
+    _put32(buf, 40 + 4, bm_fmt);
+    _put32(buf, 40 + 8, enc_size);
+    _put32(buf, 40 + 12, enc_off);
+
+    # --- METRICS body ---
+    _put32(buf, metrics_off, m_fmt);
+    var p2 = metrics_off + 4;
+    if (compressed == 1) {
+        store8(buf + p2 + 0, 3);          # count u16 LE low
+        store8(buf + p2 + 1, 0);
+        p2 = p2 + 2;
+    }
+    if (compressed == 0) {
+        _put32(buf, p2, 3);                # count u32
+        p2 = p2 + 4;
+    }
+    var gi = 0;
+    while (gi < 3) {
+        var slot = p2 + gi * per_glyph_metric;
+        if (compressed == 1) {
+            # left_sb=0, right_sb=8, char_width=8, ascent=8, descent=0
+            # Each = value + 0x80.
+            store8(buf + slot + 0, 0x80);
+            store8(buf + slot + 1, 0x88);
+            store8(buf + slot + 2, 0x88);
+            store8(buf + slot + 3, 0x88);
+            store8(buf + slot + 4, 0x80);
+        }
+        if (compressed == 0) {
+            # i16 LE: 0, 8, 8, 8, 0, attrs=0
+            _put16(buf, slot + 0, 0);
+            _put16(buf, slot + 2, 8);
+            _put16(buf, slot + 4, 8);
+            _put16(buf, slot + 6, 8);
+            _put16(buf, slot + 8, 0);
+            _put16(buf, slot + 10, 0);
+        }
+        gi = gi + 1;
+    }
+
+    # --- BITMAPS body ---
+    _put32(buf, bitmaps_off, bm_fmt);
+    _put32(buf, bitmaps_off + 4, 3);              # glyph_count
+    _put32(buf, bitmaps_off + 8, 0);              # offs[0]
+    _put32(buf, bitmaps_off + 12, 8);             # offs[1]
+    _put32(buf, bitmaps_off + 16, 16);            # offs[2]
+    _put32(buf, bitmaps_off + 20, 24);            # pad=1 total
+    _put32(buf, bitmaps_off + 24, 48);            # pad=2
+    _put32(buf, bitmaps_off + 28, 96);            # pad=4
+    _put32(buf, bitmaps_off + 32, 192);           # pad=8
+    var bdata = bitmaps_off + 36;
+    # Three glyphs (8x8) in canonical MSB-bit form:
+    # 'A' (0x41): 0x18 0x24 0x42 0x7E 0x42 0x42 0x42 0x00
+    # 'B' (0x42): 0x7C 0x42 0x42 0x7C 0x42 0x42 0x7C 0x00
+    # 'C' (0x43): 0x3E 0x42 0x40 0x40 0x40 0x42 0x3E 0x00
+    var canonical[24];
+    store8(&canonical + 0, 0x18);
+    store8(&canonical + 1, 0x24);
+    store8(&canonical + 2, 0x42);
+    store8(&canonical + 3, 0x7E);
+    store8(&canonical + 4, 0x42);
+    store8(&canonical + 5, 0x42);
+    store8(&canonical + 6, 0x42);
+    store8(&canonical + 7, 0x00);
+    store8(&canonical + 8, 0x7C);
+    store8(&canonical + 9, 0x42);
+    store8(&canonical + 10, 0x42);
+    store8(&canonical + 11, 0x7C);
+    store8(&canonical + 12, 0x42);
+    store8(&canonical + 13, 0x42);
+    store8(&canonical + 14, 0x7C);
+    store8(&canonical + 15, 0x00);
+    store8(&canonical + 16, 0x3E);
+    store8(&canonical + 17, 0x42);
+    store8(&canonical + 18, 0x40);
+    store8(&canonical + 19, 0x40);
+    store8(&canonical + 20, 0x40);
+    store8(&canonical + 21, 0x42);
+    store8(&canonical + 22, 0x3E);
+    store8(&canonical + 23, 0x00);
+    # If LSB-bit mode, bit-reverse each byte before storing (the parser
+    # will reverse on load and recover the canonical form).
+    var bi = 0;
+    while (bi < 24) {
+        var b = load8(&canonical + bi);
+        if (lsb_bit == 1) {
+            var r = 0;
+            r = r | ((b & 0x01) << 7);
+            r = r | ((b & 0x02) << 5);
+            r = r | ((b & 0x04) << 3);
+            r = r | ((b & 0x08) << 1);
+            r = r | ((b & 0x10) >> 1);
+            r = r | ((b & 0x20) >> 3);
+            r = r | ((b & 0x40) >> 5);
+            r = r | ((b & 0x80) >> 7);
+            b = r;
+        }
+        store8(buf + bdata + bi, b);
+        bi = bi + 1;
+    }
+
+    # --- BDF_ENCODINGS body ---
+    _put32(buf, enc_off, bm_fmt);
+    _put16(buf, enc_off + 4, 0x41);    # min_b2
+    _put16(buf, enc_off + 6, 0x43);    # max_b2
+    _put16(buf, enc_off + 8, 0);       # min_b1
+    _put16(buf, enc_off + 10, 0);      # max_b1
+    _put16(buf, enc_off + 12, 0);      # default_char
+    _put16(buf, enc_off + 14, 0);      # 0x41 -> glyph 0
+    _put16(buf, enc_off + 16, 1);      # 0x42 -> glyph 1
+    _put16(buf, enc_off + 18, 2);      # 0x43 -> glyph 2
+
+    return enc_off + enc_size;
+}
+
+# Write a 16-bit little-endian value into buf at off.
+fn _put16(buf, off, v) {
+    store8(buf + off + 0, v & 0xFF);
+    store8(buf + off + 1, (v >> 8) & 0xFF);
+    return 0;
+}
+
+fn test_pcf_parse() {
+    test_group("pcf parse");
+    var buf = alloc(512);
+    var len = _mk_pcf(buf, 0, 1);    # MSB-bit, compressed metrics
+    var hdr[56];
+    var ctx[144];
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_OK, "pcf parse ok");
+    assert_eq(load64(&hdr + PCF_PH_KIND), KASHI_PCF_KIND, "pcf kind 4");
+    assert_eq(load64(&hdr + PCF_PH_WIDTH), 8, "pcf width 8");
+    assert_eq(load64(&hdr + PCF_PH_HEIGHT), 8, "pcf height 8");
+    assert_eq(load64(&hdr + PCF_PH_COUNT), 3, "pcf count 3");
+    assert_eq(load64(&hdr + PCF_PH_CHARSIZE), 8, "pcf charsize 8");
+    assert_eq(load64(&hdr + PCF_PH_UNIOFF), 0, "pcf uniff 0");
+    # ctx surface
+    assert_eq(load64(&ctx + PCF_CTX_GLYPH_COUNT), 3, "pcf ctx count");
+    assert_eq(load64(&ctx + PCF_CTX_OUR_STRIDE), 1, "pcf ctx stride 1");
+    return 0;
+}
+
+fn test_pcf_load() {
+    test_group("pcf load");
+    var buf = alloc(512);
+    var len = _mk_pcf(buf, 0, 1);
+    var id = kashi_load_pcf(buf, len);
+    assert_gte(id, KASHI_RT_FONT_BASE, "pcf load id");
+    assert_eq(kashi_rt_font_count(id), 3, "pcf rt count 3");
+    assert_eq(kashi_rt_font_width(id), 8, "pcf rt width 8");
+    assert_eq(kashi_rt_font_height(id), 8, "pcf rt height 8");
+    # Codepoint round-trip — canonical bytes recovered.
+    assert_eq(kashi_font_row(id, 0x41, 0), 0x18, "pcf 'A' r0");
+    assert_eq(kashi_font_row(id, 0x41, 3), 0x7E, "pcf 'A' r3");
+    assert_eq(kashi_font_row(id, 0x41, 7), 0x00, "pcf 'A' r7");
+    assert_eq(kashi_font_row(id, 0x42, 0), 0x7C, "pcf 'B' r0");
+    assert_eq(kashi_font_row(id, 0x43, 0), 0x3E, "pcf 'C' r0");
+    assert_eq(kashi_font_row(id, 0x43, 6), 0x3E, "pcf 'C' r6");
+    # Unmapped codepoint
+    assert_eq(kashi_font_row(id, 0x40, 0), 0, "pcf '@' unmapped");
+    assert_eq(kashi_font_row(id, 0x44, 0), 0, "pcf 'D' unmapped");
+    return 0;
+}
+
+# LSB-bit-order PCF: parser must bit-reverse on load. Result should
+# match the canonical bytes from the MSB-bit case.
+fn test_pcf_lsb_bit() {
+    test_group("pcf lsb-bit");
+    var buf = alloc(512);
+    var len = _mk_pcf(buf, 1, 1);    # LSB-bit, compressed
+    var id = kashi_load_pcf(buf, len);
+    assert_gte(id, KASHI_RT_FONT_BASE, "pcf lsb load id");
+    assert_eq(kashi_font_row(id, 0x41, 0), 0x18, "lsb 'A' r0 canonical");
+    assert_eq(kashi_font_row(id, 0x41, 3), 0x7E, "lsb 'A' r3 canonical");
+    assert_eq(kashi_font_row(id, 0x42, 0), 0x7C, "lsb 'B' r0 canonical");
+    assert_eq(kashi_font_row(id, 0x43, 0), 0x3E, "lsb 'C' r0 canonical");
+    return 0;
+}
+
+# Uncompressed metrics layout: same dimensions/glyphs decoded by the
+# i16 metrics path instead of the biased-u8 path.
+fn test_pcf_uncompressed() {
+    test_group("pcf uncompressed metrics");
+    var buf = alloc(512);
+    var len = _mk_pcf(buf, 0, 0);    # MSB-bit, uncompressed
+    var id = kashi_load_pcf(buf, len);
+    assert_gte(id, KASHI_RT_FONT_BASE, "pcf uncomp load id");
+    assert_eq(kashi_rt_font_width(id), 8, "uncomp width");
+    assert_eq(kashi_rt_font_height(id), 8, "uncomp height");
+    assert_eq(kashi_font_row(id, 0x41, 0), 0x18, "uncomp 'A' r0");
+    assert_eq(kashi_font_row(id, 0x42, 3), 0x7C, "uncomp 'B' r3");
+    return 0;
+}
+
+fn test_pcf_parse_errors() {
+    test_group("pcf parse errors");
+    var hdr[56];
+    var ctx[144];
+    # Null buf / negative len.
+    assert_eq(kashi_pcf_parse_header(0, 100, &hdr, &ctx), KASHI_PCF_EINVAL, "pcf null einval");
+    var b = alloc(256);
+    assert_eq(kashi_pcf_parse_header(b, 0 - 1, &hdr, &ctx), KASHI_PCF_EINVAL, "pcf neg len einval");
+    # Bad magic (all-zero buffer).
+    var z = 0;
+    while (z < 256) { store8(b + z, 0); z = z + 1; }
+    _put32(b, 4, 3);
+    assert_eq(kashi_pcf_parse_header(b, 256, &hdr, &ctx), KASHI_PCF_EFORMAT, "pcf bad magic eformat");
+    # Magic ok but TOC extends past buffer.
+    var b2 = alloc(64);
+    store8(b2 + 0, 0x01); store8(b2 + 1, 0x66); store8(b2 + 2, 0x63); store8(b2 + 3, 0x70);
+    _put32(b2, 4, 60);   # claims 60 tables but only 64 bytes total
+    assert_eq(kashi_pcf_parse_header(b2, 64, &hdr, &ctx), KASHI_PCF_EFORMAT, "pcf truncated TOC eformat");
+    # Missing required table — header valid but no PCF_TYPE_METRICS.
+    var b3 = alloc(512);
+    var i3 = 0;
+    while (i3 < 512) { store8(b3 + i3, 0); i3 = i3 + 1; }
+    store8(b3 + 0, 0x01); store8(b3 + 1, 0x66); store8(b3 + 2, 0x63); store8(b3 + 3, 0x70);
+    _put32(b3, 4, 1);                # 1 table
+    _put32(b3, 8, 0x01);              # PCF_TYPE_PROPERTIES (not required)
+    _put32(b3, 12, 0x08);             # format
+    _put32(b3, 16, 4);                # size
+    _put32(b3, 20, 24);               # offset (just after TOC)
+    _put32(b3, 24, 0x08);             # body (just the format word)
+    assert_eq(kashi_pcf_parse_header(b3, 28, &hdr, &ctx), KASHI_PCF_EFORMAT, "pcf missing METRICS eformat");
+    # Non-uniform metrics — build a PCF then poison glyph-1's metrics.
+    var b4 = alloc(512);
+    var l4 = _mk_pcf(b4, 0, 1);
+    # Patch glyph 1's width field to a mismatched value.
+    # Metrics body offset = 56 + 4 + 2 = 62; per-glyph stride 5; glyph 1 left_sb byte = 62 + 5 = 67.
+    store8(b4 + 67 + 1, 0x90);        # right_sb biased = 16 (instead of 8)
+    assert_eq(kashi_pcf_parse_header(b4, l4, &hdr, &ctx), KASHI_PCF_EFORMAT, "pcf non-uniform eformat");
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -1143,6 +1421,11 @@ fn main() {
     test_bdf_parse_errors();
     test_bdf_load();
     test_bdf_load_errors();
+    test_pcf_parse();
+    test_pcf_load();
+    test_pcf_lsb_bit();
+    test_pcf_uncompressed();
+    test_pcf_parse_errors();
 
     return assert_summary();
 }

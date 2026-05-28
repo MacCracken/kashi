@@ -1,0 +1,653 @@
+# === kashi — PCF (Portable Compiled Format) parser ===
+#
+# Self-contained, heapless PCF parser. Same posture as src/font_psf.cyr
+# and src/font_bdf.cyr: load8 + arithmetic only — no stdlib, no heap, no
+# allocations. `cyaudit vet src/font_pcf.cyr` must report "no
+# dependencies", and the parser fuzzes in isolation (tests/kashi.fcyr).
+#
+# PCF is X11's compiled binary bitmap font format — what `bdftopcf`
+# produces and what X servers load at runtime. Many distributions ship
+# bitmap fonts (Terminus, Spleen, Tamzen, Cozette, Unifont) as PCF only.
+# See ADR 0009 for the 0.7.1 design rationale.
+#
+# This file is part of the stdlib-using library face. It must NEVER be
+# `include`d by the freestanding core (src/font_data.cyr); the dependency
+# only ever flows lib.cyr -> font_pcf.cyr, never the reverse.
+#
+# --- API (consumed by src/lib.cyr) ---
+#
+#   kashi_pcf_parse_header(buf, len, hdr, ctx)
+#     Validates magic + TOC, locates the required tables (METRICS,
+#     BITMAPS, BDF_ENCODINGS), validates METRICS uniformity, computes
+#     width/height/glyph_count. Fills:
+#       hdr (56 bytes):  KIND=4 (PCF), WIDTH, HEIGHT, COUNT, CHARSIZE,
+#                        DATAOFF (offset of bitmap pixel data), UNIOFF=0
+#       ctx (128 bytes): glyph_count, dims, source/target row strides,
+#                        table offsets within `buf`, format flags,
+#                        BDF_ENCODINGS range
+#     Returns KASHI_PCF_OK / KASHI_PCF_EINVAL / KASHI_PCF_EFORMAT.
+#
+#   kashi_pcf_decode_glyph(buf, ctx, glyph_idx, dest, dest_size)
+#     Decodes glyph `glyph_idx` into `dest` (>= height * our_stride
+#     bytes). Applies scan-unit byte swap + bit-reverse to produce
+#     canonical MSB-bit / 1-byte-stride output (kashi's convention:
+#     byte 0 = leftmost 8 pixels, bit 7 = leftmost pixel of those 8).
+#
+#   kashi_pcf_cp_to_idx(buf, ctx, cp)
+#     Resolves a codepoint to a glyph index via the BDF_ENCODINGS
+#     table. Returns the glyph index (>= 0, < glyph_count) or `0 - 1`
+#     if unmapped. Used by the load path to enumerate encoded
+#     codepoints without re-parsing the table.
+
+# --- PCF-specific result codes ---
+#
+# font_psf.cyr defines KashiResult and font_bdf.cyr defines
+# KashiBdfRc — keep the PCF codes in their own non-clashing enum;
+# src/lib.cyr translates KASHI_PCF_E* into the public KASHI_E* form
+# on the load path.
+enum KashiPcfRc {
+    KASHI_PCF_OK = 0;
+    KASHI_PCF_EINVAL = 1;
+    KASHI_PCF_EFORMAT = 2;
+}
+
+# Constants. KIND=4 extends the kind namespace (PSF1=1, PSF2=2, BDF=3
+# in the sibling parsers). MAX_* mirror the existing caps. FILE_CAP
+# matches BDF (4 MiB) — see ADR 0009.
+enum KashiPcfConst {
+    KASHI_PCF_KIND = 4;
+    KASHI_PCF_MAX_WIDTH = 32;
+    KASHI_PCF_MAX_HEIGHT = 32;
+    KASHI_PCF_MAX_COUNT = 65536;
+    KASHI_PCF_MAX_TABLES = 64;        # sanity bound on TOC entries
+    KASHI_PCF_FILE_CAP = 4194304;     # 4 MiB
+    KASHI_PCF_MAGIC0 = 0x01;
+    KASHI_PCF_MAGIC1 = 0x66;          # 'f'
+    KASHI_PCF_MAGIC2 = 0x63;          # 'c'
+    KASHI_PCF_MAGIC3 = 0x70;          # 'p'
+    KASHI_PCF_HDR = 8;                # 4-byte magic + 4-byte table_count
+    KASHI_PCF_TOC_STRIDE = 16;        # bytes per TOC entry
+}
+
+# Table type bits (bit-flag style per the X11 PCF spec; the file's TOC
+# stores the type as a u32 with one bit set).
+enum KashiPcfType {
+    PCF_TYPE_PROPERTIES = 0x01;       # ignored
+    PCF_TYPE_ACCELERATORS = 0x02;     # ignored
+    PCF_TYPE_METRICS = 0x04;          # REQUIRED
+    PCF_TYPE_BITMAPS = 0x08;          # REQUIRED
+    PCF_TYPE_INK_METRICS = 0x10;      # ignored
+    PCF_TYPE_BDF_ENCODINGS = 0x20;    # REQUIRED
+    PCF_TYPE_SWIDTHS = 0x40;          # ignored
+    PCF_TYPE_GLYPH_NAMES = 0x80;      # ignored
+    PCF_TYPE_BDF_ACCELERATORS = 0x100;# ignored
+}
+
+# Format-word bit masks. The format word's low byte holds the layout
+# flags; bit 8 (`0x100`) carries the compressed-metrics flag in the
+# METRICS table only.
+enum KashiPcfFmt {
+    PCF_FMT_GLYPH_PAD_MASK = 0x03;    # bits 0-1: 0=1B, 1=2B, 2=4B, 3=8B
+    PCF_FMT_BYTE_ORDER = 0x04;        # bit 2: 0=LSB, 1=MSB (byte order)
+    PCF_FMT_BIT_ORDER = 0x08;         # bit 3: 0=LSB, 1=MSB (bit order)
+    PCF_FMT_SCAN_UNIT_MASK = 0x30;    # bits 4-5: 0=1B, 1=2B, 2=4B, 3=8B
+    PCF_FMT_COMPRESSED = 0x100;       # bit 8: METRICS table is compressed
+}
+
+# Parsed-header out struct (56 bytes; same shape as PSF / BDF).
+enum KashiPcfHdr {
+    PCF_PH_KIND = 0;
+    PCF_PH_WIDTH = 8;
+    PCF_PH_HEIGHT = 16;
+    PCF_PH_COUNT = 24;
+    PCF_PH_CHARSIZE = 32;
+    PCF_PH_DATAOFF = 40;              # offset of bitmap pixel data (diagnostic)
+    PCF_PH_UNIOFF = 48;               # always 0 — PCF has no separate table
+}
+
+# PCF context (128 bytes). Carries everything `decode_glyph` and
+# `cp_to_idx` need after `parse_header` returns.
+enum KashiPcfCtx {
+    PCF_CTX_GLYPH_COUNT = 0;
+    PCF_CTX_WIDTH = 8;
+    PCF_CTX_HEIGHT = 16;
+    PCF_CTX_PCF_ROW_BYTES = 24;       # bytes per source row (depends on pad)
+    PCF_CTX_OUR_STRIDE = 32;          # bytes per our-canonical row = ceil(w/8)
+    PCF_CTX_BMP_OFFS = 40;            # offset of glyph_offsets[] within buf
+    PCF_CTX_BMP_DATA = 48;            # offset of bitmap pixel data within buf
+    PCF_CTX_BMP_END = 56;             # one-past-end of bitmap pixel data
+    PCF_CTX_BMP_BE = 64;              # 1 if BITMAPS table is big-endian byte
+    PCF_CTX_BMP_BIT_LSB = 72;         # 1 if BITMAPS bit order is LSB
+    PCF_CTX_BMP_SCAN = 80;            # scan_unit: 1, 2, 4, or 8
+    PCF_CTX_ENC_DATA = 88;            # offset of glyph_indices[] within buf
+    PCF_CTX_ENC_BE = 96;              # 1 if BDF_ENCODINGS table is big-endian
+    PCF_CTX_MIN_B1 = 104;
+    PCF_CTX_MAX_B1 = 112;
+    PCF_CTX_MIN_B2 = 120;
+    # Note: 128 bytes total — caller's `var ctx[128]` is enough.
+    # max_b2 is stored in the high half of MIN_B2's u64? No — we have one
+    # slot left (PCF_CTX_MIN_B2 + 8 = 128, the upper bound). max_b2 has
+    # to go elsewhere or the ctx must be larger. Below we use a 144-byte
+    # convention: caller allocates `var ctx[144]`.
+    PCF_CTX_MAX_B2 = 128;
+    # Total: 136 bytes used; pad to 144 for headroom.
+}
+
+# --- Endian-aware multi-byte loads ---
+
+# Read a u16 at `off` from `buf` in the requested endianness.
+# `be == 1` → big-endian (byte 0 is high); else little-endian (byte 0 is low).
+fn _kashi_pcf_load16(buf, off, be) {
+    var b0 = load8(buf + off + 0);
+    var b1 = load8(buf + off + 1);
+    if (be == 1) { return (b0 << 8) | b1; }
+    return b0 | (b1 << 8);
+}
+
+# Read a u32 at `off` from `buf` in the requested endianness.
+fn _kashi_pcf_load32(buf, off, be) {
+    var b0 = load8(buf + off + 0);
+    var b1 = load8(buf + off + 1);
+    var b2 = load8(buf + off + 2);
+    var b3 = load8(buf + off + 3);
+    if (be == 1) {
+        return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+    }
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+# Read a signed i8 at `off` from `buf`. Values 0x80..0xFF become
+# negative (-128..-1).
+fn _kashi_pcf_loadi8(buf, off) {
+    var b = load8(buf + off);
+    if (b >= 0x80) { return b - 256; }
+    return b;
+}
+
+# Read a signed i16 at `off` from `buf` in the requested endianness.
+fn _kashi_pcf_loadi16(buf, off, be) {
+    var v = _kashi_pcf_load16(buf, off, be);
+    if (v >= 0x8000) { return v - 65536; }
+    return v;
+}
+
+# Bit-reverse one byte. (b7 b6 b5 b4 b3 b2 b1 b0) -> (b0 b1 b2 b3 b4 b5 b6 b7).
+fn _kashi_pcf_revbits(b) {
+    var r = 0;
+    r = r | ((b & 0x01) << 7);
+    r = r | ((b & 0x02) << 5);
+    r = r | ((b & 0x04) << 3);
+    r = r | ((b & 0x08) << 1);
+    r = r | ((b & 0x10) >> 1);
+    r = r | ((b & 0x20) >> 3);
+    r = r | ((b & 0x40) >> 5);
+    r = r | ((b & 0x80) >> 7);
+    return r;
+}
+
+# Decode glyph_pad / scan_unit code from format byte to actual byte size.
+# Encoding: 0=1, 1=2, 2=4, 3=8.
+fn _kashi_pcf_pad_size(code) {
+    if (code == 0) { return 1; }
+    if (code == 1) { return 2; }
+    if (code == 2) { return 4; }
+    if (code == 3) { return 8; }
+    return 0;
+}
+
+# --- TOC walking ---
+
+# Find the TOC entry for `wanted_type` (a PCF_TYPE_* bit). Stores
+# `format` at `out + 0`, `size` at `out + 8`, `offset` at `out + 16`
+# (24 bytes total). Returns 1 on found, 0 if absent. TOC is always
+# little-endian per the PCF spec, regardless of any table's format.
+fn _kashi_pcf_find_table(buf, len, table_count, wanted_type, out) {
+    store64(out + 0, 0);
+    store64(out + 8, 0);
+    store64(out + 16, 0);
+    var i = 0;
+    while (i < table_count) {
+        var entry = KASHI_PCF_HDR + i * KASHI_PCF_TOC_STRIDE;
+        if (entry + KASHI_PCF_TOC_STRIDE > len) { return 0; }
+        var ty = _kashi_pcf_load32(buf, entry + 0, 0);
+        if (ty == wanted_type) {
+            var fmt = _kashi_pcf_load32(buf, entry + 4, 0);
+            var sz = _kashi_pcf_load32(buf, entry + 8, 0);
+            var off = _kashi_pcf_load32(buf, entry + 12, 0);
+            store64(out + 0, fmt);
+            store64(out + 8, sz);
+            store64(out + 16, off);
+            return 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+# --- METRICS table parsing ---
+#
+# Verifies the metrics table contains `glyph_count` entries with uniform
+# metrics, and returns the resolved width/height. The table starts with
+# its format word (4 bytes, LE byte order per the PCF spec for table
+# format words) followed by either:
+#   compressed: u16 count + count * (5 bytes/glyph)   (count is BE/LE per format)
+#   uncompressed: u32 count + count * (12 bytes/glyph)
+# Compressed fields are u8 biased by +0x80 (so 0x80 = 0). Uncompressed
+# fields are i16 in the table's endianness.
+
+# Width = right_sb - left_sb; Height = ascent + descent.
+# Writes (width, height) to `out + 0` and `out + 8` respectively.
+# Returns KASHI_PCF_OK / KASHI_PCF_EFORMAT.
+fn _kashi_pcf_parse_metrics(buf, len, m_off, m_size, m_fmt, glyph_count, out) {
+    if (m_off < 0) { return KASHI_PCF_EFORMAT; }
+    if (m_size < 4) { return KASHI_PCF_EFORMAT; }
+    if (m_off + m_size > len) { return KASHI_PCF_EFORMAT; }
+    # First 4 bytes at the table are the format word; must match the
+    # TOC's format (LE byte order for format words themselves).
+    var on_disk_fmt = _kashi_pcf_load32(buf, m_off, 0);
+    if (on_disk_fmt != m_fmt) { return KASHI_PCF_EFORMAT; }
+
+    var be = (m_fmt & PCF_FMT_BYTE_ORDER) >> 2;   # 0 or 1
+    var compressed = (m_fmt & PCF_FMT_COMPRESSED) >> 8;
+    var p = m_off + 4;
+    var count = 0;
+    var per_glyph = 0;
+    if (compressed == 1) {
+        if (p + 2 > m_off + m_size) { return KASHI_PCF_EFORMAT; }
+        count = _kashi_pcf_load16(buf, p, be);
+        p = p + 2;
+        per_glyph = 5;
+    }
+    if (compressed == 0) {
+        if (p + 4 > m_off + m_size) { return KASHI_PCF_EFORMAT; }
+        count = _kashi_pcf_load32(buf, p, be);
+        p = p + 4;
+        per_glyph = 12;
+    }
+    if (count != glyph_count) { return KASHI_PCF_EFORMAT; }
+    if (count < 1) { return KASHI_PCF_EFORMAT; }
+    if (count > KASHI_PCF_MAX_COUNT) { return KASHI_PCF_EFORMAT; }
+    var data_end = p + count * per_glyph;
+    if (data_end > m_off + m_size) { return KASHI_PCF_EFORMAT; }
+
+    # Read glyph 0 metrics as the reference.
+    var ref_left = 0;
+    var ref_right = 0;
+    var ref_width = 0;
+    var ref_asc = 0;
+    var ref_desc = 0;
+    if (compressed == 1) {
+        ref_left = _kashi_pcf_loadi8(buf, p + 0) + 128 - 128;
+        # Compressed fields: byte value - 0x80 = signed value
+        ref_left = load8(buf + p + 0) - 0x80;
+        ref_right = load8(buf + p + 1) - 0x80;
+        ref_width = load8(buf + p + 2) - 0x80;
+        ref_asc = load8(buf + p + 3) - 0x80;
+        ref_desc = load8(buf + p + 4) - 0x80;
+    }
+    if (compressed == 0) {
+        ref_left = _kashi_pcf_loadi16(buf, p + 0, be);
+        ref_right = _kashi_pcf_loadi16(buf, p + 2, be);
+        ref_width = _kashi_pcf_loadi16(buf, p + 4, be);
+        ref_asc = _kashi_pcf_loadi16(buf, p + 6, be);
+        ref_desc = _kashi_pcf_loadi16(buf, p + 8, be);
+        # field 10..11 is `attributes` — ignored.
+    }
+
+    var width = ref_right - ref_left;
+    var height = ref_asc + ref_desc;
+    if (width < 1) { return KASHI_PCF_EFORMAT; }
+    if (width > KASHI_PCF_MAX_WIDTH) { return KASHI_PCF_EFORMAT; }
+    if (height < 1) { return KASHI_PCF_EFORMAT; }
+    if (height > KASHI_PCF_MAX_HEIGHT) { return KASHI_PCF_EFORMAT; }
+
+    # Strict uniformity: every other glyph must match the reference.
+    var i = 1;
+    var bad = 0;
+    while (i < count) {
+        var qp = p + i * per_glyph;
+        var lb = 0;
+        var rb = 0;
+        var wb = 0;
+        var ab = 0;
+        var db = 0;
+        if (compressed == 1) {
+            lb = load8(buf + qp + 0) - 0x80;
+            rb = load8(buf + qp + 1) - 0x80;
+            wb = load8(buf + qp + 2) - 0x80;
+            ab = load8(buf + qp + 3) - 0x80;
+            db = load8(buf + qp + 4) - 0x80;
+        }
+        if (compressed == 0) {
+            lb = _kashi_pcf_loadi16(buf, qp + 0, be);
+            rb = _kashi_pcf_loadi16(buf, qp + 2, be);
+            wb = _kashi_pcf_loadi16(buf, qp + 4, be);
+            ab = _kashi_pcf_loadi16(buf, qp + 6, be);
+            db = _kashi_pcf_loadi16(buf, qp + 8, be);
+        }
+        if (lb != ref_left) { bad = 1; }
+        if (rb != ref_right) { bad = 1; }
+        if (wb != ref_width) { bad = 1; }
+        if (ab != ref_asc) { bad = 1; }
+        if (db != ref_desc) { bad = 1; }
+        i = i + 1;
+    }
+    if (bad != 0) { return KASHI_PCF_EFORMAT; }
+
+    store64(out + 0, width);
+    store64(out + 8, height);
+    return KASHI_PCF_OK;
+}
+
+# --- BITMAPS table parsing ---
+#
+# Layout:
+#   0..3:    format word (LE)
+#   4..7:    glyph_count (table's endianness)
+#   8..8+N*4: glyph_offsets[] (each u32 in table's endianness)
+#   N+8..N+24: 4 padding sizes (u32 each) — total bitmap data sizes per pad
+#   N+24..end: bitmap_data
+fn _kashi_pcf_parse_bitmaps(buf, len, b_off, b_size, b_fmt, glyph_count, ctx) {
+    if (b_off < 0) { return KASHI_PCF_EFORMAT; }
+    if (b_size < 8) { return KASHI_PCF_EFORMAT; }
+    if (b_off + b_size > len) { return KASHI_PCF_EFORMAT; }
+    var on_disk_fmt = _kashi_pcf_load32(buf, b_off, 0);
+    if (on_disk_fmt != b_fmt) { return KASHI_PCF_EFORMAT; }
+
+    var be = (b_fmt & PCF_FMT_BYTE_ORDER) >> 2;
+    var bit_lsb = 1 - ((b_fmt & PCF_FMT_BIT_ORDER) >> 3);   # 1 if LSB
+    var pad_code = b_fmt & PCF_FMT_GLYPH_PAD_MASK;
+    var scan_code = (b_fmt & PCF_FMT_SCAN_UNIT_MASK) >> 4;
+    var glyph_pad = _kashi_pcf_pad_size(pad_code);
+    var scan_unit = _kashi_pcf_pad_size(scan_code);
+    if (glyph_pad < 1) { return KASHI_PCF_EFORMAT; }
+    if (scan_unit < 1) { return KASHI_PCF_EFORMAT; }
+    # Constrain so per-row scan-unit swap stays within row boundaries
+    # (ADR 0009: glyph_pad >= scan_unit avoids cross-row swap pathology).
+    if (glyph_pad < scan_unit) { return KASHI_PCF_EFORMAT; }
+
+    var p = b_off + 4;
+    var declared = _kashi_pcf_load32(buf, p, be);
+    p = p + 4;
+    if (declared != glyph_count) { return KASHI_PCF_EFORMAT; }
+
+    var offs_start = p;
+    var offs_end = p + glyph_count * 4;
+    if (offs_end + 16 > b_off + b_size) { return KASHI_PCF_EFORMAT; }
+    var pad_sizes_off = offs_end;
+    # bitmap_data starts after the 4 padding-size entries.
+    var data_off = pad_sizes_off + 16;
+    if (data_off > b_off + b_size) { return KASHI_PCF_EFORMAT; }
+    var data_end = b_off + b_size;
+
+    store64(ctx + PCF_CTX_BMP_OFFS, offs_start);
+    store64(ctx + PCF_CTX_BMP_DATA, data_off);
+    store64(ctx + PCF_CTX_BMP_END, data_end);
+    store64(ctx + PCF_CTX_BMP_BE, be);
+    store64(ctx + PCF_CTX_BMP_BIT_LSB, bit_lsb);
+    store64(ctx + PCF_CTX_BMP_SCAN, scan_unit);
+
+    var width = load64(ctx + PCF_CTX_WIDTH);
+    var our_stride = (width + 7) / 8;
+    # pcf_row_bytes = bytes per row in the source: width bits padded
+    # up to a glyph_pad-byte boundary.
+    var data_bits = width;
+    var pad_bits = glyph_pad * 8;
+    var pcf_row_bytes = ((data_bits + pad_bits - 1) / pad_bits) * glyph_pad;
+    store64(ctx + PCF_CTX_PCF_ROW_BYTES, pcf_row_bytes);
+    store64(ctx + PCF_CTX_OUR_STRIDE, our_stride);
+    return KASHI_PCF_OK;
+}
+
+# --- BDF_ENCODINGS table parsing ---
+#
+# Layout:
+#   0..3:    format word (LE)
+#   4..5:    min_char_or_byte2 (table's endianness)
+#   6..7:    max_char_or_byte2
+#   8..9:    min_byte1
+#   10..11:  max_byte1
+#   12..13:  default_char
+#   14..14+N*2: glyph_indices[]  where N = (max_b2-min_b2+1) * (max_b1-min_b1+1)
+fn _kashi_pcf_parse_encodings(buf, len, e_off, e_size, e_fmt, glyph_count, ctx) {
+    if (e_off < 0) { return KASHI_PCF_EFORMAT; }
+    if (e_size < 14) { return KASHI_PCF_EFORMAT; }
+    if (e_off + e_size > len) { return KASHI_PCF_EFORMAT; }
+    var on_disk_fmt = _kashi_pcf_load32(buf, e_off, 0);
+    if (on_disk_fmt != e_fmt) { return KASHI_PCF_EFORMAT; }
+
+    var be = (e_fmt & PCF_FMT_BYTE_ORDER) >> 2;
+    var min_b2 = _kashi_pcf_load16(buf, e_off + 4, be);
+    var max_b2 = _kashi_pcf_load16(buf, e_off + 6, be);
+    var min_b1 = _kashi_pcf_load16(buf, e_off + 8, be);
+    var max_b1 = _kashi_pcf_load16(buf, e_off + 10, be);
+    # default_char at +12..+13 — ignored.
+    if (min_b2 > max_b2) { return KASHI_PCF_EFORMAT; }
+    if (min_b1 > max_b1) { return KASHI_PCF_EFORMAT; }
+    if (max_b2 > 0xFF) { return KASHI_PCF_EFORMAT; }
+    if (max_b1 > 0xFF) { return KASHI_PCF_EFORMAT; }
+    var range_b2 = max_b2 - min_b2 + 1;
+    var range_b1 = max_b1 - min_b1 + 1;
+    var n = range_b1 * range_b2;
+    if (n < 1) { return KASHI_PCF_EFORMAT; }
+    var indices_off = e_off + 14;
+    if (indices_off + n * 2 > e_off + e_size) { return KASHI_PCF_EFORMAT; }
+
+    store64(ctx + PCF_CTX_ENC_DATA, indices_off);
+    store64(ctx + PCF_CTX_ENC_BE, be);
+    store64(ctx + PCF_CTX_MIN_B1, min_b1);
+    store64(ctx + PCF_CTX_MAX_B1, max_b1);
+    store64(ctx + PCF_CTX_MIN_B2, min_b2);
+    store64(ctx + PCF_CTX_MAX_B2, max_b2);
+    return KASHI_PCF_OK;
+}
+
+# --- Public: header parse ---
+
+fn kashi_pcf_parse_header(buf, len, hdr, ctx) {
+    if (buf == 0) { return KASHI_PCF_EINVAL; }
+    if (hdr == 0) { return KASHI_PCF_EINVAL; }
+    if (ctx == 0) { return KASHI_PCF_EINVAL; }
+    if (len < 0) { return KASHI_PCF_EINVAL; }
+
+    # Zero outputs (caller's `var hdr[56]`, `var ctx[144]`).
+    var z = 0;
+    while (z < 56) { store8(hdr + z, 0); z = z + 1; }
+    z = 0;
+    while (z < 144) { store8(ctx + z, 0); z = z + 1; }
+
+    # Header: 4-byte magic + 4-byte LE table_count.
+    if (len < KASHI_PCF_HDR) { return KASHI_PCF_EFORMAT; }
+    if (load8(buf + 0) != KASHI_PCF_MAGIC0) { return KASHI_PCF_EFORMAT; }
+    if (load8(buf + 1) != KASHI_PCF_MAGIC1) { return KASHI_PCF_EFORMAT; }
+    if (load8(buf + 2) != KASHI_PCF_MAGIC2) { return KASHI_PCF_EFORMAT; }
+    if (load8(buf + 3) != KASHI_PCF_MAGIC3) { return KASHI_PCF_EFORMAT; }
+    var table_count = _kashi_pcf_load32(buf, 4, 0);
+    if (table_count < 1) { return KASHI_PCF_EFORMAT; }
+    if (table_count > KASHI_PCF_MAX_TABLES) { return KASHI_PCF_EFORMAT; }
+    var toc_end = KASHI_PCF_HDR + table_count * KASHI_PCF_TOC_STRIDE;
+    if (toc_end > len) { return KASHI_PCF_EFORMAT; }
+
+    # Locate required tables.
+    var ent[24];
+    if (_kashi_pcf_find_table(buf, len, table_count, PCF_TYPE_METRICS, &ent) == 0) {
+        return KASHI_PCF_EFORMAT;
+    }
+    var m_fmt = load64(&ent + 0);
+    var m_size = load64(&ent + 8);
+    var m_off = load64(&ent + 16);
+
+    if (_kashi_pcf_find_table(buf, len, table_count, PCF_TYPE_BITMAPS, &ent) == 0) {
+        return KASHI_PCF_EFORMAT;
+    }
+    var b_fmt = load64(&ent + 0);
+    var b_size = load64(&ent + 8);
+    var b_off = load64(&ent + 16);
+
+    if (_kashi_pcf_find_table(buf, len, table_count, PCF_TYPE_BDF_ENCODINGS, &ent) == 0) {
+        return KASHI_PCF_EFORMAT;
+    }
+    var e_fmt = load64(&ent + 0);
+    var e_size = load64(&ent + 8);
+    var e_off = load64(&ent + 16);
+
+    # Read glyph_count from BITMAPS (it's the canonical glyph count;
+    # METRICS validates against it).
+    if (b_off + 8 > len) { return KASHI_PCF_EFORMAT; }
+    var b_be = (b_fmt & PCF_FMT_BYTE_ORDER) >> 2;
+    var glyph_count = _kashi_pcf_load32(buf, b_off + 4, b_be);
+    if (glyph_count < 1) { return KASHI_PCF_EFORMAT; }
+    if (glyph_count > KASHI_PCF_MAX_COUNT) { return KASHI_PCF_EFORMAT; }
+    store64(ctx + PCF_CTX_GLYPH_COUNT, glyph_count);
+
+    # METRICS: dimensions + uniformity check.
+    var dims[16];
+    var rc = _kashi_pcf_parse_metrics(buf, len, m_off, m_size, m_fmt, glyph_count, &dims);
+    if (rc != KASHI_PCF_OK) { return rc; }
+    var width = load64(&dims + 0);
+    var height = load64(&dims + 8);
+    store64(ctx + PCF_CTX_WIDTH, width);
+    store64(ctx + PCF_CTX_HEIGHT, height);
+
+    # BITMAPS: offsets + data layout.
+    rc = _kashi_pcf_parse_bitmaps(buf, len, b_off, b_size, b_fmt, glyph_count, ctx);
+    if (rc != KASHI_PCF_OK) { return rc; }
+
+    # BDF_ENCODINGS: codepoint range.
+    rc = _kashi_pcf_parse_encodings(buf, len, e_off, e_size, e_fmt, glyph_count, ctx);
+    if (rc != KASHI_PCF_OK) { return rc; }
+
+    # Fill the parsed-header struct (same shape PSF / BDF use).
+    var our_stride = (width + 7) / 8;
+    var charsize = height * our_stride;
+    var data_off = load64(ctx + PCF_CTX_BMP_DATA);
+    store64(hdr + PCF_PH_KIND, KASHI_PCF_KIND);
+    store64(hdr + PCF_PH_WIDTH, width);
+    store64(hdr + PCF_PH_HEIGHT, height);
+    store64(hdr + PCF_PH_COUNT, glyph_count);
+    store64(hdr + PCF_PH_CHARSIZE, charsize);
+    store64(hdr + PCF_PH_DATAOFF, data_off);
+    store64(hdr + PCF_PH_UNIOFF, 0);
+    return KASHI_PCF_OK;
+}
+
+# --- Public: glyph decode ---
+#
+# Reads `glyph_idx`'s per-row pcf_row_bytes from the source bitmap data,
+# applies scan-unit byte swap (if byte/bit orders differ) + bit-reverse
+# (if bit order is LSB), and writes the first our_stride bytes of each
+# canonicalized row into `dest`. dest_size must be >= height * our_stride.
+
+fn kashi_pcf_decode_glyph(buf, ctx, glyph_idx, dest, dest_size) {
+    if (buf == 0) { return KASHI_PCF_EINVAL; }
+    if (ctx == 0) { return KASHI_PCF_EINVAL; }
+    if (dest == 0) { return KASHI_PCF_EINVAL; }
+    if (glyph_idx < 0) { return KASHI_PCF_EINVAL; }
+    var glyph_count = load64(ctx + PCF_CTX_GLYPH_COUNT);
+    if (glyph_idx >= glyph_count) { return KASHI_PCF_EINVAL; }
+
+    var width = load64(ctx + PCF_CTX_WIDTH);
+    var height = load64(ctx + PCF_CTX_HEIGHT);
+    var pcf_row_bytes = load64(ctx + PCF_CTX_PCF_ROW_BYTES);
+    var our_stride = load64(ctx + PCF_CTX_OUR_STRIDE);
+    var need = height * our_stride;
+    if (dest_size < need) { return KASHI_PCF_EINVAL; }
+
+    var offs_pos = load64(ctx + PCF_CTX_BMP_OFFS);
+    var data_pos = load64(ctx + PCF_CTX_BMP_DATA);
+    var data_end = load64(ctx + PCF_CTX_BMP_END);
+    var be = load64(ctx + PCF_CTX_BMP_BE);
+    var bit_lsb = load64(ctx + PCF_CTX_BMP_BIT_LSB);
+    var scan_unit = load64(ctx + PCF_CTX_BMP_SCAN);
+
+    var goff = _kashi_pcf_load32(buf, offs_pos + glyph_idx * 4, be);
+    var src = data_pos + goff;
+    if (src < data_pos) { return KASHI_PCF_EFORMAT; }
+    var total = height * pcf_row_bytes;
+    if (src + total > data_end) { return KASHI_PCF_EFORMAT; }
+
+    # Per-row scratch (max pcf_row_bytes = 8 at glyph_pad=8).
+    var scratch[8];
+    var need_swap = 0;
+    var bit_msb = 1 - bit_lsb;
+    # libXfont-style: swap if byte_order != bit_order. byte_order bit
+    # = `be`; bit_order MSB bit = `bit_msb`. need_swap = (be != bit_msb).
+    if (be != bit_msb) { need_swap = 1; }
+    if (scan_unit < 2) { need_swap = 0; }
+
+    var r = 0;
+    while (r < height) {
+        var row_src = src + r * pcf_row_bytes;
+        # Copy row into scratch.
+        var k = 0;
+        while (k < pcf_row_bytes) {
+            store8(&scratch + k, load8(buf + row_src + k));
+            k = k + 1;
+        }
+        # Scan-unit byte swap (in-scratch).
+        if (need_swap == 1) {
+            var grp = 0;
+            while (grp + scan_unit <= pcf_row_bytes) {
+                var a = 0;
+                var b = scan_unit - 1;
+                while (a < b) {
+                    var ta = load8(&scratch + grp + a);
+                    var tb = load8(&scratch + grp + b);
+                    store8(&scratch + grp + a, tb);
+                    store8(&scratch + grp + b, ta);
+                    a = a + 1;
+                    b = b - 1;
+                }
+                grp = grp + scan_unit;
+            }
+        }
+        # Bit-reverse each byte if bit_order is LSB.
+        if (bit_lsb == 1) {
+            var k2 = 0;
+            while (k2 < pcf_row_bytes) {
+                store8(&scratch + k2, _kashi_pcf_revbits(load8(&scratch + k2)));
+                k2 = k2 + 1;
+            }
+        }
+        # Copy the first our_stride bytes into dest.
+        var k3 = 0;
+        while (k3 < our_stride) {
+            store8(dest + r * our_stride + k3, load8(&scratch + k3));
+            k3 = k3 + 1;
+        }
+        r = r + 1;
+    }
+    return KASHI_PCF_OK;
+}
+
+# --- Public: codepoint → glyph index ---
+#
+# Resolves `cp` through the BDF_ENCODINGS table. The table is a 2D
+# array indexed by (byte1, byte2): byte1 = (cp >> 8), byte2 = cp & 0xFF.
+# Returns the glyph index, or `0 - 1` if cp is unmapped (out of range
+# or the table cell holds the sentinel 0xFFFF).
+
+fn kashi_pcf_cp_to_idx(buf, ctx, cp) {
+    if (buf == 0) { return 0 - 1; }
+    if (ctx == 0) { return 0 - 1; }
+    if (cp < 0) { return 0 - 1; }
+    var min_b1 = load64(ctx + PCF_CTX_MIN_B1);
+    var max_b1 = load64(ctx + PCF_CTX_MAX_B1);
+    var min_b2 = load64(ctx + PCF_CTX_MIN_B2);
+    var max_b2 = load64(ctx + PCF_CTX_MAX_B2);
+    var b1 = (cp >> 8) & 0xFF;
+    var b2 = cp & 0xFF;
+    if (b1 < min_b1) { return 0 - 1; }
+    if (b1 > max_b1) { return 0 - 1; }
+    if (b2 < min_b2) { return 0 - 1; }
+    if (b2 > max_b2) { return 0 - 1; }
+    var range_b2 = max_b2 - min_b2 + 1;
+    var idx = (b1 - min_b1) * range_b2 + (b2 - min_b2);
+    var data = load64(ctx + PCF_CTX_ENC_DATA);
+    var be = load64(ctx + PCF_CTX_ENC_BE);
+    var raw = _kashi_pcf_load16(buf, data + idx * 2, be);
+    if (raw == 0xFFFF) { return 0 - 1; }
+    var glyph_count = load64(ctx + PCF_CTX_GLYPH_COUNT);
+    if (raw >= glyph_count) { return 0 - 1; }
+    return raw;
+}

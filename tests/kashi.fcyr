@@ -309,6 +309,184 @@ fn fuzz_bdf(rounds) {
     return 0;
 }
 
+# --- PCF parser fuzz (0.7.1) ---
+#
+# PCF is the biggest untrusted-input surface kashi has so far — table-of-
+# contents with offsets, signed metric biases, variable-length encodings,
+# format-byte combinatorics, per-row bit-reverse and scan-unit byte-swap
+# paths. Same four pick paths as fuzz_bdf.
+
+fn _fz_pcf_put32(buf, off, v) {
+    store8(buf + off + 0, v & 0xFF);
+    store8(buf + off + 1, (v >> 8) & 0xFF);
+    store8(buf + off + 2, (v >> 16) & 0xFF);
+    store8(buf + off + 3, (v >> 24) & 0xFF);
+    return 0;
+}
+
+# Build a small valid 2-glyph PCF into `buf`. Used by fuzz_pcf for the
+# template / mutated / truncated paths.
+fn _fz_pcf_template(buf) {
+    store8(buf + 0, 0x01); store8(buf + 1, 0x66);
+    store8(buf + 2, 0x63); store8(buf + 3, 0x70);
+    _fz_pcf_put32(buf, 4, 3);
+    var moff = 56;
+    var msize = 4 + 2 + 2 * 5;
+    _fz_pcf_put32(buf, 8, 0x04);
+    _fz_pcf_put32(buf, 12, 0x108);
+    _fz_pcf_put32(buf, 16, msize);
+    _fz_pcf_put32(buf, 20, moff);
+    var boff = moff + msize;
+    var bsize = 4 + 4 + 2 * 4 + 16 + 2 * 8;
+    _fz_pcf_put32(buf, 24, 0x08);
+    _fz_pcf_put32(buf, 28, 0x08);
+    _fz_pcf_put32(buf, 32, bsize);
+    _fz_pcf_put32(buf, 36, boff);
+    var eoff = boff + bsize;
+    var esize = 4 + 5 * 2 + 2 * 2;
+    _fz_pcf_put32(buf, 40, 0x20);
+    _fz_pcf_put32(buf, 44, 0x08);
+    _fz_pcf_put32(buf, 48, esize);
+    _fz_pcf_put32(buf, 52, eoff);
+    _fz_pcf_put32(buf, moff, 0x108);
+    store8(buf + moff + 4, 2); store8(buf + moff + 5, 0);
+    var mi = 0;
+    while (mi < 2) {
+        var s = moff + 6 + mi * 5;
+        store8(buf + s + 0, 0x80);
+        store8(buf + s + 1, 0x88);
+        store8(buf + s + 2, 0x88);
+        store8(buf + s + 3, 0x88);
+        store8(buf + s + 4, 0x80);
+        mi = mi + 1;
+    }
+    _fz_pcf_put32(buf, boff, 0x08);
+    _fz_pcf_put32(buf, boff + 4, 2);
+    _fz_pcf_put32(buf, boff + 8, 0);
+    _fz_pcf_put32(buf, boff + 12, 8);
+    _fz_pcf_put32(buf, boff + 16, 16);
+    _fz_pcf_put32(buf, boff + 20, 48);
+    _fz_pcf_put32(buf, boff + 24, 96);
+    _fz_pcf_put32(buf, boff + 28, 192);
+    var bd = boff + 32;
+    var bi = 0;
+    while (bi < 16) { store8(buf + bd + bi, 0x55); bi = bi + 1; }
+    _fz_pcf_put32(buf, eoff, 0x08);
+    store8(buf + eoff + 4, 0x41); store8(buf + eoff + 5, 0);
+    store8(buf + eoff + 6, 0x42); store8(buf + eoff + 7, 0);
+    store8(buf + eoff + 8, 0); store8(buf + eoff + 9, 0);
+    store8(buf + eoff + 10, 0); store8(buf + eoff + 11, 0);
+    store8(buf + eoff + 12, 0); store8(buf + eoff + 13, 0);
+    store8(buf + eoff + 14, 0); store8(buf + eoff + 15, 0);
+    store8(buf + eoff + 16, 1); store8(buf + eoff + 17, 0);
+    return eoff + esize;
+}
+
+fn fuzz_pcf(rounds) {
+    var cap = 2048;
+    var buf = alloc(cap);
+    var hdr[56];
+    var ctx[144];
+    var dest[128];
+    var r = 0;
+    while (r < rounds) {
+        var pick = rng_next() & 3;
+        var len = 0;
+        if (pick == 0) {
+            len = rng_next() % (cap + 1);
+            var i = 0;
+            while (i < len) {
+                store8(buf + i, rng_next() & 0xFF);
+                i = i + 1;
+            }
+            # Sometimes stamp a real magic so the fuzzer reaches table-validation.
+            if ((rng_next() & 1) == 1) {
+                if (len >= 4) {
+                    store8(buf + 0, 0x01); store8(buf + 1, 0x66);
+                    store8(buf + 2, 0x63); store8(buf + 3, 0x70);
+                }
+            }
+        }
+        if (pick == 1) {
+            len = _fz_pcf_template(buf);
+        }
+        if (pick == 2) {
+            len = _fz_pcf_template(buf);
+            var muts = (rng_next() & 7) + 1;
+            var m = 0;
+            while (m < muts) {
+                var off = rng_next() % len;
+                store8(buf + off, rng_next() & 0xFF);
+                m = m + 1;
+            }
+        }
+        if (pick == 3) {
+            len = _fz_pcf_template(buf);
+            len = rng_next() % (len + 1);
+        }
+
+        # Contract 1: parser only returns a known code, never crashes.
+        var rc = kashi_pcf_parse_header(buf, len, &hdr, &ctx);
+        if (rc != KASHI_PCF_OK) {
+            if (rc != KASHI_PCF_EINVAL) {
+                if (rc != KASHI_PCF_EFORMAT) { return 1; }
+            }
+        }
+
+        # Contract 2: if parse accepted, decode_glyph and cp_to_idx are
+        # bounds-safe for random inputs.
+        if (rc == KASHI_PCF_OK) {
+            var count = load64(&ctx + PCF_CTX_GLYPH_COUNT);
+            var g = 0;
+            while (g < 3) {
+                var gi = rng_next() % (count + 2);
+                var grc = kashi_pcf_decode_glyph(buf, &ctx, gi, &dest, 128);
+                if (grc != KASHI_PCF_OK) {
+                    if (grc != KASHI_PCF_EINVAL) {
+                        if (grc != KASHI_PCF_EFORMAT) { return 2; }
+                    }
+                }
+                var cp = rng_next() & 0xFFFFF;
+                var idx = kashi_pcf_cp_to_idx(buf, &ctx, cp);
+                if (idx < 0 - 1) { return 3; }
+                if (idx >= count) {
+                    if (idx != 0 - 1) { return 4; }
+                }
+                g = g + 1;
+            }
+        }
+
+        # Contract 3: kashi_load_pcf returns a value; an accepted font is
+        # bounds-safe under random probes (same posture as fuzz_bdf).
+        var id = kashi_load_pcf(buf, len);
+        if (id >= KASHI_RT_FONT_BASE) {
+            var c2 = kashi_rt_font_count(id);
+            var h2 = kashi_rt_font_height(id);
+            var pr = 0;
+            while (pr < 3) {
+                var row = rng_next() & 0xFF;
+                var idx2 = rng_next() % (c2 + 2);
+                var rv = kashi_rt_glyph_row(id, idx2, row);
+                if (rv < 0) { return 5; }
+                if (rv > 0xFF) { return 6; }
+                if (idx2 >= c2) {
+                    if (rv != 0) { return 7; }
+                }
+                if (row >= h2) {
+                    if (rv != 0) { return 8; }
+                }
+                var cp2 = rng_next() & 0xFFFFF;
+                var cv = kashi_font_row(id, cp2, row);
+                if (cv < 0) { return 9; }
+                if (cv > 0xFF) { return 10; }
+                pr = pr + 1;
+            }
+        }
+        r = r + 1;
+    }
+    return 0;
+}
+
 fn main() {
     alloc_init();
     kashi_font_init();
@@ -331,11 +509,15 @@ fn main() {
     var pr = fuzz_psf(4000);
     if (pr != 0) { println("fuzz: FAIL psf"); return pr; }
 
-    # BDF parser fuzz: text-based parser, four pick paths (random / template
-    # / mutated-template / truncated-template).
+    # BDF parser fuzz: text-based parser, four pick paths.
     rng_seed(0xD1B54A32D192ED03);
     var br = fuzz_bdf(2000);
     if (br != 0) { println("fuzz: FAIL bdf"); return br; }
+
+    # PCF parser fuzz: TOC-driven binary parser; biggest input surface.
+    rng_seed(0xA1B2C3D4E5F60718);
+    var cr = fuzz_pcf(1500);
+    if (cr != 0) { println("fuzz: FAIL pcf"); return cr; }
 
     println("fuzz: ok");
     return 0;

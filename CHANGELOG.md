@@ -5,6 +5,87 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-05-28
+
+PCF (Portable Compiled Format) import — X11's compiled binary
+bitmap font, the third format on the 0.7.x import-formats track.
+New self-contained, heapless parser in `src/font_pcf.cyr`
+(`cyaudit vet` → "no dependencies"); library gains `kashi_load_pcf`
+/ `kashi_load_pcf_file`. Same posture as the PSF and BDF parsers.
+See [ADR 0009](docs/adr/0009-pcf-import.md).
+
+### Added
+
+- **PCF import** (`src/font_pcf.cyr`, ADR 0009):
+  - `kashi_pcf_parse_header(buf, len, hdr, ctx)` — validates the 8-byte
+    magic + table_count header, walks the table-of-contents, locates
+    `PCF_METRICS` / `PCF_BITMAPS` / `PCF_BDF_ENCODINGS` (all required),
+    validates METRICS uniformity, computes width/height/glyph_count.
+    Fills the 56-byte parsed-header struct (KIND=4 for PCF; PSF1=1,
+    PSF2=2, BDF=3) and a 128-byte PCF context with table offsets,
+    format flags, and the encoding range.
+  - `kashi_pcf_decode_glyph(buf, ctx, glyph_idx, dest, dest_size)` —
+    decodes one glyph into a caller buffer. Applies scan-unit byte
+    swap (if byte_order != bit_order) + bit-reverse (if bit_order is
+    LSB) to canonicalize bitmaps to kashi's MSB-bit / 1-byte-stride
+    convention regardless of the source PCF's layout.
+  - `kashi_pcf_cp_to_idx(buf, ctx, cp)` — resolves a codepoint to a
+    glyph index via the BDF_ENCODINGS table (2D index by `(byte1,
+    byte2)`; returns `0 - 1` if unmapped or sentinel `0xFFFF`).
+  - `kashi_load_pcf(buf, len)` and `kashi_load_pcf_file(path)` in
+    `src/lib.cyr` — drive the parser, decode every glyph in source
+    order, walk the encoding range to build the codepoint → glyph
+    cp-map, register via the existing runtime registry.
+    `kashi_load_pcf_file` reads at most `KASHI_PCF_FILE_CAP = 4 MiB`.
+- **Documentation**: [ADR 0009](docs/adr/0009-pcf-import.md) (design
+  rationale, alternatives), [guide for loading PCF
+  fonts](docs/guides/loading-pcf-fonts.md) (subset accepted, format
+  variants, PSF-vs-BDF-vs-PCF picker).
+
+### Scope (0.7.1)
+
+- **Strict uniform metrics** (analog of ADR 0008 strict BBX): every
+  glyph's `(left_sb, right_sb, char_width, ascent, descent)` must
+  match the first glyph's. Per-glyph kerning rejected with
+  `KASHI_EFORMAT`.
+- **All four byte-order × bit-order combos** with canonicalize-on-load
+  to MSB-bit form. Real PCFs vary by platform (Linux/x86 →
+  LSB-byte/MSB-bit; Sparc/Solaris → MSB-byte/MSB-bit; PowerPC →
+  MSB-byte/LSB-bit).
+- **Both compressed and uncompressed metrics** layouts; dispatch on
+  `format & 0x100`.
+- **Required tables**: METRICS, BITMAPS, BDF_ENCODINGS. Other table
+  types walked past without parsing.
+- **Width 1–32, height 1–32, glyph_count ≤ 65,536, TOC ≤ 64 entries**.
+- Reuses the 56-byte parsed-header struct, the runtime registry, and
+  the codepoint→glyph insertion-sort. No new public result codes.
+- **Constraint** for safety: `glyph_pad >= scan_unit` (avoids
+  cross-row byte swap pathology). Real PCFs satisfy this.
+
+### Tests
+
+- Suite now **392 assertions, 0 failed** (349 unit + 43 integration;
+  was 346 at 0.7.0). New: PCF header parse (kind/dimensions/charsize),
+  PCF load round-trip by codepoint (canonical bytes recovered),
+  LSB-bit-order variant (bit-reverse path), uncompressed-metrics
+  variant, parse-error cases (bad magic, truncated TOC, missing
+  required table, non-uniform metrics), PCF file round-trip
+  (`/tmp` write + `kashi_load_pcf_file` + glyph verification +
+  missing-file negative).
+- `tests/kashi.fcyr` extended with `fuzz_pcf` — 1500 rounds across
+  four pick paths (random / valid template / mutated template /
+  truncated template). PCF is the biggest untrusted-input surface
+  kashi has so far; the fuzz harness probes parse_header,
+  decode_glyph with random glyph indices, and cp_to_idx with random
+  codepoints. No crashes; all accept-paths bounds-safe.
+
+### Notes
+
+- **0.7.2 booked** for PSF u-variant sidecar tables (the remaining
+  item on the 0.7.x import-formats track).
+- Compressed-metrics support uses the standard +0x80 bias convention
+  (byte value - 128 = signed value), matching the X11 spec.
+
 ## [0.7.0] — 2026-05-28
 
 BDF (Bitmap Distribution Format) import — the next runtime-loadable
@@ -439,7 +520,8 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.7.0...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.7.1...HEAD
+[0.7.1]: https://github.com/MacCracken/kashi/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/MacCracken/kashi/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/MacCracken/kashi/compare/0.5.2...0.6.0
 [0.5.2]: https://github.com/MacCracken/kashi/compare/0.5.1...0.5.2

@@ -24,6 +24,7 @@
 include "src/font_data.cyr"
 include "src/font_psf.cyr"
 include "src/font_bdf.cyr"
+include "src/font_pcf.cyr"
 
 # ---------------------------------------------------------------------------
 # Runtime font surface (M1). The PSF byte parser + result codes (KashiResult)
@@ -543,6 +544,123 @@ fn kashi_load_bdf_file(path) {
     if (n < 0) { return 0 - KASHI_EINVAL; }
     if (n == 0) { return 0 - KASHI_EFORMAT; }
     return kashi_load_bdf(buf, n);
+}
+
+# --- PCF import (0.7.1; ADR 0009) ---
+#
+# X11 compiled bitmap format. The pure parser lives in src/font_pcf.cyr;
+# this routine drives it: parse header, decode every glyph in source
+# order, then walk the BDF_ENCODINGS range to build the codepoint→glyph
+# map. Returns font_id (>= KASHI_RT_FONT_BASE) or `0 - <KashiResult>`.
+
+fn _kashi_pcf_to_result(rc) {
+    if (rc == KASHI_PCF_OK) { return KASHI_OK; }
+    if (rc == KASHI_PCF_EINVAL) { return KASHI_EINVAL; }
+    return KASHI_EFORMAT;
+}
+
+fn kashi_load_pcf(buf, len) {
+    if (buf == 0) { return 0 - KASHI_EINVAL; }
+    if (len < 0) { return 0 - KASHI_EINVAL; }
+
+    var hdr[56];
+    var ctx[144];
+    var rc = kashi_pcf_parse_header(buf, len, &hdr, &ctx);
+    if (rc != KASHI_PCF_OK) { return 0 - _kashi_pcf_to_result(rc); }
+
+    var width = load64(&hdr + PCF_PH_WIDTH);
+    var height = load64(&hdr + PCF_PH_HEIGHT);
+    var count = load64(&hdr + PCF_PH_COUNT);
+    var charsize = load64(&hdr + PCF_PH_CHARSIZE);
+
+    # Decode every glyph in source order. The runtime store mirrors the
+    # PCF's glyph index space; the cp-map below maps codepoints to those
+    # same indices (multiple cps can map to the same glyph index).
+    var owned = alloc(count * charsize);
+    if (owned == 0) { return 0 - KASHI_EFORMAT; }
+    var g = 0;
+    while (g < count) {
+        var grc = kashi_pcf_decode_glyph(buf, &ctx, g, owned + g * charsize, charsize);
+        if (grc != KASHI_PCF_OK) { return 0 - KASHI_EFORMAT; }
+        g = g + 1;
+    }
+
+    # Walk the encoded codepoint range, collect (cp, glyph_idx) pairs.
+    # Worst case is range_b1 * range_b2 entries (≤ 65536 for plane-0 BMP).
+    var min_b1 = load64(&ctx + PCF_CTX_MIN_B1);
+    var max_b1 = load64(&ctx + PCF_CTX_MAX_B1);
+    var min_b2 = load64(&ctx + PCF_CTX_MIN_B2);
+    var max_b2 = load64(&ctx + PCF_CTX_MAX_B2);
+    var range_b1 = max_b1 - min_b1 + 1;
+    var range_b2 = max_b2 - min_b2 + 1;
+    var max_entries = range_b1 * range_b2;
+    var umap = alloc(max_entries * 16);
+    if (umap == 0) { return 0 - KASHI_EFORMAT; }
+
+    var w = 0;
+    var b1 = min_b1;
+    while (b1 <= max_b1) {
+        var b2 = min_b2;
+        while (b2 <= max_b2) {
+            var cp = (b1 << 8) | b2;
+            var idx = kashi_pcf_cp_to_idx(buf, &ctx, cp);
+            if (idx >= 0) {
+                if (w < max_entries) {
+                    store64(umap + w * 16 + 0, cp);
+                    store64(umap + w * 16 + 8, idx);
+                    w = w + 1;
+                }
+            }
+            b2 = b2 + 1;
+        }
+        b1 = b1 + 1;
+    }
+    if (w == 0) { return 0 - KASHI_EFORMAT; }
+
+    # Insertion-sort by codepoint (same shape as the PSF / BDF cp-map).
+    var i = 1;
+    while (i < w) {
+        var kc = load64(umap + i * 16 + 0);
+        var kg = load64(umap + i * 16 + 8);
+        var j = i;
+        var sdone = 0;
+        while (sdone == 0) {
+            if (j == 0) { sdone = 1; }
+            if (sdone == 0) {
+                var cprev = load64(umap + (j - 1) * 16 + 0);
+                if (cprev <= kc) { sdone = 1; }
+                if (sdone == 0) {
+                    store64(umap + j * 16 + 0, cprev);
+                    store64(umap + j * 16 + 8, load64(umap + (j - 1) * 16 + 8));
+                    j = j - 1;
+                }
+            }
+        }
+        store64(umap + j * 16 + 0, kc);
+        store64(umap + j * 16 + 8, kg);
+        i = i + 1;
+    }
+
+    var id = _kashi_rt_register(width, height, count, charsize, owned);
+    if (id < 0) { return id; }
+    var rec = _kashi_rt_get(id);
+    if (rec != 0) {
+        store64(rec + RT_UMAP, umap);
+        store64(rec + RT_UCOUNT, w);
+    }
+    return id;
+}
+
+# Load a PCF font from a file path. Reads up to KASHI_PCF_FILE_CAP
+# (4 MiB) bytes and hands the buffer to kashi_load_pcf.
+fn kashi_load_pcf_file(path) {
+    var cap = KASHI_PCF_FILE_CAP;
+    var buf = alloc(cap);
+    if (buf == 0) { return 0 - KASHI_EINVAL; }
+    var n = file_read_all(path, buf, cap);
+    if (n < 0) { return 0 - KASHI_EINVAL; }
+    if (n == 0) { return 0 - KASHI_EFORMAT; }
+    return kashi_load_pcf(buf, n);
 }
 
 # --- Raw glyph-INDEX accessors (runtime fonts only) ---

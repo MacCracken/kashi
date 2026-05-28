@@ -1,6 +1,6 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-05-28
+> **Last Updated**: 2026-05-28 (post-0.7.1)
 >
 > Milestone plan through v1.0. Live status lives in [`state.md`](state.md);
 > this file is the sequencing — what ships, in what order, against what
@@ -116,11 +116,13 @@ hookup.
   `kashi_load_bdf_file`. Strict-BBX policy (every glyph's BBX matches
   `FONTBOUNDINGBOX`), `ENCODING -1` glyphs dropped, 4 MiB file cap.
   Fuzzed (2000 rounds).
-- **0.7.1 — PCF import** (Portable Compiled Format; X11's compiled
-  binary). Multi-table (`PCF_PROPERTIES`, `PCF_METRICS`, `PCF_BITMAPS`,
-  `PCF_BDF_ENCODINGS`, …) with per-table endianness + padding format
-  bytes. New file `src/font_pcf.cyr`. Larger surface than PSF; same
-  validation-first / fuzzed posture.
+- ✅ **0.7.1 — PCF import**, 2026-05-28 (ADR 0009). Heapless binary
+  parser in `src/font_pcf.cyr`; library face gains `kashi_load_pcf` /
+  `kashi_load_pcf_file`. Strict-uniform-metrics, all four
+  byte-order × bit-order combos with canonicalize-on-load (scan-unit
+  byte swap + bit reverse), both compressed and uncompressed metrics
+  layouts. Required tables: `PCF_METRICS`, `PCF_BITMAPS`,
+  `PCF_BDF_ENCODINGS`. Fuzzed (1500 rounds).
 - **0.7.2 — PSF Unicode-table edge cases** (the "u-variant" item, scoped):
   sidecar `.tab` table support (Linux `psfaddtable` convention — a `.psf`
   with no inline table plus a separate `.tab` describing it), optional

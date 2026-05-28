@@ -226,6 +226,118 @@ fn _ti_str(buf, p, s) {
     return p + i;
 }
 
+# PCF file round-trip: build a small PCF, write it to /tmp, load it
+# back via kashi_load_pcf_file, verify glyph round-trip by codepoint.
+# Exercises kashi_pcf_parse_header, decode_glyph (incl. bit-reverse
+# branch), cp_to_idx, and the io.file_read_all path.
+fn test_pcf_file_roundtrip() {
+    test_group("pcf file round-trip");
+    var buf = alloc(512);
+    var p = 0;
+    # Header
+    store8(buf + 0, 0x01); store8(buf + 1, 0x66);
+    store8(buf + 2, 0x63); store8(buf + 3, 0x70);
+    _ti_put32(buf, 4, 3);
+    # TOC: METRICS, BITMAPS, BDF_ENCODINGS — same layout as src/test.cyr's
+    # _mk_pcf (compressed metrics, MSB-bit, LE-byte, scan/pad 1).
+    var moff = 56;
+    var msize = 4 + 2 + 2 * 5;
+    _ti_put32(buf, 8, 0x04);
+    _ti_put32(buf, 12, 0x108);
+    _ti_put32(buf, 16, msize);
+    _ti_put32(buf, 20, moff);
+    var boff = moff + msize;
+    var bsize = 4 + 4 + 2 * 4 + 16 + 2 * 8;
+    _ti_put32(buf, 24, 0x08);
+    _ti_put32(buf, 28, 0x08);
+    _ti_put32(buf, 32, bsize);
+    _ti_put32(buf, 36, boff);
+    var eoff = boff + bsize;
+    var esize = 4 + 5 * 2 + 2 * 2;
+    _ti_put32(buf, 40, 0x20);
+    _ti_put32(buf, 44, 0x08);
+    _ti_put32(buf, 48, esize);
+    _ti_put32(buf, 52, eoff);
+    # METRICS body
+    _ti_put32(buf, moff, 0x108);
+    store8(buf + moff + 4, 2); store8(buf + moff + 5, 0);    # count = 2
+    # Per-glyph: left=0, right=8, width=8, ascent=8, descent=0
+    var mi = 0;
+    while (mi < 2) {
+        var s = moff + 6 + mi * 5;
+        store8(buf + s + 0, 0x80);
+        store8(buf + s + 1, 0x88);
+        store8(buf + s + 2, 0x88);
+        store8(buf + s + 3, 0x88);
+        store8(buf + s + 4, 0x80);
+        mi = mi + 1;
+    }
+    # BITMAPS body
+    _ti_put32(buf, boff, 0x08);
+    _ti_put32(buf, boff + 4, 2);
+    _ti_put32(buf, boff + 8, 0);
+    _ti_put32(buf, boff + 12, 8);
+    _ti_put32(buf, boff + 16, 16);
+    _ti_put32(buf, boff + 20, 48);
+    _ti_put32(buf, boff + 24, 96);
+    _ti_put32(buf, boff + 28, 192);
+    var bd = boff + 32;
+    # Glyph 0: Q-ish pattern
+    store8(buf + bd + 0, 0x3C);
+    store8(buf + bd + 1, 0x42);
+    store8(buf + bd + 2, 0x42);
+    store8(buf + bd + 3, 0x42);
+    store8(buf + bd + 4, 0x42);
+    store8(buf + bd + 5, 0x4A);
+    store8(buf + bd + 6, 0x3C);
+    store8(buf + bd + 7, 0x02);
+    # Glyph 1: R-ish pattern
+    store8(buf + bd + 8, 0x7C);
+    store8(buf + bd + 9, 0x42);
+    store8(buf + bd + 10, 0x42);
+    store8(buf + bd + 11, 0x7C);
+    store8(buf + bd + 12, 0x44);
+    store8(buf + bd + 13, 0x42);
+    store8(buf + bd + 14, 0x42);
+    store8(buf + bd + 15, 0x00);
+    # ENCODINGS body
+    _ti_put32(buf, eoff, 0x08);
+    store8(buf + eoff + 4, 0x51); store8(buf + eoff + 5, 0);   # min_b2 = 'Q'
+    store8(buf + eoff + 6, 0x52); store8(buf + eoff + 7, 0);   # max_b2 = 'R'
+    store8(buf + eoff + 8, 0); store8(buf + eoff + 9, 0);      # min_b1
+    store8(buf + eoff + 10, 0); store8(buf + eoff + 11, 0);    # max_b1
+    store8(buf + eoff + 12, 0); store8(buf + eoff + 13, 0);    # default
+    store8(buf + eoff + 14, 0); store8(buf + eoff + 15, 0);    # 'Q' -> glyph 0
+    store8(buf + eoff + 16, 1); store8(buf + eoff + 17, 0);    # 'R' -> glyph 1
+    var total = eoff + esize;
+
+    var path = "/tmp/kashi_test_pcf.pcf";
+    file_write_all(path, buf, total);
+    var id = kashi_load_pcf_file(path);
+    assert_gte(id, KASHI_RT_FONT_BASE, "pcf file load id");
+    assert_eq(kashi_rt_font_width(id), 8, "pcf file width");
+    assert_eq(kashi_rt_font_height(id), 8, "pcf file height");
+    assert_eq(kashi_rt_font_count(id), 2, "pcf file count");
+    assert_eq(kashi_font_row(id, 0x51, 0), 0x3C, "pcf 'Q' r0");
+    assert_eq(kashi_font_row(id, 0x51, 7), 0x02, "pcf 'Q' r7");
+    assert_eq(kashi_font_row(id, 0x52, 0), 0x7C, "pcf 'R' r0");
+    assert_eq(kashi_font_row(id, 0x52, 4), 0x44, "pcf 'R' r4");
+    # Missing file -> negative.
+    assert_lt(kashi_load_pcf_file("/tmp/kashi_no_such_pcf_zzq.pcf"), 0, "missing pcf negative");
+
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+# Tiny LE u32 helper (mirrors src/test.cyr's _put32).
+fn _ti_put32(buf, off, v) {
+    store8(buf + off + 0, v & 0xFF);
+    store8(buf + off + 1, (v >> 8) & 0xFF);
+    store8(buf + off + 2, (v >> 16) & 0xFF);
+    store8(buf + off + 3, (v >> 24) & 0xFF);
+    return 0;
+}
+
 fn main() {
     alloc_init();
     kashi_font_init();
@@ -237,6 +349,7 @@ fn main() {
     test_psf_file_roundtrip();
     test_psf_unicode_file();
     test_bdf_file_roundtrip();
+    test_pcf_file_roundtrip();
 
     return assert_summary();
 }
