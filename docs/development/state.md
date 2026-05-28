@@ -1,26 +1,28 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-28 (**0.8.0** cut — P(-1) hardening +
-> security audit) | **Refresh cadence**: bumped every release.
+> **Last refresh**: 2026-05-28 (**0.9.0** cut — public API freeze +
+> docs + benchmark trend) | **Refresh cadence**: bumped every
+> release.
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
 
-**0.8.0** — P(-1) hardening + security audit pass after the 0.7.x
-import-formats track closed. Research-driven audit against the
-2020–2026 font-parser CVE corpus (libXfont, FreeType, X.Org
-advisories, FontForge) produced a 17-point checklist; **9 findings,
-0 exploitable**, all fixed: PSF1/PSF2 unknown header bits (F1/F2),
-BDF integer overflow path tightened (F3), PCF dead code removed
-(F4), PCF format-byte unknown bits rejected in all three required
-tables (F5/F6/F7), PCF duplicate TOC entries rejected (F8),
-`kashi_attach_unicode_table` no longer strips the existing map on a
-failed attach (F9 — the only medium-severity finding). Full audit
-in `docs/audit/2026-05-28-audit-0.8.0.md`. Next: 0.9.0 (public API
-freeze, every-symbol docs + examples, benchmark trend), then 1.0.0
-(clean review + bump).
+**0.9.0** — Public API freeze + every-symbol docs + benchmark
+trend. The penultimate cut before 1.0.0 (clean review + bump).
+**No code changes** — pure docs + benchmark refresh:
+- `docs/api/` — 6-file reference covering all 44 exported
+  functions and 20 enum groups across the freestanding core, the
+  load path, the accessors, the sidecar attach API, the low-level
+  parsers, and the codes/constants. Each symbol gets signature,
+  param/return convention, code example, stability note.
+- `docs/benchmarks.md` — 0.x trend table (0.1.0 → 0.8.0) with
+  structural-shift call-outs; `docs/benchmarks/history.csv` gains
+  a fresh 0.8.0 row from a bench run on the audit-completed
+  surface.
+
+The next move is **1.0.0** — clean review + version bump.
 
 ## Toolchain
 
@@ -87,10 +89,9 @@ freeze, every-symbol docs + examples, benchmark trend), then 1.0.0
 
 ## What's booked (not built — future)
 
-- **0.9.0**: public API freeze + every exported symbol documented
-  with an example + benchmark trend captured (the M4 v1.0
-  criteria from `docs/development/roadmap.md`).
-- **1.0.0**: clean review + version bump.
+- **1.0.0**: clean review + version bump. No new features; final
+  pass on docs and any drift caught by re-reading the frozen
+  surface.
 - Text shaping / BiDi — out of scope (kashi exposes data only).
 
 See [`roadmap.md`](roadmap.md).

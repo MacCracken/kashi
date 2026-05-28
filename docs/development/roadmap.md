@@ -1,6 +1,6 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-05-28 (post-0.8.0 — hardening + audit done)
+> **Last Updated**: 2026-05-28 (post-0.9.0 — API frozen)
 >
 > Milestone plan through v1.0. Live status lives in [`state.md`](state.md);
 > this file is the sequencing — what ships, in what order, against what
@@ -141,19 +141,22 @@ hookup.
   exploitable, all fixed. 13 regression assertions added. Full audit
   in `docs/audit/2026-05-28-audit-0.8.0.md`.
 
-### 0.9.0 — Public API freeze + docs + benchmarks (booked)
+### 0.9.0 — Public API freeze + docs + benchmarks — ✅ shipped 2026-05-28
 
-- Freeze every exported symbol; each gets a documented example.
-- Capture the benchmark trend across the 0.x line in
-  `docs/benchmarks.md` and `docs/benchmarks/history.csv`.
-- `docs/api/` if the surface warrants it.
-- This is the M4 docs/benchmark closeout (split from the v1.0 cut
-  for review-able pacing).
+- Full `docs/api/` written: README + 5 surface files (core, loading,
+  accessors, parsers, attach) + codes/constants reference. Every
+  exported symbol has a documented signature, parameter table,
+  return convention, code example, and stability note.
+- Benchmark trend table in `docs/benchmarks.md` covering 0.1.0
+  through 0.8.0 with structural-shift call-outs; fresh 0.8.0 row
+  added to `docs/benchmarks/history.csv`.
+- API surface frozen — no signature or semantic changes through
+  the 1.x line.
 
-### M4 — v1.0 freeze (1.0.0) (booked)
+### M4 — v1.0 freeze (1.0.0) — booked
 
 - Clean review of the 0.9.0 frozen surface.
-- Version bump to 1.0.0.
+- Version bump to 1.0.0. No new features; this is the seal.
 
 ## Out of scope (for v1.0)
 

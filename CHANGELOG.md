@@ -5,6 +5,69 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-28
+
+Public API freeze + every-symbol documentation + benchmark trend
+capture. The penultimate cut before **1.0.0** (which is clean
+review + bump). **No code changes** — pure docs + benchmark refresh.
+
+### Added
+
+- **`docs/api/` — full public API reference**, frozen as of this cut:
+  - `docs/api/README.md` — index + audience guide (kernel devs →
+    `core.md`; userland → `loading.md` + `accessors.md`; advanced →
+    `parsers.md`; reference → `codes.md`).
+  - `docs/api/core.md` — freestanding core
+    (`src/font_data.cyr`): 11 functions + 3 font IDs + 3 range
+    constants. The agnos-kernel-facing surface.
+  - `docs/api/loading.md` — 7 runtime load / register functions
+    (`kashi_load_psf{,_file}`, `kashi_load_bdf{,_file}`,
+    `kashi_load_pcf{,_file}`, `kashi_register_font`).
+  - `docs/api/accessors.md` — 13 codepoint-addressed + raw-index
+    accessor and metadata functions, plus the active-font knob
+    and ligature lookup.
+  - `docs/api/parsers.md` — 7 low-level parser primitives
+    (`kashi_psf_parse`, `kashi_psf_uni_token`,
+    `kashi_bdf_parse_header`, `kashi_bdf_next_glyph`,
+    `kashi_pcf_parse_header`, `kashi_pcf_decode_glyph`,
+    `kashi_pcf_cp_to_idx`) + the parsed-header / context / glyph-out
+    struct shapes documented field by field.
+  - `docs/api/attach.md` — 4 sidecar Unicode-table attach functions
+    with the F9 atomic-on-failure guarantee documented.
+  - `docs/api/codes.md` — every named constant: result codes
+    (`KashiResult`, `KashiBdfRc`, `KashiPcfRc`), font IDs,
+    codepoint range, PSF / BDF / PCF format constants, struct
+    field offsets, runtime registry layout. ~150 named values.
+- **Benchmark trend** — `docs/benchmarks.md` now carries a
+  version-over-version table covering 0.1.0 → 0.8.0 (one row per
+  released version where the hot path was measured), with
+  structural-shift call-outs (0.2.0 → 0.3.0 codepoint-resolve cost,
+  0.3.0 → 0.4.0 scan_vga_8x16 workload widening, 0.4.0 → 0.5.0
+  stride-aware accessor). Underlying CSV
+  (`docs/benchmarks/history.csv`) gains a fresh 0.8.0 row from a
+  bench run on the audit-completed surface.
+
+### Changed
+
+- **API surface frozen**: every documented symbol's signature and
+  return semantics are stable through 1.0.0 and the 1.x line.
+  Internal helpers (anything prefixed with `_kashi_`) remain
+  subject to change. `kashi_fset8` / `kashi_fset16` are documented
+  as init-time internal (their name omits the underscore prefix
+  by historical oversight — listed under "What's NOT public API"
+  in `docs/api/README.md`).
+
+### Tests
+
+- Test counts unchanged from 0.8.0 (442 assertions, 0 failed; full
+  fuzz suite passes). 0.9.0 is docs-only.
+
+### Roadmap note
+
+- **1.0.0**: clean review + version bump after this cut. No new
+  features; final pass on docs and any drift caught by re-reading
+  the frozen surface.
+
 ## [0.8.0] — 2026-05-28
 
 P(-1) hardening + security audit pass after the 0.7.x import-formats
@@ -678,7 +741,8 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.8.0...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.9.0...HEAD
+[0.9.0]: https://github.com/MacCracken/kashi/compare/0.8.0...0.9.0
 [0.8.0]: https://github.com/MacCracken/kashi/compare/0.7.2...0.8.0
 [0.7.2]: https://github.com/MacCracken/kashi/compare/0.7.1...0.7.2
 [0.7.1]: https://github.com/MacCracken/kashi/compare/0.7.0...0.7.1
