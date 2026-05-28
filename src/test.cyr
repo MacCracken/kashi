@@ -660,6 +660,64 @@ fn test_active_font() {
     return 0;
 }
 
+# --- 0.6.0 audit hardening (docs/audit/2026-05-28-audit.md) ---
+
+# F1: kashi_register_font must reject glyph_count > KASHI_PSF_MAX_COUNT
+# (otherwise glyph_count*charsize can overflow i64 in nbytes).
+fn test_register_huge_count() {
+    test_group("audit F1: register glyph_count bound");
+    var data = alloc(8);
+    # Just over the max: rejected.
+    assert_eq(kashi_register_font(8, 8, data, KASHI_PSF_MAX_COUNT + 1),
+    0 - KASHI_EINVAL, "register count > MAX -> -einval");
+    # Pathological large: also rejected (no overflow).
+    assert_eq(kashi_register_font(8, 8, data, 0x7FFFFFFF),
+    0 - KASHI_EINVAL, "register huge count -> -einval");
+    # At the cap is still accepted (sanity — alloc size 65536*8 = 512KB).
+    var data_big = alloc(KASHI_PSF_MAX_COUNT * 8);
+    var id = kashi_register_font(8, 8, data_big, KASHI_PSF_MAX_COUNT);
+    assert_gte(id, KASHI_RT_FONT_BASE, "register count == MAX ok");
+    return 0;
+}
+
+# F2: kashi_psf_uni_token must reject codepoints > U+10FFFF and the UTF-16
+# surrogate range U+D800..U+DFFF (invalid UTF-8 by spec).
+fn test_uni_token_strict_utf8() {
+    test_group("audit F2: UTF-8 strict cp range");
+    var tok[24];
+    # U+110000 needs 4 bytes: 0xF4 0x90 0x80 0x80 (just above max).
+    var b = alloc(8);
+    store8(b + 0, 0xF4); store8(b + 1, 0x90);
+    store8(b + 2, 0x80); store8(b + 3, 0x80);
+    kashi_psf_uni_token(b, 0, 4, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
+    "psf2 cp > U+10FFFF -> END");
+    # U+D800 = surrogate: 0xED 0xA0 0x80.
+    store8(b + 0, 0xED); store8(b + 1, 0xA0); store8(b + 2, 0x80);
+    kashi_psf_uni_token(b, 0, 3, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
+    "psf2 surrogate U+D800 -> END");
+    # U+DFFF = surrogate high end: 0xED 0xBF 0xBF.
+    store8(b + 0, 0xED); store8(b + 1, 0xBF); store8(b + 2, 0xBF);
+    kashi_psf_uni_token(b, 0, 3, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
+    "psf2 surrogate U+DFFF -> END");
+    # Just below surrogate range (U+D7FF) is still valid: 0xED 0x9F 0xBF.
+    store8(b + 0, 0xED); store8(b + 1, 0x9F); store8(b + 2, 0xBF);
+    kashi_psf_uni_token(b, 0, 3, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_CP,
+    "psf2 U+D7FF (just below surrogates) -> CP");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0xD7FF, "psf2 U+D7FF cp value");
+    # U+10FFFF (max valid): 0xF4 0x8F 0xBF 0xBF.
+    store8(b + 0, 0xF4); store8(b + 1, 0x8F);
+    store8(b + 2, 0xBF); store8(b + 3, 0xBF);
+    kashi_psf_uni_token(b, 0, 4, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_CP,
+    "psf2 U+10FFFF (max) -> CP");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0x10FFFF, "psf2 U+10FFFF cp value");
+    return 0;
+}
+
 # --- 0.5.0 wide-glyph (ADR 0005): multi-byte rows in the library face ---
 
 fn test_rt_wide() {
@@ -880,6 +938,8 @@ fn main() {
     test_rt_fonts();
     test_rt_unicode();
     test_active_font();
+    test_register_huge_count();
+    test_uni_token_strict_utf8();
     test_rt_wide();
     test_psf_wide_load();
     test_seq_glyph();

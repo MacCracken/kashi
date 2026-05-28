@@ -8,22 +8,18 @@
 # --- The two faces of kashi (the load-bearing split — see docs/adr/0001) ---
 #
 #   1. FREESTANDING CORE  — src/font_data.cyr
-#      No stdlib, no heap, no syscalls. Built-in 8x16 + 8x8 glyph tables and
-#      pure-arithmetic accessors. A freestanding kernel (agnos, which has
-#      `[deps] stdlib = []` and a vendored klib/) `include`s this file
-#      DIRECTLY and never touches the rest of kashi. This is the only part
-#      kashi guarantees a freestanding consumer.
+#      No stdlib, no heap, no syscalls. Three built-in fonts (VGA 8x16,
+#      CGA 8x8, VGA 9x16 derived) + pure-arithmetic accessors covering full
+#      CP437. A freestanding kernel (agnos, which has `[deps] stdlib = []`
+#      and a vendored klib/) `include`s this file DIRECTLY and never
+#      touches the rest of kashi.
 #
-#   2. FULL LIBRARY       — this file (src/lib.cyr) + future modules
-#      stdlib-using. Runtime font loading, PSF1/PSF2 import, font registries,
-#      glyph-set queries. Skeleton only as of 0.1.0 — built out along the
-#      roadmap (see docs/development/roadmap.md). Do NOT let any of it leak
-#      `include`s into font_data.cyr.
-#
-# As of 0.1.0 the library face re-exports the freestanding core (so a
-# stdlib-linked consumer gets the built-in fonts through `include "src/lib.cyr"`)
-# and stubs the future runtime-loading surface. Everything below the core
-# include is a placeholder to be filled in.
+#   2. FULL LIBRARY       — this file (src/lib.cyr) + src/font_psf.cyr.
+#      stdlib-using. Runtime PSF1/PSF2 import (`kashi_load_psf*`,
+#      `kashi_register_font`), codepoint→glyph Unicode mapping, ligature
+#      lookup, unified codepoint-addressed accessors (built-in + runtime),
+#      active-font knob. Do NOT let any of it leak `include`s into
+#      font_data.cyr — the boundary is checked by `cyaudit vet`.
 
 include "src/font_data.cyr"
 include "src/font_psf.cyr"
@@ -354,16 +350,21 @@ fn _kashi_rt_cp_to_glyph(rec, cp) {
 }
 
 # Register a runtime font from caller-supplied glyph data. width must be
-# 1..32, height 1..32, glyph_count >= 1. Rows are ceil(width/8) bytes each
-# (one byte per row for <= 8 wide). The glyph bytes are COPIED into a store
-# the registry owns, so the caller may free/reuse its buffer afterward.
-# Returns font_id (>= 2) or `0 - KASHI_EINVAL`.
+# 1..32, height 1..32, glyph_count in [1, KASHI_PSF_MAX_COUNT]. Rows are
+# ceil(width/8) bytes each (one byte per row for <= 8 wide). The glyph
+# bytes are COPIED into a store the registry owns, so the caller may
+# free/reuse its buffer afterward. Returns font_id (>= KASHI_RT_FONT_BASE)
+# or `0 - KASHI_EINVAL`.
 fn kashi_register_font(width, height, glyph_data, glyph_count) {
     if (width < 1) { return 0 - KASHI_EINVAL; }
     if (width > KASHI_PSF_MAX_WIDTH) { return 0 - KASHI_EINVAL; }
     if (height < 1) { return 0 - KASHI_EINVAL; }
     if (height > KASHI_PSF_MAX_HEIGHT) { return 0 - KASHI_EINVAL; }
     if (glyph_count < 1) { return 0 - KASHI_EINVAL; }
+    # 0.6.0 audit F1: cap glyph_count at the same bound the PSF parser
+    # enforces, otherwise `glyph_count * charsize` could overflow i64 for
+    # an adversarial caller and the subsequent alloc/memcpy would walk off.
+    if (glyph_count > KASHI_PSF_MAX_COUNT) { return 0 - KASHI_EINVAL; }
     if (glyph_data == 0) { return 0 - KASHI_EINVAL; }
     var stride = (width + 7) / 8;
     var charsize = height * stride;

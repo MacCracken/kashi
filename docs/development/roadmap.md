@@ -82,7 +82,15 @@
   CGA font is now dual-sourced (hand-drawn AGNOS ASCII low half + IBM
   PD high half).
 
-### M3 — Consumption contract hardening + agnos integration (0.6.0+)
+### 0.6.x — Hardening + patch space
+
+- ✅ **0.6.0**: P(-1) hardening pass (audit, fix `kashi_register_font`
+  `glyph_count` overflow, strict UTF-8 in the Unicode decoder, stale-doc
+  cleanup). See `docs/audit/2026-05-28-audit.md`.
+- **0.6.1, 0.6.2, …**: reserved for issue-resolution patches surfaced
+  during the agnos integration arc (M3) or by downstream consumers.
+
+### M3 — Consumption contract hardening + agnos integration
 
 - Lock the `kashi`↔agnos contract: confirm `[deps.kashi] modules=
   ["src/font_data.cyr"]` drops into agnos's `fb_console.cyr` cleanly and the
@@ -91,6 +99,29 @@
   work, not kashi's).
 - Glyph-set queries useful to consumers (`iam`, BBS/MUD art): codepoint
   coverage, fallback policy for unencoded chars.
+
+### 0.7.x — Additional bitmap import formats (post-agnos-integration)
+
+Reserved for after the initial agnos integration lands. Each format is a
+self-contained library-face addition (the freestanding core stays bitmap-
+data only); landing them post-integration de-risks contract churn during
+the agnos hookup.
+
+- **0.7.0 — BDF import** (Bitmap Distribution Format; X11 source format).
+  Text-based: per-glyph `STARTCHAR`/`ENCODING`/`BBX`/`BITMAP` records.
+  Variable-width per glyph (`DWIDTH`); needs a small text-line parser in
+  addition to the existing binary parser. New file `src/font_bdf.cyr` (or
+  fold into `src/font_psf.cyr` as a sibling decoder).
+- **0.7.1 — PCF import** (Portable Compiled Format; X11's compiled
+  binary). Multi-table (`PCF_PROPERTIES`, `PCF_METRICS`, `PCF_BITMAPS`,
+  `PCF_BDF_ENCODINGS`, …) with per-table endianness + padding format
+  bytes. New file `src/font_pcf.cyr`. Larger surface than PSF; same
+  validation-first / fuzzed posture.
+- **0.7.2 — PSF Unicode-table edge cases** (the "u-variant" item, scoped):
+  sidecar `.tab` table support (Linux `psfaddtable` convention — a `.psf`
+  with no inline table plus a separate `.tab` describing it), optional
+  strict overlong-UTF-8 rejection, larger table-walk caps. Small additive
+  cut; clears the long tail of PSF compatibility.
 
 ### M4 — v1.0 freeze (1.0.0)
 

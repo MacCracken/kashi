@@ -5,6 +5,64 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-28
+
+P(-1) hardening pass before opening the 0.6.x patch arc + the M3
+agnos-integration runway. Re-audited the substantial post-0.1.0 surface
+(PSF parser added 0.2.0; library face grown through 0.5.1; freestanding
+core extensions across 0.4.0–0.5.2). One real safety fix, one defensive
+tightening, one doc cleanup pass. No behavior change for valid inputs;
+no API additions or removals. Freestanding boundary intact —
+`cyaudit vet` on both freestanding files → "no dependencies".
+
+### Security
+
+- **`kashi_register_font` `glyph_count` overflow guard** (audit F1): a
+  caller passing a pathologically large `glyph_count` could have caused
+  `glyph_count * charsize` to overflow `i64`, leading to a too-small
+  `alloc` followed by a `memcpy` that walks off the source buffer. Now
+  capped at `KASHI_PSF_MAX_COUNT` (65536), matching the PSF parser's bound.
+  See `docs/audit/2026-05-28-audit.md`.
+
+### Changed
+
+- **Strict UTF-8 in `kashi_psf_uni_token`** (audit F2): the PSF2 Unicode
+  decoder now rejects codepoints above `U+10FFFF` and the UTF-16
+  surrogate range `U+D800..U+DFFF` (invalid per UTF-8 spec). No memory
+  safety implication (the codepoint is just a map key), but keeps garbage
+  out of the codepoint→glyph map.
+
+### Fixed
+
+- **Stale comments** (audit F3): several version-tagged scope notes,
+  struct sizes, and return-value docs across `font_psf.cyr` and `lib.cyr`
+  had not kept pace with the 0.2.0–0.5.2 evolution. All updated.
+
+### Tests
+
+- Suite now **305 assertions, 0 failed** (281 unit + 24 integration; was
+  295 at 0.5.2): F1 `glyph_count` overflow rejected at multiple scales;
+  F2 explicit out-of-range / surrogate codepoint sequences (`U+110000`,
+  `U+D800`, `U+DFFF`) rejected, just-below-surrogate (`U+D7FF`) and
+  exactly-at-max (`U+10FFFF`) accepted.
+
+### Audit
+
+- `docs/audit/2026-05-28-audit.md` — full P(-1) re-walk of the post-0.1.0
+  surface (PSF parser, runtime registry, map / sequence build, wide-glyph
+  accessors, VGA 9×16 derivation, CGA dual-source high half). Re-verified
+  full-`i64`-range bounds-safety for the widened core accessors;
+  documents the F4 perf note (double `_kashi_rt_get` on the runtime row
+  hot path — no action; consumers should hoist via `kashi_font_ptr`).
+
+### Roadmap note
+
+- **0.6.x reserved for issue-resolution patches** during the M3 agnos
+  integration arc.
+- **0.7.x** booked for additional bitmap import formats (BDF → PCF →
+  PSF u-variant sidecar tables), to land after the initial agnos
+  integration. See `docs/development/roadmap.md`.
+
 ## [0.5.2] — 2026-05-28
 
 CGA 8×8 high half (`0x80..0xFF`) populated from Linux's public-domain
@@ -303,7 +361,8 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.5.2...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/MacCracken/kashi/compare/0.5.2...0.6.0
 [0.5.2]: https://github.com/MacCracken/kashi/compare/0.5.1...0.5.2
 [0.5.1]: https://github.com/MacCracken/kashi/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/MacCracken/kashi/compare/0.4.0...0.5.0

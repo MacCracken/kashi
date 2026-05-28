@@ -13,13 +13,16 @@
 # font must return an error, never a wild dereference (fuzzed in
 # tests/kashi.fcyr).
 #
-# --- Scope (M1, 0.2.0) ---
+# --- Scope (as of 0.6.0) ---
 #
-#   * PSF1 (magic 0x36 0x04): 8-wide, 256/512-glyph banks.
-#   * PSF2 (magic 0x72 0xB5 0x4A 0x86 = LE 0x864AB572): width 1..8 only
-#     (kashi's accessors are one byte per row; wider glyphs are a future
-#     milestone). Unicode table presence is recorded, not yet mapped —
-#     runtime glyphs are addressed by raw glyph index. See docs/adr/0002.
+#   * PSF1 (magic 0x36 0x04): 8-wide, 256/512-glyph banks; optional Unicode
+#     table (mode bits HASTAB / SEQ).
+#   * PSF2 (magic 0x72 0xB5 0x4A 0x86 = LE 0x864AB572): width 1..32
+#     (multi-byte rows up to 4 bytes/row — ADR 0005); optional Unicode
+#     table (flag HAS_UNICODE).
+#   * Unicode table walking via kashi_psf_uni_token; the library face
+#     (src/lib.cyr) builds the codepoint→glyph map (ADR 0003) and the
+#     ligature/sequence lookup (ADR 0005) on top.
 #
 # This file is part of the stdlib-using library face. It must NEVER be
 # `include`d by the freestanding core (src/font_data.cyr); the dependency
@@ -71,7 +74,7 @@ enum KashiPsfTok {
 # byte offsets.
 enum KashiPsfHdr {
     KASHI_PH_KIND = 0;       # 1 = PSF1, 2 = PSF2
-    KASHI_PH_WIDTH = 8;      # glyph width in pixels (1..8)
+    KASHI_PH_WIDTH = 8;      # glyph width in pixels (1..32)
     KASHI_PH_HEIGHT = 16;    # glyph height in pixels = rows per glyph
     KASHI_PH_COUNT = 24;     # number of glyphs
     KASHI_PH_CHARSIZE = 32;  # bytes per glyph (= height for <=8 wide)
@@ -150,7 +153,7 @@ fn _kashi_psf2_parse(buf, len, out) {
 }
 
 # Detect and validate a PSF1/PSF2 font in `buf` (`len` bytes). On success
-# fills the 48-byte `out` header struct and returns KASHI_OK; otherwise
+# fills the 56-byte `out` header struct and returns KASHI_OK; otherwise
 # returns KASHI_EINVAL (bad args) or KASHI_EFORMAT (bad/unsupported/truncated
 # font) and leaves `out` zeroed. Does NOT read glyph data — only the fixed
 # header — so it is safe to call on any buffer, including hostile ones.
@@ -267,6 +270,22 @@ fn kashi_psf_uni_token(buf, pos, end, kind, out) {
         store64(out + KASHI_UT_TYPE, KASHI_TOK_END);   # bad continuation
         store64(out + KASHI_UT_NEXT, end);
         return 0;
+    }
+    # 0.6.0 audit F2: reject codepoints outside the Unicode range and the
+    # UTF-16 surrogate band — these are invalid UTF-8 by spec. No memory
+    # safety concern (cp is just a u64 map key) but accepting them lets
+    # garbage into the codepoint map. Bound: max U+10FFFF; reject U+D800..DFFF.
+    if (cp > 0x10FFFF) {
+        store64(out + KASHI_UT_TYPE, KASHI_TOK_END);
+        store64(out + KASHI_UT_NEXT, end);
+        return 0;
+    }
+    if (cp >= 0xD800) {
+        if (cp <= 0xDFFF) {
+            store64(out + KASHI_UT_TYPE, KASHI_TOK_END);
+            store64(out + KASHI_UT_NEXT, end);
+            return 0;
+        }
     }
     store64(out + KASHI_UT_TYPE, KASHI_TOK_CP);
     store64(out + KASHI_UT_CP, cp);

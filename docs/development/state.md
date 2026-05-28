@@ -1,7 +1,7 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-28 (**0.5.2** cut — CGA 8×8 high half filled
-> from Linux PD; see `docs/adr/0007`) | **Refresh cadence**: bumped every
+> **Last refresh**: 2026-05-28 (**0.6.0** cut — P(-1) hardening pass; see
+> `docs/audit/2026-05-28-audit.md`) | **Refresh cadence**: bumped every
 > release (ideally by the release post-hook).
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
@@ -9,11 +9,14 @@
 
 ## Version
 
-**0.5.2** — CGA 8×8 high half (`0x80..0xFF`) populated from Linux's PD
-`lib/fonts/font_8x8.c`. The CGA font is now dual-sourced (hand-drawn
-AGNOS ASCII low half + IBM PD CGA high half — ADR 0007), giving full
-CP437 coverage in both built-in 8-wide fonts. Tagged by the user (who
-handles all git operations); the tag push drives the release workflow.
+**0.6.0** — P(-1) hardening pass opening the 0.6.x patch arc + the M3
+agnos-integration runway. Audit re-walked the post-0.1.0 surface (PSF
+parser, runtime registry, map/sequence build, wide-glyph accessors, VGA
+9×16 derivation, CGA dual-source high half). One safety fix
+(`kashi_register_font` `glyph_count` overflow guard), one defensive
+tightening (strict UTF-8 in the codepoint decoder), one doc-cleanup pass.
+See `docs/audit/2026-05-28-audit.md`. Tagged by the user (who handles all
+git operations); the tag push drives the release workflow.
 
 ## Toolchain
 

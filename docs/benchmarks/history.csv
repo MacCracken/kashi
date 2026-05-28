@@ -37,3 +37,9 @@ version,benchmark,avg_ns,min_ns,max_ns,iters,date,arch,host
 0.5.2,font_row_builtin,19,19,19,1000000,2026-05-28,x86_64,AMD Ryzen 7 5800H
 0.5.2,font_row_runtime,43,43,43,1000000,2026-05-28,x86_64,AMD Ryzen 7 5800H
 0.5.2,font_row_runtime_cp,61,61,61,1000000,2026-05-28,x86_64,AMD Ryzen 7 5800H
+0.6.0,glyph_row,18,18,18,1000000,2026-05-28,x86_64,AMD Ryzen 7 5800H
+0.6.0,glyph_ptr,7,7,7,1000000,2026-05-28,x86_64,AMD Ryzen 7 5800H
+0.6.0,scan_vga_8x16,62000,62000,62000,10000,2026-05-28,x86_64,AMD Ryzen 7 5800H
+0.6.0,font_row_builtin,19,19,19,1000000,2026-05-28,x86_64,AMD Ryzen 7 5800H
+0.6.0,font_row_runtime,43,43,43,1000000,2026-05-28,x86_64,AMD Ryzen 7 5800H
+0.6.0,font_row_runtime_cp,62,62,62,1000000,2026-05-28,x86_64,AMD Ryzen 7 5800H

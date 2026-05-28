@@ -6,9 +6,9 @@ type: state
 
 # Documentation Health — kashi
 
-> **Last refresh**: 2026-05-28 (**0.5.2** cut — CGA 8×8 high half from
-> Linux PD). **Refresh cadence**: when a doc is touched, update its row.
-> Full-tree sweep at minor-version closeouts.
+> **Last refresh**: 2026-05-28 (**0.6.0** cut — P(-1) hardening pass).
+> **Refresh cadence**: when a doc is touched, update its row. Full-tree
+> sweep at minor-version closeouts.
 >
 > **Scope**: this repo only (`kashi`) — the `docs/` tree plus root-level
 > files (README, CLAUDE.md, CHANGELOG, CONTRIBUTING, SECURITY,
@@ -33,7 +33,7 @@ nothing archived, no open strategic questions.
 
 | Bucket | Count | What it means |
 |---|---|---|
-| ✅ **Fresh** | 24 | 0.1.0 inventory + hardening docs + M1 docs (ADR 0002, PSF guide) + M2 docs (ADR 0003, 0004) + 0.5.x (ADR 0005, 0006, 0007). |
+| ✅ **Fresh** | 25 | 0.1.0 inventory + 2 audit docs + M1 docs (ADR 0002, PSF guide) + M2 docs (ADR 0003, 0004) + 0.5.x (ADR 0005, 0006, 0007). |
 | 🟡 **Stale** | 0 | — |
 | 🟠 **Read-through outstanding** | 0 | — |
 | 🔵 **Probably evergreen** | 2 | `CODE_OF_CONDUCT.md`, `LICENSE` — standard; re-read annually. |
@@ -47,7 +47,7 @@ nothing archived, no open strategic questions.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-05-27 | ✅ Fresh | Two-faces architecture, built-in font table, freestanding-core API, agnos consumption contract, build/test. |
-| `CHANGELOG.md` | 2026-05-28 | ✅ Fresh | `[0.1.0]`–`[0.5.2]` (0.5.2: CGA 8×8 high half from Linux PD). SemVer + Keep a Changelog. |
+| `CHANGELOG.md` | 2026-05-28 | ✅ Fresh | `[0.1.0]`–`[0.6.0]` (0.6.0: P(-1) hardening pass). SemVer + Keep a Changelog. |
 | `CLAUDE.md` | 2026-05-27 | ✅ Fresh | Durable-only; freestanding-vs-full-lib split, one-owner/two-faces boundary discipline, standard constraints. State deferred to state.md. |
 | `CONTRIBUTING.md` | 2026-05-27 | ✅ Fresh | The two faces, accessor-bounds rule, glyph-fidelity rule, Cyrius enum/style notes. |
 | `SECURITY.md` | 2026-05-27 | ✅ Fresh | Accessor-bounds = kernel trust boundary; buffer sizing; future PSF-parse validation. |
@@ -96,7 +96,8 @@ nothing archived, no open strategic questions.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `audit/2026-05-27-audit.md` | 2026-05-27 | ✅ Fresh | First P(-1) security/hardening pass. 3 findings fixed, 2 noted; accessor surface proven `i64`-safe. |
+| `audit/2026-05-27-audit.md` | 2026-05-27 | ✅ Fresh | First P(-1) pass at 0.1.0 (freestanding core ASCII). 3 findings fixed, 2 noted. |
+| `audit/2026-05-28-audit.md` | 2026-05-28 | ✅ Fresh | 0.6.0 P(-1) pass: PSF parser + library face + 0.4.0–0.5.2 core extensions. F1 register-overflow guard, F2 strict UTF-8, F3 doc cleanup, F4 perf note. |
 | `benchmarks.md` | 2026-05-27 | ✅ Fresh | Methodology + 0.1.0 baseline + dispatch/codepoint-lookup overhead (M2); points at the CSV. |
 | `benchmarks/history.csv` | 2026-05-27 | ✅ Fresh | Per-`(version,benchmark)` rows; append each release. |
 
