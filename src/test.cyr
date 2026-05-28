@@ -172,15 +172,26 @@ fn test_cga_8x8_bytes() {
     assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x5F, 0), 0x00, "cga _ row0");
     assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x5F, 7), 0xFF, "cga _ row7");
 
-    # CGA high-half (0x80..0xFF) is intentionally blank in 0.4.0 — extending
-    # the hand-drawn font would require 128 more glyphs (see ADR 0004).
-    # Spot-check a couple of slots to lock the "blank" behavior so a future
-    # change can't accidentally light them up.
-    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x80, 0), 0, "cga 0x80 blank r0");
-    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xDB, 4), 0, "cga 0xDB blank r4");
-    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xFF, 7), 0, "cga 0xFF blank r7");
-    # The slot exists (ptr non-null), it's just zeroed.
-    assert_neq(kashi_glyph_ptr(KASHI_FONT_CGA_8X8, 0xC9), 0, "cga 0xC9 slot exists");
+    # CGA high-half (0x80..0xFF) populated in 0.5.2 from Linux's PD
+    # font_8x8.c (ADR 0007 — dual-source CGA: hand-drawn AGNOS low half +
+    # IBM PD high half). Spot-check the geometric box-drawing glyphs to
+    # lock the transcription against the source.
+    # 0xDB '█' full block — every row 0xFF.
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xDB, 0), 0xFF, "cga 0xDB block r0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xDB, 7), 0xFF, "cga 0xDB block r7");
+    # 0xCD '═' double horizontal: rows 2 and 4 are 0xFF; others 0.
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xCD, 2), 0xFF, "cga 0xCD hline r2");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xCD, 3), 0x00, "cga 0xCD hline r3");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xCD, 4), 0xFF, "cga 0xCD hline r4");
+    # 0xB0 '░' light shade — alternating 0x22 / 0x88 dither rows (half the
+    # resolution of the 8x16 dither, as expected for 8x8).
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xB0, 0), 0x22, "cga 0xB0 dither r0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xB0, 1), 0x88, "cga 0xB0 dither r1");
+    # 0xDF '▀' upper half block — rows 0-3 are 0xFF, rows 4-7 are 0.
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xDF, 0), 0xFF, "cga 0xDF upper r0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xDF, 4), 0x00, "cga 0xDF upper r4");
+    # 0xFF — last cell, blank in Linux's table too.
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xFF, 0), 0x00, "cga 0xFF blank r0");
     return 0;
 }
 
@@ -229,7 +240,7 @@ fn test_full_coverage() {
         ch = ch + 1;
     }
     assert_eq(all_ok16, 1, "all 224 vga glyphs present");
-    assert_eq(all_ok8, 1, "all 224 cga glyph slots present (high-half blank)");
+    assert_eq(all_ok8, 1, "all 224 cga glyphs present (full CP437)");
     return 0;
 }
 

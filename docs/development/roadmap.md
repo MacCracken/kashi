@@ -77,7 +77,10 @@
   `KASHI_FONT_VGA_9X16 = 2`, derived at init from the existing VGA 8×16
   via the VGA col-9 replication rule (`0xC0..0xDF`); no new byte tables.
   `KASHI_RT_FONT_BASE` bumped `2 → 3`.
-- Still open: CGA 8×8 high half (still blank — slated for 0.5.2).
+- ✅ **CGA 8×8 high half** — shipped 0.5.2 (ADR 0007). 128 glyphs from
+  Linux's PD `font_8x8.c` fill the previously-blank `0x80..0xFF` slots;
+  CGA font is now dual-sourced (hand-drawn AGNOS ASCII low half + IBM
+  PD high half).
 
 ### M3 — Consumption contract hardening + agnos integration (0.6.0+)
 

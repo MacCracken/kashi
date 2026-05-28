@@ -1,21 +1,19 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-27 (**0.5.1** cut — VGA 9×16 derived built-in;
-> see `docs/adr/0006`) | **Refresh cadence**: bumped every release
-> (ideally by the release post-hook).
+> **Last refresh**: 2026-05-28 (**0.5.2** cut — CGA 8×8 high half filled
+> from Linux PD; see `docs/adr/0007`) | **Refresh cadence**: bumped every
+> release (ideally by the release post-hook).
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
 
-**0.5.1** — VGA 9×16 derived built-in (`KASHI_FONT_VGA_9X16 = 2`). Bytes
-computed at `kashi_font_init` time from the existing VGA 8×16 + the VGA
-col-9 replication rule (CP437 box-drawing range `0xC0..0xDF` repeats col 7
-into col 8; else col 8 is 0). `KASHI_RT_FONT_BASE` bumped `2 → 3`
-(pre-1.0). `kashi_glyph_row` is now stride-aware (backward-compatible for
-the 8-wide built-ins). Tagged by the user (who handles all git operations);
-the tag push drives the release workflow.
+**0.5.2** — CGA 8×8 high half (`0x80..0xFF`) populated from Linux's PD
+`lib/fonts/font_8x8.c`. The CGA font is now dual-sourced (hand-drawn
+AGNOS ASCII low half + IBM PD CGA high half — ADR 0007), giving full
+CP437 coverage in both built-in 8-wide fonts. Tagged by the user (who
+handles all git operations); the tag push drives the release workflow.
 
 ## Toolchain
 
@@ -28,8 +26,9 @@ the tag push drives the release workflow.
   slots; widened in 0.4.0 per `docs/adr/0004`). Three built-in fonts:
   - `KASHI_FONT_VGA_8X16` (id 0) — IBM VGA BIOS 8×16, 224 glyphs (full
     CP437; PD source = Linux's `font_8x16.c`).
-  - `KASHI_FONT_CGA_8X8` (id 1) — hand-drawn CGA 8×8, 96 ASCII glyphs
-    (`0x20..0x7F`); high-half slots exist but render blank.
+  - `KASHI_FONT_CGA_8X8` (id 1) — dual-sourced 8×8 (hand-drawn AGNOS
+    original for `0x20..0x7F`; Linux PD `font_8x8.c` for `0x80..0xFF`),
+    224 glyphs total. ADR 0007.
   - `KASHI_FONT_VGA_9X16` (id 2) — VGA 9×16 **derived at init** from
     `KASHI_FONT_VGA_8X16` + the VGA col-9 replication rule (`0xC0..0xDF`
     box-drawing range); ADR 0006.
@@ -64,9 +63,6 @@ the tag push drives the release workflow.
 
 ## What's booked (not built — future)
 
-- 9×16 box-drawing built-in (wide-glyph infrastructure now exists; adding
-  the font data is a future cut).
-- CGA 8×8 high half — currently blank; would need 128 hand-rolled glyphs.
 - agnos consumption contract hardening + agnos-side integration (M3 / agnos
   **1.38.0**).
 - Text shaping / BiDi — out of scope (kashi exposes data only).

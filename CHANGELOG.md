@@ -5,6 +5,37 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-05-28
+
+CGA 8×8 high half (`0x80..0xFF`) populated from Linux's public-domain
+`lib/fonts/font_8x8.c` — the previously-blank CP437 high half now renders
+box-drawing, block shading, accented letters, and the rest of CP437.
+Freestanding core stays dependency-free (`cyaudit vet` →
+"no dependencies"); kashi's CGA font is now **dual-sourced** (hand-drawn
+AGNOS ASCII low half + IBM PD high half) — documented in
+[ADR 0007](docs/adr/0007-cga-high-half-from-linux-pd.md).
+
+### Added
+
+- **CGA 8×8 high half (CP437 `0x80..0xFF`)** — 128 glyphs sourced
+  byte-for-byte from Linux's `lib/fonts/font_8x8.c`. Mechanically
+  generated; fidelity spot-asserts lock the transcription (`0xDB` full
+  block, `0xCD` double horizontal, `0xB0` dither, `0xDF` upper half,
+  `0xFF` blank).
+
+### Changed
+
+- The "CGA high half intentionally blank" caveat from 0.4.0 is **gone** —
+  consumers picking the CGA font now get full CP437 coverage. No API
+  change; no behavior change for ASCII consumers (the low half is byte-
+  for-byte unchanged).
+
+### Tests
+
+- Suite now **295 assertions, 0 failed** (271 unit + 24 integration; was
+  289 at 0.5.1). Removed three "CGA high-half blank" assertions; added
+  CGA high-half fidelity asserts.
+
 ## [0.5.1] — 2026-05-27
 
 VGA 9×16 box-drawing built-in (derived from the existing VGA 8×16 + the
@@ -272,7 +303,8 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.5.1...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.5.2...HEAD
+[0.5.2]: https://github.com/MacCracken/kashi/compare/0.5.1...0.5.2
 [0.5.1]: https://github.com/MacCracken/kashi/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/MacCracken/kashi/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/MacCracken/kashi/compare/0.3.0...0.4.0
