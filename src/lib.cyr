@@ -922,8 +922,16 @@ fn kashi_attach_unicode_table(font_id, buf, len, kind) {
     var rec = _kashi_rt_get(font_id);
     if (rec == 0) { return 0 - KASHI_EINVAL; }
 
-    # Clear any existing map; the build helpers below populate fresh
-    # ones (or leave them zero if the table is empty).
+    # 0.8.0 audit F9 (CVE-2015-1803 stale-state-after-parse-error
+    # pattern): snapshot the existing umap/seqs before clearing. If the
+    # new table produces nothing, restore the previous state — a failed
+    # attach must not silently strip the font's existing Unicode map.
+    var prev_umap = load64(rec + RT_UMAP);
+    var prev_ucount = load64(rec + RT_UCOUNT);
+    var prev_seqs = load64(rec + RT_SEQS);
+    var prev_seqcount = load64(rec + RT_SEQCOUNT);
+    var prev_seqdata = load64(rec + RT_SEQDATA);
+
     store64(rec + RT_UMAP, 0);
     store64(rec + RT_UCOUNT, 0);
     store64(rec + RT_SEQS, 0);
@@ -933,7 +941,14 @@ fn kashi_attach_unicode_table(font_id, buf, len, kind) {
     _kashi_build_umap(rec, buf, len, kind, 0);
     _kashi_build_useqs(rec, buf, len, kind, 0);
     if (load64(rec + RT_UCOUNT) == 0) {
-        if (load64(rec + RT_SEQCOUNT) == 0) { return 0 - KASHI_EFORMAT; }
+        if (load64(rec + RT_SEQCOUNT) == 0) {
+            store64(rec + RT_UMAP, prev_umap);
+            store64(rec + RT_UCOUNT, prev_ucount);
+            store64(rec + RT_SEQS, prev_seqs);
+            store64(rec + RT_SEQCOUNT, prev_seqcount);
+            store64(rec + RT_SEQDATA, prev_seqdata);
+            return 0 - KASHI_EFORMAT;
+        }
     }
     return KASHI_OK;
 }

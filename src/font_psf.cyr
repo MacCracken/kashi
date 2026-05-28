@@ -90,6 +90,10 @@ fn _kashi_psf1_parse(buf, len, out) {
     if (height < 1) { return KASHI_EFORMAT; }
     if (height > KASHI_PSF_MAX_HEIGHT) { return KASHI_EFORMAT; }
     var mode = load8(buf + 2);
+    # 0.8.0 audit F1: reject unknown mode bits. PSF1 defines bits 0-2
+    # (MODE512 | MODEHASTAB | MODESEQ); bits 3-7 must be zero. An
+    # adversarial PSF with junk in the high mode bits is malformed.
+    if ((mode & 0xF8) != 0) { return KASHI_EFORMAT; }
     var count = 256;
     if ((mode & KASHI_PSF1_MODE512) != 0) { count = 512; }
     var glyph_bytes = count * charsize;   # <= 512 * 32, fits i64
@@ -136,6 +140,10 @@ fn _kashi_psf2_parse(buf, len, out) {
     if (count > KASHI_PSF_MAX_COUNT) { return KASHI_EFORMAT; }
     var glyph_bytes = count * charsize;   # bounded by checks above
     var flags = load32(buf + 12);
+    # 0.8.0 audit F2: reject unknown flag bits. PSF2 defines only bit 0
+    # (HAS_UNICODE); all other bits must be zero. Junk in the high
+    # bits indicates a malformed or hostile font.
+    if ((flags & 0xFFFFFFFE) != 0) { return KASHI_EFORMAT; }
     var dataend = headersize + glyph_bytes;
     if (len < dataend) { return KASHI_EFORMAT; }
     var unioff = 0;

@@ -5,6 +5,90 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-28
+
+P(-1) hardening + security audit pass after the 0.7.x import-formats
+track closed. Research-driven audit against the 2020–2026 font-parser
+CVE corpus (libXfont, FreeType, X.Org advisories, FontForge) produced
+a 17-point checklist; 9 findings landed, all fixed. **No exploitable
+issues found**; all findings are defense-in-depth tightenings or
+robustness fixes. See `docs/audit/2026-05-28-audit-0.8.0.md` for the
+full audit report.
+
+### Security
+
+- **F1 (PSF1 unknown mode bits)** — `_kashi_psf1_parse` now rejects
+  mode bytes with any of bits 3–7 set. PSF1 defines only bits 0–2
+  (MODE512 / MODEHASTAB / MODESEQ); high bits are reserved and must
+  be zero. Defense-in-depth (no exploit; rejected inputs were
+  previously accepted-but-unused).
+- **F2 (PSF2 unknown flags bits)** — `_kashi_psf2_parse` now rejects
+  flag words with any of bits 1–31 set. Only bit 0 (HAS_UNICODE) is
+  defined.
+- **F3 (BDF integer overflow path)** — `_kashi_bdf_int` no longer
+  silently truncates at `KASHI_BDF_INT_MAX_DIGITS` (= 10). Hitting
+  the cap now returns failure rather than success with a truncated
+  value. The pre-fix behavior left leftover digits in the parse
+  stream and corrupted the next field's parse; downstream
+  `KASHI_BDF_MAX_COUNT` checks caught the corruption so no exploit
+  was possible, but the silent-truncate pattern is the same shape
+  as CVE-2015-1804 (libXfont BDF metric truncation).
+- **F4 (PCF dead code cleanup)** — removed a redundant
+  `ref_left = ...loadi8(...) + 128 - 128` assignment in
+  `_kashi_pcf_parse_metrics` that was immediately overwritten by the
+  canonical `load8 - 0x80` form. Removed the now-orphan
+  `_kashi_pcf_loadi8` helper. Cosmetic; no behavior change.
+- **F5 / F6 / F7 (PCF format-byte unknown bits)** — each of
+  `_kashi_pcf_parse_metrics`, `_kashi_pcf_parse_bitmaps`, and
+  `_kashi_pcf_parse_encodings` now rejects format words with bits
+  outside their valid set. METRICS allows bits 0–5 + bit 8
+  (`PCF_FMT_VALID_METRICS = 0x13F`); BITMAPS and ENCODINGS allow only
+  bits 0–5 (`PCF_FMT_VALID_OTHER = 0x3F`). Defense-in-depth per
+  CVE-2008-0006 pattern.
+- **F8 (PCF duplicate TOC entries)** — `kashi_pcf_parse_header` runs
+  a new `_kashi_pcf_has_dup_tables` pre-pass over the TOC before
+  any per-type lookup; duplicate `type` entries (which were
+  previously silently first-wins) now return `KASHI_PCF_EFORMAT`.
+  Same family as CVE-2008-0006 (libXfont PCF TOC handling).
+- **F9 (failed `kashi_attach_unicode_table` stripped existing map)** —
+  the pre-fix flow cleared the runtime record's umap/seqs *before*
+  attempting the new build; if the build produced no entries, the
+  function returned `KASHI_EFORMAT` but the prior map had already
+  been wiped. Now the previous umap/seqs values are snapshotted
+  pre-build and restored on failure (CVE-2015-1803
+  stale-state-after-parse-error pattern). The contract is now
+  strict: an error return implies "no observable state change."
+  This is the only **medium-severity** finding — the others are
+  low.
+
+### Tests
+
+- Suite now **442 assertions, 0 failed** (393 unit + 49 integration;
+  was 429 at 0.7.2). New: 13 audit regression assertions, one block
+  per finding (F1, F2, F3, F5, F6, F7, F8, F9 — F4 is cosmetic with
+  no behavior change to test). Each regression patches the exact
+  input pattern from the audit and confirms rejection (or, for F9,
+  state restoration on the error path).
+- The full fuzz suite passes unchanged (4000 PSF + 2000 BDF + 1500
+  PCF + 1000 text-tab rounds + seeds, no crashes).
+
+### Audit
+
+- `docs/audit/2026-05-28-audit-0.8.0.md` — full audit report. Walks
+  the 17-point CVE-derived checklist against each of the four
+  parser files, records the 9 findings with severity and fix
+  description, and the 8 checklist items that came up clean (with
+  notes on each).
+- The 0.7.2 roadmap item "larger table-walk caps" was already
+  dropped as a non-issue in ADR 0010; re-confirmed here.
+
+### Roadmap note
+
+- **0.9.0 booked**: public API freeze + every exported symbol
+  documented with an example + benchmark trend captured (the M4
+  v1.0 criteria from `docs/development/roadmap.md`).
+- **1.0.0 booked**: clean review + version bump after 0.9.0.
+
 ## [0.7.2] — 2026-05-28
 
 PSF u-variant: sidecar Unicode-table attachment + strict overlong-UTF-8
@@ -594,7 +678,8 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.7.2...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.8.0...HEAD
+[0.8.0]: https://github.com/MacCracken/kashi/compare/0.7.2...0.8.0
 [0.7.2]: https://github.com/MacCracken/kashi/compare/0.7.1...0.7.2
 [0.7.1]: https://github.com/MacCracken/kashi/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/MacCracken/kashi/compare/0.6.0...0.7.0

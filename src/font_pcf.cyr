@@ -92,6 +92,10 @@ enum KashiPcfFmt {
     PCF_FMT_BIT_ORDER = 0x08;         # bit 3: 0=LSB, 1=MSB (bit order)
     PCF_FMT_SCAN_UNIT_MASK = 0x30;    # bits 4-5: 0=1B, 1=2B, 2=4B, 3=8B
     PCF_FMT_COMPRESSED = 0x100;       # bit 8: METRICS table is compressed
+    # 0.8.0 audit F5/F6/F7: explicit valid-bit masks for unknown-bit
+    # rejection. METRICS adds COMPRESSED; other tables don't.
+    PCF_FMT_VALID_METRICS = 0x13F;    # bits 0-5 + bit 8
+    PCF_FMT_VALID_OTHER = 0x3F;       # bits 0-5
 }
 
 # Parsed-header out struct (56 bytes; same shape as PSF / BDF).
@@ -156,14 +160,6 @@ fn _kashi_pcf_load32(buf, off, be) {
     return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
 }
 
-# Read a signed i8 at `off` from `buf`. Values 0x80..0xFF become
-# negative (-128..-1).
-fn _kashi_pcf_loadi8(buf, off) {
-    var b = load8(buf + off);
-    if (b >= 0x80) { return b - 256; }
-    return b;
-}
-
 # Read a signed i16 at `off` from `buf` in the requested endianness.
 fn _kashi_pcf_loadi16(buf, off, be) {
     var v = _kashi_pcf_load16(buf, off, be);
@@ -196,6 +192,30 @@ fn _kashi_pcf_pad_size(code) {
 }
 
 # --- TOC walking ---
+
+# Scan the TOC for duplicate type values. Returns 1 if any type appears
+# more than once, else 0. Bounds-safe: caller has already validated
+# `KASHI_PCF_HDR + table_count * KASHI_PCF_TOC_STRIDE <= len`.
+# 0.8.0 audit F8: a duplicate-type TOC is malformed (libXfont's
+# CVE-2008-0006 cited TOC handling that took the LAST duplicate
+# without validating — kashi takes the FIRST, which is safer, but
+# detecting and rejecting upfront is even cleaner).
+fn _kashi_pcf_has_dup_tables(buf, table_count) {
+    var i = 0;
+    while (i < table_count) {
+        var ei = KASHI_PCF_HDR + i * KASHI_PCF_TOC_STRIDE;
+        var ti = _kashi_pcf_load32(buf, ei + 0, 0);
+        var j = i + 1;
+        while (j < table_count) {
+            var ej = KASHI_PCF_HDR + j * KASHI_PCF_TOC_STRIDE;
+            var tj = _kashi_pcf_load32(buf, ej + 0, 0);
+            if (tj == ti) { return 1; }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
 
 # Find the TOC entry for `wanted_type` (a PCF_TYPE_* bit). Stores
 # `format` at `out + 0`, `size` at `out + 8`, `offset` at `out + 16`
@@ -246,6 +266,13 @@ fn _kashi_pcf_parse_metrics(buf, len, m_off, m_size, m_fmt, glyph_count, out) {
     # TOC's format (LE byte order for format words themselves).
     var on_disk_fmt = _kashi_pcf_load32(buf, m_off, 0);
     if (on_disk_fmt != m_fmt) { return KASHI_PCF_EFORMAT; }
+    # 0.8.0 audit F5: reject unknown format bits (defense-in-depth per
+    # libXfont CVE-2008-0006 pattern — undefined bits in trusted format
+    # words are a malformed-file signal). `(m_fmt & VALID) != m_fmt`
+    # is true iff some bit in m_fmt lies outside the VALID mask.
+    if ((m_fmt & PCF_FMT_VALID_METRICS) != m_fmt) {
+        return KASHI_PCF_EFORMAT;
+    }
 
     var be = (m_fmt & PCF_FMT_BYTE_ORDER) >> 2;   # 0 or 1
     var compressed = (m_fmt & PCF_FMT_COMPRESSED) >> 8;
@@ -277,8 +304,10 @@ fn _kashi_pcf_parse_metrics(buf, len, m_off, m_size, m_fmt, glyph_count, out) {
     var ref_asc = 0;
     var ref_desc = 0;
     if (compressed == 1) {
-        ref_left = _kashi_pcf_loadi8(buf, p + 0) + 128 - 128;
-        # Compressed fields: byte value - 0x80 = signed value
+        # Compressed fields: byte value - 0x80 = signed value.
+        # (0.8.0 audit F4: removed redundant loadi8 line — same result via
+        # the explicit `- 0x80` form, which is also what the per-glyph
+        # uniformity loop below uses.)
         ref_left = load8(buf + p + 0) - 0x80;
         ref_right = load8(buf + p + 1) - 0x80;
         ref_width = load8(buf + p + 2) - 0x80;
@@ -353,6 +382,11 @@ fn _kashi_pcf_parse_bitmaps(buf, len, b_off, b_size, b_fmt, glyph_count, ctx) {
     if (b_off + b_size > len) { return KASHI_PCF_EFORMAT; }
     var on_disk_fmt = _kashi_pcf_load32(buf, b_off, 0);
     if (on_disk_fmt != b_fmt) { return KASHI_PCF_EFORMAT; }
+    # 0.8.0 audit F6: reject unknown format bits in BITMAPS (no
+    # COMPRESSED bit allowed here — that's METRICS-only).
+    if ((b_fmt & PCF_FMT_VALID_OTHER) != b_fmt) {
+        return KASHI_PCF_EFORMAT;
+    }
 
     var be = (b_fmt & PCF_FMT_BYTE_ORDER) >> 2;
     var bit_lsb = 1 - ((b_fmt & PCF_FMT_BIT_ORDER) >> 3);   # 1 if LSB
@@ -415,6 +449,10 @@ fn _kashi_pcf_parse_encodings(buf, len, e_off, e_size, e_fmt, glyph_count, ctx) 
     if (e_off + e_size > len) { return KASHI_PCF_EFORMAT; }
     var on_disk_fmt = _kashi_pcf_load32(buf, e_off, 0);
     if (on_disk_fmt != e_fmt) { return KASHI_PCF_EFORMAT; }
+    # 0.8.0 audit F7: reject unknown format bits in BDF_ENCODINGS.
+    if ((e_fmt & PCF_FMT_VALID_OTHER) != e_fmt) {
+        return KASHI_PCF_EFORMAT;
+    }
 
     var be = (e_fmt & PCF_FMT_BYTE_ORDER) >> 2;
     var min_b2 = _kashi_pcf_load16(buf, e_off + 4, be);
@@ -467,6 +505,10 @@ fn kashi_pcf_parse_header(buf, len, hdr, ctx) {
     if (table_count > KASHI_PCF_MAX_TABLES) { return KASHI_PCF_EFORMAT; }
     var toc_end = KASHI_PCF_HDR + table_count * KASHI_PCF_TOC_STRIDE;
     if (toc_end > len) { return KASHI_PCF_EFORMAT; }
+    # 0.8.0 audit F8: reject TOCs with duplicate type entries.
+    if (_kashi_pcf_has_dup_tables(buf, table_count) == 1) {
+        return KASHI_PCF_EFORMAT;
+    }
 
     # Locate required tables.
     var ent[24];

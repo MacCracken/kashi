@@ -164,15 +164,23 @@ fn _kashi_bdf_int(buf, pos, end, out) {
     var start = pos;
     var n = 0;
     var digits = 0;
+    var overflow = 0;
     var done = 0;
     while (done == 0) {
         if (pos >= end) { done = 1; }
         if (done == 0) {
-            if (digits >= KASHI_BDF_INT_MAX_DIGITS) { done = 1; }
+            var d = load8(buf + pos);
+            if (d < 0x30) { done = 1; }
+            if (d > 0x39) { done = 1; }
             if (done == 0) {
-                var d = load8(buf + pos);
-                if (d < 0x30) { done = 1; }
-                if (d > 0x39) { done = 1; }
+                if (digits >= KASHI_BDF_INT_MAX_DIGITS) {
+                    # 0.8.0 audit F3: the prior 10-digit cap silently
+                    # truncated and returned success, leaving leftover
+                    # digits for the next field. Now we mark overflow
+                    # and return failure rather than fail-quiet.
+                    overflow = 1;
+                    done = 1;
+                }
                 if (done == 0) {
                     n = n * 10 + (d - 0x30);
                     pos = pos + 1;
@@ -181,6 +189,7 @@ fn _kashi_bdf_int(buf, pos, end, out) {
             }
         }
     }
+    if (overflow != 0) { return 0; }
     if (pos == start) { return 0; }
     store64(out + 0, n * sign);
     store64(out + 8, pos);

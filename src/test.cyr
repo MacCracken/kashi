@@ -1572,6 +1572,165 @@ fn test_attach_errors() {
     return 0;
 }
 
+# --- 0.8.0 audit regression tests (audit F1..F9) ---
+
+# F1: PSF1 mode field with unknown high bits (mode & 0xF8 != 0) is rejected.
+fn test_audit_f1_psf1_unknown_mode() {
+    test_group("audit F1: PSF1 unknown mode bits");
+    var hdr[56];
+    var b = alloc(4 + 256 * 8);
+    var i = 0;
+    while (i < 4 + 256 * 8) { store8(b + i, 0); i = i + 1; }
+    store8(b + 0, 0x36); store8(b + 1, 0x04);
+    store8(b + 2, 0x10);    # mode bit 4 set (unknown)
+    store8(b + 3, 8);
+    assert_eq(kashi_psf_parse(b, 4 + 256 * 8, &hdr), KASHI_EFORMAT,
+    "psf1 mode 0x10 -> EFORMAT");
+    # Mode 0x07 (all defined bits) is still accepted.
+    store8(b + 2, 0x07);
+    # Need bigger buffer for 512-glyph bank.
+    var b2 = alloc(4 + 512 * 8);
+    var k = 0;
+    while (k < 4 + 512 * 8) { store8(b2 + k, 0); k = k + 1; }
+    store8(b2 + 0, 0x36); store8(b2 + 1, 0x04);
+    store8(b2 + 2, 0x07); store8(b2 + 3, 8);
+    assert_eq(kashi_psf_parse(b2, 4 + 512 * 8, &hdr), KASHI_OK,
+    "psf1 mode 0x07 (all defined) -> OK");
+    return 0;
+}
+
+# F2: PSF2 flags field with unknown high bits is rejected.
+fn test_audit_f2_psf2_unknown_flags() {
+    test_group("audit F2: PSF2 unknown flag bits");
+    var hdr[56];
+    var b = alloc(32 + 2 * 16);
+    var len = _mk_psf2(b, 2, 16, 8, 0);
+    # Set flags = 0x02 (bit 1, undefined). Bit 0 = HAS_UNICODE is the only valid flag.
+    _put32(b, 12, 0x02);
+    assert_eq(kashi_psf_parse(b, len, &hdr), KASHI_EFORMAT,
+    "psf2 flags 0x02 -> EFORMAT");
+    # flags 0x01 (HAS_UNICODE) still accepted.
+    _put32(b, 12, 0x01);
+    assert_eq(kashi_psf_parse(b, len, &hdr), KASHI_OK,
+    "psf2 flags 0x01 (HAS_UNICODE) -> OK");
+    return 0;
+}
+
+# F3: BDF int parser rejects oversized digit counts (no silent truncation).
+fn test_audit_f3_bdf_int_overflow() {
+    test_group("audit F3: BDF int parser rejects >10 digits");
+    var b = alloc(512);
+    var p = 0;
+    p = _bdf_str(b, p, "STARTFONT 2.1\n");
+    p = _bdf_str(b, p, "FONTBOUNDINGBOX 8 8 0 0\n");
+    # CHARS with 11-digit number (overflow trigger).
+    p = _bdf_str(b, p, "CHARS 99999999999\n");
+    p = _bdf_str(b, p, "STARTCHAR A\n");
+    var hdr[56];
+    var ctx[32];
+    assert_eq(kashi_bdf_parse_header(b, p, &hdr, &ctx), KASHI_BDF_EFORMAT,
+    "bdf CHARS with 11 digits -> EFORMAT");
+    return 0;
+}
+
+# F5: PCF METRICS format with unknown bits is rejected.
+fn test_audit_f5_pcf_metrics_unknown_bits() {
+    test_group("audit F5: PCF METRICS unknown format bits");
+    var buf = alloc(512);
+    var len = _mk_pcf(buf, 0, 1);     # standard MSB-bit, compressed
+    var hdr[56];
+    var ctx[144];
+    # Patch the METRICS TOC entry's format word with bit 9 set (unknown).
+    # METRICS TOC entry at offset 8; format at +4 → buf+12.
+    var orig = load8(buf + 12 + 1);   # high byte of low word
+    store8(buf + 12 + 1, orig | 0x02);   # set bit 9 (= 0x200)
+    # Also patch the on-disk METRICS format word at offset 56 to match
+    # (else the on-disk-mismatch check would catch it first).
+    var orig2 = load8(buf + 56 + 1);
+    store8(buf + 56 + 1, orig2 | 0x02);
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT,
+    "pcf METRICS bit 9 set -> EFORMAT");
+    return 0;
+}
+
+# F6: PCF BITMAPS format with the COMPRESSED bit set (METRICS-only) is rejected.
+fn test_audit_f6_pcf_bitmaps_unknown_bits() {
+    test_group("audit F6: PCF BITMAPS unknown format bits");
+    var buf = alloc(512);
+    var len = _mk_pcf(buf, 0, 1);
+    var hdr[56];
+    var ctx[144];
+    # BITMAPS TOC entry at offset 24; format at +4 → buf+28.
+    # BITMAPS on-disk format is also at byte 0 of the BITMAPS body.
+    # Set the COMPRESSED bit (0x100) which is only valid for METRICS.
+    store8(buf + 28 + 1, load8(buf + 28 + 1) | 0x01);   # bit 8 = 0x100
+    # Also patch on-disk format (BITMAPS body's first 4 bytes).
+    # BITMAPS body starts at offset 56 + 21 = 77.
+    store8(buf + 77 + 1, load8(buf + 77 + 1) | 0x01);
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT,
+    "pcf BITMAPS COMPRESSED bit -> EFORMAT");
+    return 0;
+}
+
+# F7: PCF BDF_ENCODINGS format with unknown bits is rejected.
+fn test_audit_f7_pcf_encodings_unknown_bits() {
+    test_group("audit F7: PCF BDF_ENCODINGS unknown format bits");
+    var buf = alloc(512);
+    var len = _mk_pcf(buf, 0, 1);
+    var hdr[56];
+    var ctx[144];
+    # ENCODINGS TOC entry at offset 40; format at +4 → buf+44.
+    # ENCODINGS body starts at 77 + 60 = 137.
+    store8(buf + 44 + 1, load8(buf + 44 + 1) | 0x01);   # bit 8
+    store8(buf + 137 + 1, load8(buf + 137 + 1) | 0x01);
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT,
+    "pcf BDF_ENCODINGS COMPRESSED bit -> EFORMAT");
+    return 0;
+}
+
+# F8: PCF with duplicate TOC type entries is rejected.
+fn test_audit_f8_pcf_duplicate_toc() {
+    test_group("audit F8: PCF duplicate TOC entries");
+    var buf = alloc(512);
+    var len = _mk_pcf(buf, 0, 1);
+    var hdr[56];
+    var ctx[144];
+    # Patch the BDF_ENCODINGS TOC entry's type to METRICS (duplicate).
+    # ENCODINGS TOC at offset 40; type field at +0 → buf+40.
+    _put32(buf, 40, 0x04);   # change from PCF_TYPE_BDF_ENCODINGS (0x20) to PCF_TYPE_METRICS (0x04)
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT,
+    "pcf duplicate METRICS TOC entry -> EFORMAT");
+    return 0;
+}
+
+# F9: failed kashi_attach_unicode_table preserves existing map.
+fn test_audit_f9_attach_stale_state() {
+    test_group("audit F9: failed attach preserves existing map");
+    # Load a PSF that DOES carry a Unicode table — gives us an existing map.
+    var buf = alloc(2048);
+    var len = _mk_psf1_tab(buf, 3, 0x41, 0x2603);   # glyph 0x41 -> U+2603
+    var id = kashi_load_psf(buf, len);
+    assert_gte(id, KASHI_RT_FONT_BASE, "psf with table loads");
+    # Pre-attach: U+2603 resolves through the inline map.
+    var pre_present = 0;
+    if (kashi_font_ptr(id, 0x2603) != 0) { pre_present = 1; }
+    assert_eq(pre_present, 1, "U+2603 mapped pre-attach");
+
+    # Attempt to attach an EMPTY binary table (no codepoint entries —
+    # build_umap will find zero entries).
+    var empty[2];
+    store8(&empty + 0, 0xFF);   # PSF1 terminator only; no codepoints
+    store8(&empty + 1, 0xFF);
+    var rc = kashi_attach_unicode_table(id, &empty, 2, KASHI_PSF_KIND_PSF1);
+    assert_lt(rc, 0, "empty attach returns negative");
+
+    # Post-attach: U+2603 STILL resolves (the previous map was restored).
+    var post_present = 0;
+    if (kashi_font_ptr(id, 0x2603) != 0) { post_present = 1; }
+    assert_eq(post_present, 1, "U+2603 still mapped after failed attach (no stale state)");
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -1617,6 +1776,14 @@ fn main() {
     test_attach_binary();
     test_attach_text();
     test_attach_errors();
+    test_audit_f1_psf1_unknown_mode();
+    test_audit_f2_psf2_unknown_flags();
+    test_audit_f3_bdf_int_overflow();
+    test_audit_f5_pcf_metrics_unknown_bits();
+    test_audit_f6_pcf_bitmaps_unknown_bits();
+    test_audit_f7_pcf_encodings_unknown_bits();
+    test_audit_f8_pcf_duplicate_toc();
+    test_audit_f9_attach_stale_state();
 
     return assert_summary();
 }

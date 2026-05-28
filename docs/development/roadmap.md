@@ -1,6 +1,6 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-05-28 (post-0.7.2 — 0.7.x track closed)
+> **Last Updated**: 2026-05-28 (post-0.8.0 — hardening + audit done)
 >
 > Milestone plan through v1.0. Live status lives in [`state.md`](state.md);
 > this file is the sequencing — what ships, in what order, against what
@@ -132,11 +132,28 @@ hookup.
   non-issue on re-examination — the existing walk is buffer-bounded.
   Closes the 0.7.x track.
 
-### M4 — v1.0 freeze (1.0.0)
+### 0.8.0 — P(-1) hardening + security audit — ✅ shipped 2026-05-28
 
-- P(-1) closeout: full audit, frozen API, benchmark trend, security pass.
-- Every public symbol documented with an example; `docs/api/` if the surface
-  warrants it.
+- Research-driven audit against the 2020–2026 font-parser CVE corpus
+  (libXfont, FreeType, X.Org advisories, FontForge). 17-point
+  checklist walk against `src/font_psf.cyr`, `src/font_bdf.cyr`,
+  `src/font_pcf.cyr`, and `src/lib.cyr`. 9 findings (F1..F9), 0
+  exploitable, all fixed. 13 regression assertions added. Full audit
+  in `docs/audit/2026-05-28-audit-0.8.0.md`.
+
+### 0.9.0 — Public API freeze + docs + benchmarks (booked)
+
+- Freeze every exported symbol; each gets a documented example.
+- Capture the benchmark trend across the 0.x line in
+  `docs/benchmarks.md` and `docs/benchmarks/history.csv`.
+- `docs/api/` if the surface warrants it.
+- This is the M4 docs/benchmark closeout (split from the v1.0 cut
+  for review-able pacing).
+
+### M4 — v1.0 freeze (1.0.0) (booked)
+
+- Clean review of the 0.9.0 frozen surface.
+- Version bump to 1.0.0.
 
 ## Out of scope (for v1.0)
 

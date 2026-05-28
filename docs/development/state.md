@@ -1,21 +1,26 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-28 (**0.7.2** cut — PSF u-variant
-> sidecar tables + strict overlong-UTF-8) | **Refresh cadence**:
-> bumped every release (ideally by the release post-hook).
+> **Last refresh**: 2026-05-28 (**0.8.0** cut — P(-1) hardening +
+> security audit) | **Refresh cadence**: bumped every release.
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
 
-**0.7.2** — PSF u-variant: sidecar Unicode-table attachment APIs
-(`kashi_attach_unicode_table*` for binary PSF1/PSF2 tables and
-`kashi_attach_unicode_text*` for the `psfgettable` text format), plus
-strict overlong-UTF-8 rejection in the PSF2 decoder per RFC 3629
-(audit F3 follow-up to the 0.6.0 F2 tightening). Closes the 0.7.x
-track (BDF → PCF → u-variant); the next substantial move is M4 /
-1.0.0 freeze. Tagged by the user (who handles all git operations).
+**0.8.0** — P(-1) hardening + security audit pass after the 0.7.x
+import-formats track closed. Research-driven audit against the
+2020–2026 font-parser CVE corpus (libXfont, FreeType, X.Org
+advisories, FontForge) produced a 17-point checklist; **9 findings,
+0 exploitable**, all fixed: PSF1/PSF2 unknown header bits (F1/F2),
+BDF integer overflow path tightened (F3), PCF dead code removed
+(F4), PCF format-byte unknown bits rejected in all three required
+tables (F5/F6/F7), PCF duplicate TOC entries rejected (F8),
+`kashi_attach_unicode_table` no longer strips the existing map on a
+failed attach (F9 — the only medium-severity finding). Full audit
+in `docs/audit/2026-05-28-audit-0.8.0.md`. Next: 0.9.0 (public API
+freeze, every-symbol docs + examples, benchmark trend), then 1.0.0
+(clean review + bump).
 
 ## Toolchain
 
@@ -82,8 +87,10 @@ track (BDF → PCF → u-variant); the next substantial move is M4 /
 
 ## What's booked (not built — future)
 
-- M4 / 1.0.0: API freeze, every public symbol documented with an
-  example, benchmark trend captured, final security audit pass.
+- **0.9.0**: public API freeze + every exported symbol documented
+  with an example + benchmark trend captured (the M4 v1.0
+  criteria from `docs/development/roadmap.md`).
+- **1.0.0**: clean review + version bump.
 - Text shaping / BiDi — out of scope (kashi exposes data only).
 
 See [`roadmap.md`](roadmap.md).
@@ -95,23 +102,21 @@ See [`roadmap.md`](roadmap.md).
 
 ## Tests
 
-- `src/test.cyr` — 380 assertions (built-in metadata + glyph fidelity,
-  bounds, PSF parse + load, BDF parse + load + error cases, PCF
-  parse + load + LSB-bit + uncompressed-metrics + 5 parse-error
-  cases, **strict overlong-UTF-8 (8 vectors), binary attach
-  round-trip, text attach round-trip, attach error cases**).
-  `cyrius test` → **0 failed**.
+- `src/test.cyr` — 393 assertions (incl. the 13 audit regression
+  assertions added in 0.8.0 for findings F1, F2, F3, F5, F6, F7, F8,
+  F9; F4 was cosmetic). `cyrius test` → **0 failed**.
 - `tests/kashi.tcyr` — 49 assertions (structural invariants, PSF +
-  BDF + PCF file round-trips, **PSF + sidecar tab file round-trip**,
+  BDF + PCF file round-trips, PSF + sidecar tab file round-trip,
   missing-file negative cases).
-- **429 assertions total, 0 failed.**
+- **442 assertions total, 0 failed.**
 - `tests/kashi.fcyr` — fuzz over the accessor bounds contract, the
   PSF parser (4000 rounds), the BDF parser (2000 rounds), the PCF
-  parser (1500 rounds), and **the text-tab parser (1000 rounds across
-  random / template / mutated / truncated picks)**. No crashes; all
+  parser (1500 rounds), and the text-tab parser (1000 rounds across
+  random / template / mutated / truncated picks). No crashes; all
   accept-paths bounds-safe.
-- `tests/kashi.bcyr` — bench numbers unchanged (no hot-path code
-  modified in 0.7.2).
+- `tests/kashi.bcyr` — bench numbers unchanged in 0.8.0 (no hot-path
+  code modified; the audit fixes are all on the parse-time error
+  paths).
 
 ## Cleanliness (P(-1) gates)
 
@@ -126,10 +131,13 @@ See [`roadmap.md`](roadmap.md).
 - `cyaudit vet src/lib.cyr` — 4 deps (lib + core + psf + bdf + pcf),
   0 untrusted. The 0.7.2 attach APIs and the text-tab parser are
   inline in lib.cyr (no new dependency module).
-- **Security audit** — `docs/audit/2026-05-28-audit.md` (0.6.0 P(-1)).
-  Audit F3 (overlong-UTF-8) closed in this cut. PCF + text-tab
-  parser audits covered via the fuzz exposure paths; no separate
-  audit file this cut. Full pre-1.0 audit booked for M4.
+- **Security audit** — `docs/audit/2026-05-28-audit-0.8.0.md` (0.8.0
+  P(-1) hardening). CVE-research-driven 17-point checklist walk
+  against the full post-0.7.2 surface; 9 findings landed (F1..F9),
+  all fixed. None exploitable; the worst (F9) was a stale-state-
+  after-parse-failure pattern in the attach API matching
+  CVE-2015-1803. Earlier audits: `2026-05-27-audit.md` (0.2.0 P(-1)
+  on the freestanding core), `2026-05-28-audit.md` (0.6.0 P(-1)).
 
 ## Glyph fidelity
 
