@@ -6,10 +6,9 @@ type: state
 
 # Documentation Health — kashi
 
-> **Last refresh**: 2026-05-27 (0.1.0 baseline + post-0.1.0 P(-1) hardening:
-> `docs/audit/` and `docs/benchmarks*` now exist; CHANGELOG/state refreshed).
-> **Refresh cadence**: when a doc is touched, update its row. Full-tree
-> sweep at minor-version closeouts.
+> **Last refresh**: 2026-05-27 (**0.3.0** cut — M2 Unicode→codepoint
+> addressing). **Refresh cadence**: when a doc is touched, update its row.
+> Full-tree sweep at minor-version closeouts.
 >
 > **Scope**: this repo only (`kashi`) — the `docs/` tree plus root-level
 > files (README, CLAUDE.md, CHANGELOG, CONTRIBUTING, SECURITY,
@@ -48,7 +47,7 @@ nothing archived, no open strategic questions.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-05-27 | ✅ Fresh | Two-faces architecture, built-in font table, freestanding-core API, agnos consumption contract, build/test. |
-| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]`, `[0.2.0]` (M1 + P(-1)), `[Unreleased]` (M2 Unicode→codepoint mapping + the index→codepoint Changed note). SemVer + Keep a Changelog. |
+| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]`, `[0.2.0]` (M1 + P(-1)), `[0.3.0]` (M2 Unicode→codepoint addressing). SemVer + Keep a Changelog. |
 | `CLAUDE.md` | 2026-05-27 | ✅ Fresh | Durable-only; freestanding-vs-full-lib split, one-owner/two-faces boundary discipline, standard constraints. State deferred to state.md. |
 | `CONTRIBUTING.md` | 2026-05-27 | ✅ Fresh | The two faces, accessor-bounds rule, glyph-fidelity rule, Cyrius enum/style notes. |
 | `SECURITY.md` | 2026-05-27 | ✅ Fresh | Accessor-bounds = kernel trust boundary; buffer sizing; future PSF-parse validation. |

@@ -1,18 +1,18 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-27 (**0.2.0** released; **post-0.2.0 (M2)**
-> Unicode→glyph mapping landed, unreleased — see `docs/adr/0003`) |
-> **Refresh cadence**: bumped every release (ideally by the release
-> post-hook).
+> **Last refresh**: 2026-05-27 (**0.3.0** cut — M2 Unicode→codepoint
+> addressing; see `docs/adr/0003`) | **Refresh cadence**: bumped every
+> release (ideally by the release post-hook).
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
 
-**0.2.0** — M1 PSF font-import path (PSF1/PSF2 load, runtime registry,
-unified dispatch) + the post-0.1.0 P(-1) hardening pass. Tagged by the user
-(who handles all git operations); the tag push drives the release workflow.
+**0.3.0** — M2 (part): Unicode→glyph mapping; runtime PSF fonts addressed
+by codepoint through the unified `kashi_font_*` accessors; raw-index access
+moves to `kashi_rt_glyph_*`. Tagged by the user (who handles all git
+operations); the tag push drives the release workflow.
 
 ## Toolchain
 

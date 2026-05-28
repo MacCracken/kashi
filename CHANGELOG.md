@@ -5,6 +5,8 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-27
+
 M2 (part) — Unicode→glyph mapping so runtime PSF fonts are addressed by
 **codepoint** like the built-ins. Library-face + the pure parser only; the
 freestanding core stays dependency-free.
@@ -143,6 +145,7 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.2.0...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.3.0...HEAD
+[0.3.0]: https://github.com/MacCracken/kashi/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/MacCracken/kashi/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/MacCracken/kashi/releases/tag/0.1.0

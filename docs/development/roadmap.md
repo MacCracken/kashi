@@ -57,14 +57,14 @@
 - **Deferred** (future milestone): glyph width > 8 (multi-byte rows) and the
   PSF Unicode→glyph map (runtime fonts are addressed by glyph index for now).
 
-### M2 — Runtime registry niceties + Unicode + additional fonts (0.3.0)
+### M2 — Runtime registry, Unicode addressing, additional fonts
 
 - `kashi_register_font` + the runtime registry landed in M1.
 - ✅ **PSF Unicode→glyph map** (codepoint addressing for runtime fonts) —
-  landed 2026-05-27, unreleased. See
+  shipped 0.3.0, 2026-05-27. See
   [ADR 0003](0003-codepoint-addressing-runtime-fonts.md).
-- Still open: registry niceties (enumerate available fonts, select an
-  "active" font); glyph width > 8 (multi-byte rows); PSF Unicode
+- Still open for later cuts: registry niceties (enumerate available fonts,
+  select an "active" font); glyph width > 8 (multi-byte rows); PSF Unicode
   sequence/ligature mappings.
 - Additional built-in fonts (candidates: a denser 8×16, a wider 9×16 with
   proper box-drawing, a small 6×8) — added to the **freestanding core** so
