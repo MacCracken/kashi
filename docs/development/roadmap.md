@@ -38,7 +38,7 @@
 - Demo, unit + integration tests (81 assertions), fuzz harness, benchmarks.
 - ADR 0001 (freestanding split), architecture note 001 (u64-unit BSS).
 
-### M1 — PSF import path (0.2.0) — ✅ landed 2026-05-27 *(unreleased)*
+### M1 — PSF import path (0.2.0) — ✅ shipped 0.2.0, 2026-05-27
 
 - **PSF1** (`0x36 0x04`) and **PSF2** (`0x72 0xB5 0x4A 0x86`) import via
   `kashi_load_psf` / `kashi_load_psf_file`, plus `kashi_register_font` for

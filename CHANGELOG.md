@@ -5,9 +5,11 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
-Post-0.1.0 cycle: the **M1 PSF font-import path** plus a P(-1) hardening
-pass. No glyph byte changed — fidelity vs agnos source is preserved, and the
-freestanding core stays dependency-free (`cyrius vet` → "no dependencies").
+## [0.2.0] — 2026-05-27
+
+The **M1 PSF font-import path** plus a P(-1) hardening pass. No glyph byte
+changed — fidelity vs agnos source is preserved, and the freestanding core
+stays dependency-free (`cyrius vet` → "no dependencies").
 
 ### Added
 
@@ -115,5 +117,6 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.1.0...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/MacCracken/kashi/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/MacCracken/kashi/releases/tag/0.1.0

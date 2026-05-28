@@ -1,17 +1,18 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-27 (0.1.0 baseline + post-0.1.0 P(-1) hardening
-> + **M1 PSF import**, unreleased — see `docs/adr/0002` and
-> `docs/audit/2026-05-27-audit.md`) | **Refresh cadence**: bumped every
-> release (ideally by the release post-hook).
+> **Last refresh**: 2026-05-27 (**0.2.0** cut — M1 PSF import + P(-1)
+> hardening; see `docs/adr/0002` and `docs/audit/2026-05-27-audit.md`) |
+> **Refresh cadence**: bumped every release (ideally by the release
+> post-hook).
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
 
-**0.1.0** — initial baseline. Split out of the agnos kernel's framebuffer
-console. No git tag yet (user handles all git operations).
+**0.2.0** — M1 PSF font-import path (PSF1/PSF2 load, runtime registry,
+unified dispatch) + the post-0.1.0 P(-1) hardening pass. Tagged by the user
+(who handles all git operations); the tag push drives the release workflow.
 
 ## Toolchain
 
