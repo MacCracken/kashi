@@ -77,7 +77,7 @@ fn rng_next() {
 fn fuzz_psf(rounds) {
     var cap = 2048;
     var buf = alloc(cap);
-    var hdr[48];
+    var hdr[56];
     var r = 0;
     while (r < rounds) {
         var len = rng_next() % (cap + 1);
@@ -87,15 +87,20 @@ fn fuzz_psf(rounds) {
             i = i + 1;
         }
         # Sometimes stamp a real magic so the fuzzer drives past detection
-        # into the field-validation / length-bound logic.
+        # into the field-validation / length-bound logic; force the table
+        # flag so accepted fonts exercise the Unicode map build on garbage.
         var pick = rng_next() & 3;
         if (pick == 0) {
-            if (len >= 2) { store8(buf + 0, 0x36); store8(buf + 1, 0x04); }
+            if (len >= 4) {
+                store8(buf + 0, 0x36); store8(buf + 1, 0x04);
+                store8(buf + 2, load8(buf + 2) | 0x02);     # PSF1 HASTAB
+            }
         }
         if (pick == 1) {
-            if (len >= 4) {
+            if (len >= 32) {
                 store8(buf + 0, 0x72); store8(buf + 1, 0xB5);
                 store8(buf + 2, 0x4A); store8(buf + 3, 0x86);
+                store8(buf + 12, load8(buf + 12) | 0x01);   # PSF2 HAS_UNICODE
             }
         }
 
@@ -107,28 +112,34 @@ fn fuzz_psf(rounds) {
             }
         }
 
-        # Contract 2: a full load returns a value; an accepted font is
-        # bounds-safe for ALL glyph/row probes.
+        # Contract 2: a full load (incl. map build from a garbage Unicode
+        # table) returns a value; an accepted font is bounds-safe for every
+        # probe.
         var id = kashi_load_psf(buf, len);
         if (id >= KASHI_RT_FONT_BASE) {
             var count = kashi_rt_font_count(id);
             var height = kashi_rt_font_height(id);
             var g = 0;
             while (g < 4) {
-                var gi = rng_next() % (count + 2);   # includes out-of-range
                 var row = rng_next() & 0xFF;
-                var v = kashi_font_row(id, gi, row);
-                if (v < 0) { return 2; }
-                if (v > 0xFF) { return 3; }
-                if (gi >= count) {
-                    if (v != 0) { return 4; }
+                # Raw glyph-INDEX access: out-of-range index -> 0 / null.
+                var idx = rng_next() % (count + 2);
+                var rv = kashi_rt_glyph_row(id, idx, row);
+                if (rv < 0) { return 2; }
+                if (rv > 0xFF) { return 3; }
+                if (idx >= count) {
+                    if (rv != 0) { return 4; }
+                    if (kashi_rt_glyph_ptr(id, idx) != 0) { return 5; }
                 }
                 if (row >= height) {
-                    if (v != 0) { return 5; }
+                    if (rv != 0) { return 6; }
                 }
-                if (gi >= count) {
-                    if (kashi_font_ptr(id, gi) != 0) { return 6; }
-                }
+                # CODEPOINT access (map is arbitrary): only the byte-range /
+                # no-crash contract holds.
+                var cp = rng_next() & 0xFFFFF;
+                var cv = kashi_font_row(id, cp, row);
+                if (cv < 0) { return 7; }
+                if (cv > 0xFF) { return 8; }
                 g = g + 1;
             }
         }

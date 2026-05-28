@@ -28,6 +28,32 @@ fn scan_font(font_id) {
     return acc;
 }
 
+# Build a PSF2 with `count` glyphs (8x8) and a Unicode table mapping
+# codepoint (0x20 + g) -> glyph g, so the codepoint-lookup bench has a real
+# binary-search map. count must be <= 95 so codepoints stay single-byte ASCII.
+fn bench_mk_psf2_tab(buf, count) {
+    var i = 0;
+    while (i < 32) { store8(buf + i, 0); i = i + 1; }
+    store8(buf + 0, 0x72); store8(buf + 1, 0xB5); store8(buf + 2, 0x4A); store8(buf + 3, 0x86);
+    store8(buf + 8, 32);       # headersize
+    store8(buf + 12, 1);       # flags HAS_UNICODE
+    store8(buf + 16, count);   # count
+    store8(buf + 20, 8);       # charsize = height
+    store8(buf + 24, 8);       # height
+    store8(buf + 28, 8);       # width
+    var dataend = 32 + count * 8;
+    var j = 32;
+    while (j < dataend) { store8(buf + j, 0); j = j + 1; }
+    var pos = dataend;
+    var g = 0;
+    while (g < count) {
+        store8(buf + pos, 0x20 + g); pos = pos + 1;   # codepoint (ASCII, 1 byte)
+        store8(buf + pos, 0xFF); pos = pos + 1;        # glyph terminator
+        g = g + 1;
+    }
+    return pos;
+}
+
 fn main(): i64 {
     alloc_init();
     kashi_font_init();
@@ -90,6 +116,21 @@ fn main(): i64 {
     }
     bench_batch_stop(b5, 1000000);
     bench_report(b5);
+
+    # Codepoint path WITH a Unicode map: resolve a codepoint to a glyph via
+    # binary search (here over a 95-entry map), then fetch the row.
+    var ub = alloc(1024);
+    var ulen = bench_mk_psf2_tab(ub, 95);
+    var rtcp = kashi_load_psf(ub, ulen);
+    var b6 = bench_new("font_row_runtime_cp");
+    bench_batch_start(b6);
+    i = 0;
+    while (i < 1000000) {
+        sink = sink + kashi_font_row(rtcp, 0x41, 5);
+        i = i + 1;
+    }
+    bench_batch_stop(b6, 1000000);
+    bench_report(b6);
 
     return 0;
 }

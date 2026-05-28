@@ -45,14 +45,22 @@ a cross-machine guarantee.
 with the standalone `glyph_row` figure — the whole-font sweep carries no
 per-glyph overhead beyond the accessor itself.
 
-### Unified-dispatcher overhead (0.2.0)
+### Unified-dispatcher overhead
 
-The M1 `kashi_font_row` dispatcher routes built-in vs runtime ids:
+`kashi_font_row` routes built-in vs runtime ids and (post-M2) resolves the
+codepoint for runtime fonts. Per-call figures (x86_64); the hot path stays
+cheap by resolving once via `kashi_font_ptr` and reading rows with
+`load8(ptr+row)`:
 
-| Benchmark | avg | iters | vs direct |
+| Benchmark | avg | iters | notes |
 |---|---|---|---|
-| `font_row_builtin` | 19 ns | 1,000,000 | +~1 ns over `glyph_row` (one compare + branch) |
-| `font_row_runtime` | 28 ns | 1,000,000 | +~10 ns (registry lookup + bounds + load) |
+| `font_row_builtin` | ~19 ns | 1,000,000 | built-in id → core; +~1 ns over `glyph_row` |
+| `font_row_runtime` | ~42 ns | 1,000,000 | runtime, no map → identity resolve + registry lookups |
+| `font_row_runtime_cp` | ~62 ns | 1,000,000 | runtime, codepoint → binary-search map (95 entries) + fetch |
+
+The M2 codepoint-addressing change (ADR 0003) added the resolve step, which
+is why the per-call runtime figures rose vs 0.2.0; amortize it with the
+`kashi_font_ptr`-once pattern.
 
 ## Updating
 

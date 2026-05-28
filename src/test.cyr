@@ -274,11 +274,38 @@ fn _mk_psf2(buf, count, height, width, flags) {
     return 32 + count * height;
 }
 
+# Lay down a PSF1 (256 glyphs, mode HASTAB) with a Unicode table that maps a
+# single glyph index -> codepoint; all other glyphs get an empty entry.
+# Glyph data is zeroed (caller plants what it needs). Returns total length.
+fn _mk_psf1_tab(buf, charsize, map_glyph, map_cp) {
+    store8(buf + 0, 0x36);
+    store8(buf + 1, 0x04);
+    store8(buf + 2, 0x02);   # mode bit 1 = HASTAB
+    store8(buf + 3, charsize);
+    var dataend = 4 + 256 * charsize;
+    var i = 4;
+    while (i < dataend) { store8(buf + i, 0); i = i + 1; }
+    var pos = dataend;
+    var g = 0;
+    while (g < 256) {
+        if (g == map_glyph) {
+            store8(buf + pos + 0, map_cp & 0xFF);
+            store8(buf + pos + 1, (map_cp >> 8) & 0xFF);
+            pos = pos + 2;
+        }
+        store8(buf + pos + 0, 0xFF);   # 0xFFFF glyph terminator
+        store8(buf + pos + 1, 0xFF);
+        pos = pos + 2;
+        g = g + 1;
+    }
+    return pos;
+}
+
 fn test_psf1_parse() {
     test_group("psf1 parse");
     var buf = alloc(4 + 256 * 8);
     var len = _mk_psf1(buf, 0, 8);   # mode 0 (256 glyphs), height 8
-    var hdr[48];
+    var hdr[56];
     assert_eq(kashi_psf_parse(buf, len, &hdr), KASHI_OK, "psf1 ok");
     assert_eq(load64(&hdr + KASHI_PH_KIND), KASHI_PSF_KIND_PSF1, "psf1 kind");
     assert_eq(load64(&hdr + KASHI_PH_WIDTH), 8, "psf1 width 8");
@@ -298,7 +325,7 @@ fn test_psf2_parse() {
     test_group("psf2 parse");
     var buf = alloc(32 + 2 * 16);
     var len = _mk_psf2(buf, 2, 16, 8, 0);   # 2 glyphs, 8x16
-    var hdr[48];
+    var hdr[56];
     assert_eq(kashi_psf_parse(buf, len, &hdr), KASHI_OK, "psf2 ok");
     assert_eq(load64(&hdr + KASHI_PH_KIND), KASHI_PSF_KIND_PSF2, "psf2 kind");
     assert_eq(load64(&hdr + KASHI_PH_WIDTH), 8, "psf2 width 8");
@@ -313,7 +340,7 @@ fn test_psf2_parse() {
 # with a sentinel, never a wild read.
 fn test_psf_errors() {
     test_group("psf parse errors");
-    var hdr[48];
+    var hdr[56];
     assert_eq(kashi_psf_parse(0, 10, &hdr), KASHI_EINVAL, "null buf einval");
     var b = alloc(64);
     assert_eq(kashi_psf_parse(b, 0 - 1, &hdr), KASHI_EINVAL, "neg len einval");
@@ -397,6 +424,123 @@ fn test_rt_fonts() {
     return 0;
 }
 
+# --- M2: Unicode table detection + token reader (src/font_psf.cyr) ---
+
+fn test_psf_uni_token() {
+    test_group("psf unicode token");
+    var tok[24];
+
+    # PSF1 table bytes (LE u16): [41 00][FF FE][FF FF] -> CP 0x41, SEQ, TERM.
+    var p1 = alloc(6);
+    store8(p1 + 0, 0x41); store8(p1 + 1, 0x00);
+    store8(p1 + 2, 0xFE); store8(p1 + 3, 0xFF);
+    store8(p1 + 4, 0xFF); store8(p1 + 5, 0xFF);
+    kashi_psf_uni_token(p1, 0, 6, KASHI_PSF_KIND_PSF1, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_CP, "psf1 tok cp");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0x41, "psf1 tok cp val");
+    assert_eq(load64(&tok + KASHI_UT_NEXT), 2, "psf1 tok next");
+    kashi_psf_uni_token(p1, 2, 6, KASHI_PSF_KIND_PSF1, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_SEQ, "psf1 tok seq");
+    kashi_psf_uni_token(p1, 4, 6, KASHI_PSF_KIND_PSF1, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_TERM, "psf1 tok term");
+    kashi_psf_uni_token(p1, 6, 6, KASHI_PSF_KIND_PSF1, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END, "psf1 tok end");
+    kashi_psf_uni_token(p1, 5, 6, KASHI_PSF_KIND_PSF1, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END, "psf1 tok trunc end");
+
+    # PSF2 table bytes (UTF-8): 41, C3 A9 (U+00E9), FF, FE, truncated C3.
+    var p2 = alloc(7);
+    store8(p2 + 0, 0x41);
+    store8(p2 + 1, 0xC3); store8(p2 + 2, 0xA9);
+    store8(p2 + 3, 0xFF);
+    store8(p2 + 4, 0xFE);
+    store8(p2 + 5, 0xC3); store8(p2 + 6, 0x00);
+    kashi_psf_uni_token(p2, 0, 7, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_CP, "psf2 ascii cp");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0x41, "psf2 ascii val");
+    assert_eq(load64(&tok + KASHI_UT_NEXT), 1, "psf2 ascii next");
+    kashi_psf_uni_token(p2, 1, 7, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_CP, "psf2 2byte cp");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0xE9, "psf2 2byte val U+00E9");
+    assert_eq(load64(&tok + KASHI_UT_NEXT), 3, "psf2 2byte next");
+    kashi_psf_uni_token(p2, 3, 7, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_TERM, "psf2 term");
+    kashi_psf_uni_token(p2, 4, 7, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_SEQ, "psf2 seq");
+    kashi_psf_uni_token(p2, 5, 6, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END, "psf2 trunc end");
+
+    # UNIOFF detection: PSF1 with HASTAB mode + a table appended vs. without.
+    var hdr[56];
+    var fc = 4 + 256 * 1;
+    var fb = alloc(fc + 4);
+    var k = 0;
+    while (k < fc + 4) { store8(fb + k, 0); k = k + 1; }
+    store8(fb + 0, 0x36); store8(fb + 1, 0x04); store8(fb + 2, 0x02); store8(fb + 3, 1);
+    assert_eq(kashi_psf_parse(fb, fc + 4, &hdr), KASHI_OK, "psf1+tab parse ok");
+    assert_eq(load64(&hdr + KASHI_PH_UNIOFF), fc, "psf1 unioff set");
+    var nb = alloc(fc);
+    var m = 0;
+    while (m < fc) { store8(nb + m, 0); m = m + 1; }
+    store8(nb + 0, 0x36); store8(nb + 1, 0x04); store8(nb + 2, 0x00); store8(nb + 3, 1);
+    assert_eq(kashi_psf_parse(nb, fc, &hdr), KASHI_OK, "psf1 notab parse ok");
+    assert_eq(load64(&hdr + KASHI_PH_UNIOFF), 0, "psf1 no unioff");
+    return 0;
+}
+
+# --- M2: codepoint addressing via the PSF Unicode map (src/lib.cyr) ---
+
+fn test_rt_unicode() {
+    test_group("runtime unicode map");
+
+    # PSF1 + Unicode table: map glyph 10 -> 'Z' (0x5A), charsize 2.
+    var cs = 2;
+    var p1 = alloc(4 + 256 * cs + 256 * 2 + 4);
+    var len1 = _mk_psf1_tab(p1, cs, 10, 0x5A);
+    store8(p1 + 4 + 10 * cs + 0, 0x5A);   # plant glyph 10 rows
+    store8(p1 + 4 + 10 * cs + 1, 0xA5);
+    var id1 = kashi_load_psf(p1, len1);
+    assert_gte(id1, KASHI_RT_FONT_BASE, "psf1+tab load ok");
+    assert_eq(kashi_font_row(id1, 0x5A, 0), 0x5A, "psf1 cp Z -> glyph10 r0");
+    assert_eq(kashi_font_row(id1, 0x5A, 1), 0xA5, "psf1 cp Z -> glyph10 r1");
+    assert_eq(kashi_rt_glyph_row(id1, 10, 0), 0x5A, "psf1 raw idx 10 agrees");
+    assert_eq(kashi_font_row(id1, 0x41, 0), 0, "psf1 unmapped cp 'A' -> 0");
+    assert_eq(kashi_font_ptr(id1, 0x42), 0, "psf1 unmapped cp 'B' ptr null");
+
+    # PSF2 + Unicode table (UTF-8): 8 glyphs, height 2. glyph 3 -> 'A' (0x41),
+    # glyph 5 -> U+00E9 (UTF-8 C3 A9).
+    var p2 = alloc(128);
+    var k = 0;
+    while (k < 128) { store8(p2 + k, 0); k = k + 1; }
+    _put32(p2, 0, 0x864AB572); _put32(p2, 4, 0); _put32(p2, 8, 32);
+    _put32(p2, 12, 1);             # flags = HAS_UNICODE
+    _put32(p2, 16, 8);             # count
+    _put32(p2, 20, 2);             # charsize
+    _put32(p2, 24, 2);             # height
+    _put32(p2, 28, 8);             # width
+    store8(p2 + 32 + 3 * 2 + 0, 0x11); store8(p2 + 32 + 3 * 2 + 1, 0x22);  # glyph 3
+    store8(p2 + 32 + 5 * 2 + 0, 0x33); store8(p2 + 32 + 5 * 2 + 1, 0x44);  # glyph 5
+    var tp = 48;                   # 32 + 8*2 = table start
+    store8(p2 + tp, 0xFF); tp = tp + 1;   # g0
+    store8(p2 + tp, 0xFF); tp = tp + 1;   # g1
+    store8(p2 + tp, 0xFF); tp = tp + 1;   # g2
+    store8(p2 + tp, 0x41); store8(p2 + tp + 1, 0xFF); tp = tp + 2;             # g3 -> 'A'
+    store8(p2 + tp, 0xFF); tp = tp + 1;   # g4
+    store8(p2 + tp, 0xC3); store8(p2 + tp + 1, 0xA9); store8(p2 + tp + 2, 0xFF); tp = tp + 3;  # g5 -> U+00E9
+    store8(p2 + tp, 0xFF); tp = tp + 1;   # g6
+    store8(p2 + tp, 0xFF); tp = tp + 1;   # g7
+    var id2 = kashi_load_psf(p2, tp);
+    assert_gte(id2, KASHI_RT_FONT_BASE, "psf2+tab load ok");
+    assert_eq(kashi_rt_font_count(id2), 8, "psf2 count 8");
+    assert_eq(kashi_font_row(id2, 0x41, 0), 0x11, "psf2 cp 'A' -> glyph3 r0");
+    assert_eq(kashi_font_row(id2, 0x41, 1), 0x22, "psf2 cp 'A' -> glyph3 r1");
+    assert_eq(kashi_font_row(id2, 0xE9, 0), 0x33, "psf2 cp U+00E9 -> glyph5 r0");
+    assert_eq(kashi_font_row(id2, 0xE9, 1), 0x44, "psf2 cp U+00E9 -> glyph5 r1");
+    assert_eq(kashi_rt_glyph_row(id2, 5, 1), 0x44, "psf2 raw idx 5 agrees");
+    assert_eq(kashi_font_row(id2, 0x42, 0), 0, "psf2 unmapped cp 'B' -> 0");
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -417,7 +561,9 @@ fn main() {
     test_psf1_parse();
     test_psf2_parse();
     test_psf_errors();
+    test_psf_uni_token();
     test_rt_fonts();
+    test_rt_unicode();
 
     return assert_summary();
 }

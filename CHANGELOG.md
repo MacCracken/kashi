@@ -5,6 +5,32 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+M2 (part) — Unicode→glyph mapping so runtime PSF fonts are addressed by
+**codepoint** like the built-ins. Library-face + the pure parser only; the
+freestanding core stays dependency-free.
+
+### Added
+
+- **Codepoint addressing for runtime fonts** — `kashi_load_psf` now parses
+  the PSF1/PSF2 Unicode table into a per-font codepoint→glyph map (sorted,
+  binary-searched). `kashi_font_row(id, cp, row)` / `kashi_font_ptr(id, cp)`
+  resolve `cp` through that map; an unmapped codepoint renders blank. See
+  [ADR 0003](docs/adr/0003-codepoint-addressing-runtime-fonts.md).
+- `kashi_rt_glyph_ptr(id, idx)` / `kashi_rt_glyph_row(id, idx, row)` — raw
+  glyph-**index** access into a runtime font (tooling / enumeration /
+  table-less fonts).
+- Pure, bounds-safe table decoder `kashi_psf_uni_token` (PSF1 LE-u16 / PSF2
+  UTF-8) in `src/font_psf.cyr`; the Unicode-table walk + map build is fuzzed
+  in `tests/kashi.fcyr`. Suite now **186 assertions, 0 failed**.
+
+### Changed
+
+- **`kashi_font_row` / `kashi_font_ptr` runtime semantics: index → codepoint**
+  (pre-1.0). For a runtime font that carries a Unicode table, the second
+  argument is now a codepoint, not a glyph index. A font *without* a table
+  keeps index addressing (identity fallback). Consumers that want explicit
+  index addressing should use the new `kashi_rt_glyph_*` accessors.
+
 ## [0.2.0] — 2026-05-27
 
 The **M1 PSF font-import path** plus a P(-1) hardening pass. No glyph byte

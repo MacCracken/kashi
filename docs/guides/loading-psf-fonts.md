@@ -53,23 +53,40 @@ var n    = kashi_rt_font_count(id);      # number of glyphs
 
 var row = 0;
 while (row < rows) {
-    var bits = kashi_font_row(id, glyph_index, row);  # one byte; bit 7 = leftmost
+    var bits = kashi_font_row(id, codepoint, row);  # one byte; bit 7 = leftmost
     # ... blit bits ...
     row = row + 1;
 }
 ```
 
-> **Addressing (M1)**: for the **built-in** fonts the second argument is an
-> ASCII codepoint (`0x20`–`0x7F`); for **runtime** fonts it is a raw glyph
-> **index** `[0, count)`. The PSF Unicode table is validated but not yet
-> mapped, so kashi does not (yet) translate codepoints to glyph indices for
-> loaded fonts — that is a future milestone. Out-of-range glyph/row always
-> returns `0` (blank), never a wild read.
+For the render hot path, resolve once and read rows directly — one codepoint
+lookup per glyph instead of per row:
 
-## Limits (M1)
+```cyrius
+var p = kashi_font_ptr(id, codepoint);   # one lookup
+if (p != 0) {
+    var row = 0;
+    while (row < rows) { blit(load8(p + row)); row = row + 1; }
+}
+```
+
+> **Addressing**: `kashi_font_row` / `kashi_font_ptr` are **codepoint**-addressed.
+> Built-in fonts take an ASCII codepoint (`0x20`–`0x7F`). A runtime font that
+> carried a PSF Unicode table resolves the codepoint through that table; a
+> runtime font *without* a table falls back to treating the codepoint as a
+> raw glyph index. An unmapped codepoint (or out-of-range row) returns `0`
+> (blank), never a wild read.
+>
+> For explicit raw glyph-**index** access into a runtime font (tooling,
+> enumeration), use `kashi_rt_glyph_ptr(id, idx)` / `kashi_rt_glyph_row(id,
+> idx, row)`.
+
+## Limits
 
 - **Width ≤ 8** (one byte per row). PSF1 is always 8 wide; a PSF2 font wider
   than 8 px is rejected with `KASHI_EFORMAT`.
+- **Unicode sequences/ligatures** (PSF `0xFFFE`/`0xFE` multi-codepoint
+  entries) are parsed-and-skipped, not mapped.
 - **Validation-first**: magic, version, header size, geometry, glyph count,
   and total length are all checked before any glyph byte is read. The parser
   (`src/font_psf.cyr`) is fuzzed in `tests/kashi.fcyr`.

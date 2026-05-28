@@ -41,9 +41,12 @@ enum KashiPsfConst {
     KASHI_PSF1_MAGIC0 = 0x36;
     KASHI_PSF1_MAGIC1 = 0x04;
     KASHI_PSF1_MODE512 = 1;       # mode bit 0: 512-glyph bank
+    KASHI_PSF1_MODEHASTAB = 2;    # mode bit 1: has a Unicode table
+    KASHI_PSF1_MODESEQ = 4;       # mode bit 2: table has sequences (implies tab)
     KASHI_PSF1_HDR = 4;           # magic(2) + mode(1) + charsize(1)
     KASHI_PSF2_MAGIC = 0x864AB572;
     KASHI_PSF2_HDR_MIN = 32;      # fixed PSF2 header size
+    KASHI_PSF2_HAS_UNICODE = 1;   # flags bit 0: has a Unicode table
     KASHI_PSF_MAX_HEIGHT = 32;    # sanity bound on glyph height
     KASHI_PSF_MAX_WIDTH = 8;      # M1: one byte per row
     KASHI_PSF_MAX_COUNT = 65536;  # sanity bound on glyph count
@@ -51,8 +54,20 @@ enum KashiPsfConst {
     KASHI_PSF_KIND_PSF2 = 2;
 }
 
+# Token kinds returned by kashi_psf_uni_token while walking a Unicode table.
+enum KashiPsfTok {
+    KASHI_TOK_CP = 0;     # a single codepoint (read out + 8)
+    KASHI_TOK_SEQ = 1;    # sequence separator (0xFFFE PSF1 / 0xFE PSF2)
+    KASHI_TOK_TERM = 2;   # glyph terminator (0xFFFF PSF1 / 0xFF PSF2)
+    KASHI_TOK_END = 3;    # past `end`, or malformed — stop the walk
+    # Token out-struct field offsets (caller-provided `var tok[24]`).
+    KASHI_UT_TYPE = 0;
+    KASHI_UT_CP = 8;
+    KASHI_UT_NEXT = 16;   # byte offset of the next token
+}
+
 # Parsed-header out struct, written by psf_parse into a caller-provided
-# 48-byte buffer (function-local `var hdr[48]`). Fields are u64 at fixed
+# 56-byte buffer (function-local `var hdr[56]`). Fields are u64 at fixed
 # byte offsets.
 enum KashiPsfHdr {
     KASHI_PH_KIND = 0;       # 1 = PSF1, 2 = PSF2
@@ -61,6 +76,7 @@ enum KashiPsfHdr {
     KASHI_PH_COUNT = 24;     # number of glyphs
     KASHI_PH_CHARSIZE = 32;  # bytes per glyph (= height for <=8 wide)
     KASHI_PH_DATAOFF = 40;   # byte offset of glyph data within the buffer
+    KASHI_PH_UNIOFF = 48;    # byte offset of the Unicode table, 0 if none
 }
 
 # Parse a PSF1 header (caller already matched the 2-byte magic and ensured
@@ -74,13 +90,21 @@ fn _kashi_psf1_parse(buf, len, out) {
     var count = 256;
     if ((mode & KASHI_PSF1_MODE512) != 0) { count = 512; }
     var glyph_bytes = count * charsize;   # <= 512 * 32, fits i64
-    if (len < KASHI_PSF1_HDR + glyph_bytes) { return KASHI_EFORMAT; }
+    var dataend = KASHI_PSF1_HDR + glyph_bytes;
+    if (len < dataend) { return KASHI_EFORMAT; }
+    # Unicode table present if a table mode bit is set AND bytes follow the
+    # glyph data. mode & 0x06 = HASTAB | SEQ.
+    var unioff = 0;
+    if ((mode & (KASHI_PSF1_MODEHASTAB | KASHI_PSF1_MODESEQ)) != 0) {
+        if (len > dataend) { unioff = dataend; }
+    }
     store64(out + KASHI_PH_KIND, KASHI_PSF_KIND_PSF1);
     store64(out + KASHI_PH_WIDTH, 8);
     store64(out + KASHI_PH_HEIGHT, height);
     store64(out + KASHI_PH_COUNT, count);
     store64(out + KASHI_PH_CHARSIZE, charsize);
     store64(out + KASHI_PH_DATAOFF, KASHI_PSF1_HDR);
+    store64(out + KASHI_PH_UNIOFF, unioff);
     return KASHI_OK;
 }
 
@@ -106,13 +130,20 @@ fn _kashi_psf2_parse(buf, len, out) {
     if (count < 1) { return KASHI_EFORMAT; }
     if (count > KASHI_PSF_MAX_COUNT) { return KASHI_EFORMAT; }
     var glyph_bytes = count * charsize;   # bounded by checks above
-    if (len < headersize + glyph_bytes) { return KASHI_EFORMAT; }
+    var flags = load32(buf + 12);
+    var dataend = headersize + glyph_bytes;
+    if (len < dataend) { return KASHI_EFORMAT; }
+    var unioff = 0;
+    if ((flags & KASHI_PSF2_HAS_UNICODE) != 0) {
+        if (len > dataend) { unioff = dataend; }
+    }
     store64(out + KASHI_PH_KIND, KASHI_PSF_KIND_PSF2);
     store64(out + KASHI_PH_WIDTH, width);
     store64(out + KASHI_PH_HEIGHT, height);
     store64(out + KASHI_PH_COUNT, count);
     store64(out + KASHI_PH_CHARSIZE, charsize);
     store64(out + KASHI_PH_DATAOFF, headersize);
+    store64(out + KASHI_PH_UNIOFF, unioff);
     return KASHI_OK;
 }
 
@@ -125,13 +156,14 @@ fn kashi_psf_parse(buf, len, out) {
     if (buf == 0) { return KASHI_EINVAL; }
     if (out == 0) { return KASHI_EINVAL; }
     if (len < 0) { return KASHI_EINVAL; }
-    # Zero the out header first — a caller's `var hdr[48]` is uninitialized.
+    # Zero the out header first — a caller's `var hdr[56]` is uninitialized.
     store64(out + KASHI_PH_KIND, 0);
     store64(out + KASHI_PH_WIDTH, 0);
     store64(out + KASHI_PH_HEIGHT, 0);
     store64(out + KASHI_PH_COUNT, 0);
     store64(out + KASHI_PH_CHARSIZE, 0);
     store64(out + KASHI_PH_DATAOFF, 0);
+    store64(out + KASHI_PH_UNIOFF, 0);
 
     # PSF2: 4-byte LE magic (needs the full 32-byte fixed header present).
     if (len >= KASHI_PSF2_HDR_MIN) {
@@ -148,4 +180,94 @@ fn kashi_psf_parse(buf, len, out) {
         }
     }
     return KASHI_EFORMAT;
+}
+
+# Decode one unit of a Unicode table at byte offset `pos` into the 24-byte
+# `out` token struct {type @0, codepoint @8, next_offset @16}. `end` is the
+# one-past-last valid offset (= the buffer length). `kind` is the PSF kind
+# from the parsed header (1 = PSF1 LE-u16, 2 = PSF2 UTF-8).
+#
+# Always bounds-safe: at/over `end`, or on a malformed/truncated unit,
+# returns KASHI_TOK_END (with next = end) so a caller's walk terminates
+# rather than reading past the buffer. Pure — load8 + arithmetic only.
+fn kashi_psf_uni_token(buf, pos, end, kind, out) {
+    store64(out + KASHI_UT_CP, 0);
+    if (pos < 0) {
+        store64(out + KASHI_UT_TYPE, KASHI_TOK_END);
+        store64(out + KASHI_UT_NEXT, end);
+        return 0;
+    }
+    if (pos >= end) {
+        store64(out + KASHI_UT_TYPE, KASHI_TOK_END);
+        store64(out + KASHI_UT_NEXT, end);
+        return 0;
+    }
+
+    if (kind == KASHI_PSF_KIND_PSF1) {
+        if (pos + 2 > end) {
+            store64(out + KASHI_UT_TYPE, KASHI_TOK_END);
+            store64(out + KASHI_UT_NEXT, end);
+            return 0;
+        }
+        var u = load8(buf + pos) | (load8(buf + pos + 1) << 8);
+        store64(out + KASHI_UT_NEXT, pos + 2);
+        if (u == 0xFFFF) { store64(out + KASHI_UT_TYPE, KASHI_TOK_TERM); return 0; }
+        if (u == 0xFFFE) { store64(out + KASHI_UT_TYPE, KASHI_TOK_SEQ); return 0; }
+        store64(out + KASHI_UT_TYPE, KASHI_TOK_CP);
+        store64(out + KASHI_UT_CP, u);
+        return 0;
+    }
+
+    # PSF2: UTF-8 codepoints, 0xFF terminates a glyph's entry, 0xFE separates
+    # a sequence.
+    var b0 = load8(buf + pos);
+    if (b0 == 0xFF) {
+        store64(out + KASHI_UT_TYPE, KASHI_TOK_TERM);
+        store64(out + KASHI_UT_NEXT, pos + 1);
+        return 0;
+    }
+    if (b0 == 0xFE) {
+        store64(out + KASHI_UT_TYPE, KASHI_TOK_SEQ);
+        store64(out + KASHI_UT_NEXT, pos + 1);
+        return 0;
+    }
+    if (b0 < 0x80) {
+        store64(out + KASHI_UT_TYPE, KASHI_TOK_CP);
+        store64(out + KASHI_UT_CP, b0);
+        store64(out + KASHI_UT_NEXT, pos + 1);
+        return 0;
+    }
+    # Multi-byte lead: pick the length, then fold in continuation bytes.
+    var need = 0;
+    var cp = 0;
+    if ((b0 & 0xE0) == 0xC0) { need = 2; cp = b0 & 0x1F; }
+    if ((b0 & 0xF0) == 0xE0) { need = 3; cp = b0 & 0x0F; }
+    if ((b0 & 0xF8) == 0xF0) { need = 4; cp = b0 & 0x07; }
+    if (need == 0) {
+        store64(out + KASHI_UT_TYPE, KASHI_TOK_END);   # invalid lead byte
+        store64(out + KASHI_UT_NEXT, end);
+        return 0;
+    }
+    if (pos + need > end) {
+        store64(out + KASHI_UT_TYPE, KASHI_TOK_END);   # truncated
+        store64(out + KASHI_UT_NEXT, end);
+        return 0;
+    }
+    var i = 1;
+    var bad = 0;
+    while (i < need) {
+        var cb = load8(buf + pos + i);
+        if ((cb & 0xC0) != 0x80) { bad = 1; }
+        cp = (cp << 6) | (cb & 0x3F);
+        i = i + 1;
+    }
+    if (bad != 0) {
+        store64(out + KASHI_UT_TYPE, KASHI_TOK_END);   # bad continuation
+        store64(out + KASHI_UT_NEXT, end);
+        return 0;
+    }
+    store64(out + KASHI_UT_TYPE, KASHI_TOK_CP);
+    store64(out + KASHI_UT_CP, cp);
+    store64(out + KASHI_UT_NEXT, pos + need);
+    return 0;
 }

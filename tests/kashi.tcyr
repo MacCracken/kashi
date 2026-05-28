@@ -128,6 +128,47 @@ fn test_psf_file_roundtrip() {
     return 0;
 }
 
+# End-to-end codepoint addressing: write a PSF2 carrying a Unicode table,
+# load it from a file, and fetch a glyph BY CODEPOINT through the unified
+# dispatcher (the M2 path). All header fields here fit in one byte and the
+# buffer is zeroed, so we store them directly (little-endian low byte).
+fn test_psf_unicode_file() {
+    test_group("psf unicode file round-trip");
+    var buf = alloc(128);
+    var i = 0;
+    while (i < 128) { store8(buf + i, 0); i = i + 1; }
+    # PSF2 header: 4 glyphs, height 3, width 8, flags = HAS_UNICODE.
+    store8(buf + 0, 0x72); store8(buf + 1, 0xB5); store8(buf + 2, 0x4A); store8(buf + 3, 0x86);
+    store8(buf + 8, 32);     # headersize
+    store8(buf + 12, 1);     # flags: HAS_UNICODE
+    store8(buf + 16, 4);     # count
+    store8(buf + 20, 3);     # charsize
+    store8(buf + 24, 3);     # height
+    store8(buf + 28, 8);     # width
+    # glyph 2 data (rows) at 32 + 2*3 = 38.
+    store8(buf + 38, 0x71); store8(buf + 39, 0x72); store8(buf + 40, 0x73);
+    # Unicode table at 32 + 4*3 = 44: g0 FF, g1 FF, g2 'Q'(0x51) FF, g3 FF.
+    store8(buf + 44, 0xFF);
+    store8(buf + 45, 0xFF);
+    store8(buf + 46, 0x51); store8(buf + 47, 0xFF);
+    store8(buf + 48, 0xFF);
+    var len = 49;
+
+    var path = "/tmp/kashi_test_unicode.psf";
+    file_write_all(path, buf, len);
+    var id = kashi_load_psf_file(path);
+    assert_gte(id, KASHI_RT_FONT_BASE, "unicode file load ok");
+    assert_eq(kashi_rt_font_count(id), 4, "unicode font count 4");
+    # 'Q' resolves through the Unicode map to glyph 2.
+    assert_eq(kashi_font_row(id, 0x51, 0), 0x71, "cp 'Q' -> glyph2 r0");
+    assert_eq(kashi_font_row(id, 0x51, 2), 0x73, "cp 'Q' -> glyph2 r2");
+    assert_eq(kashi_rt_glyph_row(id, 2, 0), 0x71, "raw idx 2 agrees");
+    assert_eq(kashi_font_row(id, 0x41, 0), 0, "unmapped cp 'A' -> 0");
+
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
 fn main() {
     alloc_init();
     kashi_font_init();
@@ -137,6 +178,7 @@ fn main() {
     test_pointer_monotone();
     test_reinit_idempotent();
     test_psf_file_roundtrip();
+    test_psf_unicode_file();
 
     return assert_summary();
 }

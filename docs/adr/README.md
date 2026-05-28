@@ -20,4 +20,5 @@ Decisions about kashi — what we chose, the context, and the consequences we ac
 ## Index
 
 - [0001 — Freestanding font-data core, separate from the stdlib library face](0001-freestanding-font-data-core.md) — why kashi ships a no-stdlib `src/font_data.cyr` the agnos kernel can `include` directly, distinct from the stdlib-using `src/lib.cyr` library face.
-- [0002 — Runtime font registry and unified accessor dispatch](0002-runtime-font-registry.md) — how PSF-loaded fonts (ids ≥ 2) live in a library-face registry beside the built-ins (ids 0,1), reached through one `kashi_font_row`/`kashi_font_ptr` dispatcher; width ≤ 8 and glyph-index addressing for M1.
+- [0002 — Runtime font registry and unified accessor dispatch](0002-runtime-font-registry.md) — how PSF-loaded fonts (ids ≥ 2) live in a library-face registry beside the built-ins (ids 0,1), reached through one `kashi_font_row`/`kashi_font_ptr` dispatcher; width ≤ 8 and glyph-index addressing for M1. *(Addressing refined by 0003.)*
+- [0003 — Codepoint addressing for runtime fonts via the PSF Unicode table](0003-codepoint-addressing-runtime-fonts.md) — parse the PSF Unicode table into a codepoint→glyph map so `kashi_font_*` is codepoint-addressed for runtime fonts too (resolving the 0002 wart); raw-index access moves to `kashi_rt_glyph_*`.

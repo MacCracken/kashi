@@ -12,8 +12,9 @@
 - [ ] Public API frozen — every exported symbol (freestanding core +
       library face) documented and tested.
 - [x] PSF1 + PSF2 import working and fuzzed. *(M1, 2026-05-27 — width ≤ 8;
-      wider glyphs + Unicode mapping still to come.)*
-- [ ] At least one runtime-loaded font registered and rendered end-to-end.
+      wider glyphs still to come. Unicode→codepoint mapping landed in M2.)*
+- [x] At least one runtime-loaded font registered and rendered end-to-end.
+      *(M2 — PSF file round-trip, addressed by codepoint; tests/kashi.tcyr.)*
 - [ ] Test coverage adequate for the surface area; accessor bounds fuzzed.
 - [ ] Benchmarks captured in `docs/benchmarks.md` with version-over-version
       comparison.
@@ -56,13 +57,15 @@
 - **Deferred** (future milestone): glyph width > 8 (multi-byte rows) and the
   PSF Unicode→glyph map (runtime fonts are addressed by glyph index for now).
 
-### M2 — Runtime font registry + additional fonts (0.3.0)
+### M2 — Runtime registry niceties + Unicode + additional fonts (0.3.0)
 
-- `kashi_register_font` + the runtime registry already landed in M1; M2
-  builds on it.
-- Font registry niceties: enumerate available fonts, select an "active"
-  font, and the deferred M1 items — glyph width > 8 (multi-byte rows) and
-  the PSF Unicode→glyph map (codepoint addressing for runtime fonts).
+- `kashi_register_font` + the runtime registry landed in M1.
+- ✅ **PSF Unicode→glyph map** (codepoint addressing for runtime fonts) —
+  landed 2026-05-27, unreleased. See
+  [ADR 0003](0003-codepoint-addressing-runtime-fonts.md).
+- Still open: registry niceties (enumerate available fonts, select an
+  "active" font); glyph width > 8 (multi-byte rows); PSF Unicode
+  sequence/ligature mappings.
 - Additional built-in fonts (candidates: a denser 8×16, a wider 9×16 with
   proper box-drawing, a small 6×8) — added to the **freestanding core** so
   the kernel can use them.

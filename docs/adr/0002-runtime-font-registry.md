@@ -1,6 +1,6 @@
 # 0002 — Runtime font registry and unified accessor dispatch
 
-**Status**: Accepted
+**Status**: Accepted (glyph-index addressing refined by [ADR 0003](0003-codepoint-addressing-runtime-fonts.md))
 **Date**: 2026-05-27
 
 ## Context

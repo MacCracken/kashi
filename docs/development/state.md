@@ -1,7 +1,7 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-27 (**0.2.0** cut — M1 PSF import + P(-1)
-> hardening; see `docs/adr/0002` and `docs/audit/2026-05-27-audit.md`) |
+> **Last refresh**: 2026-05-27 (**0.2.0** released; **post-0.2.0 (M2)**
+> Unicode→glyph mapping landed, unreleased — see `docs/adr/0003`) |
 > **Refresh cadence**: bumped every release (ideally by the release
 > post-hook).
 >
@@ -29,22 +29,28 @@ unified dispatch) + the post-0.1.0 P(-1) hardening pass. Tagged by the user
     `kashi_glyph_encoded`. All bounds-safe for the full `i64` input domain
     (audited 2026-05-27).
 - **PSF parser** — `src/font_psf.cyr` (self-contained, heapless).
-  `kashi_psf_parse` validates PSF1/PSF2 headers (validation-first, fuzzed).
-- **Library face** — `src/lib.cyr`. Runtime font registry + the M1 import
-  path (see `docs/adr/0002`):
+  `kashi_psf_parse` validates PSF1/PSF2 headers + reports the Unicode-table
+  offset; `kashi_psf_uni_token` decodes the table (PSF1 LE-u16 / PSF2 UTF-8).
+  Validation-first, fuzzed.
+- **Library face** — `src/lib.cyr`. Runtime font registry + the PSF import
+  path (see `docs/adr/0002`, `docs/adr/0003`):
   - `kashi_load_psf` / `kashi_load_psf_file` / `kashi_register_font` →
-    `font_id ≥ 2` or negative `0 - <KashiResult>`.
-  - Unified `kashi_font_row` / `kashi_font_ptr` (dispatch built-in vs
-    runtime), `kashi_rt_font_{width,height,count}`, `kashi_font_total`.
-  - Scope: width ≤ 8; glyphs addressed by index; Unicode table validated,
-    not yet mapped.
+    `font_id ≥ 2` or negative `0 - <KashiResult>`. A loaded font's Unicode
+    table is built into a sorted codepoint→glyph map.
+  - Unified **codepoint-addressed** `kashi_font_row` / `kashi_font_ptr`
+    (built-in 0,1 vs runtime ≥ 2; runtime resolves codepoint via the map,
+    or identity index if the font carried no table).
+  - Raw glyph-index `kashi_rt_glyph_row` / `kashi_rt_glyph_ptr`;
+    `kashi_rt_font_{width,height,count}`; `kashi_font_total`.
+  - Scope: width ≤ 8; Unicode sequences (ligatures) parsed-and-skipped.
 - **Demo** — `src/main.cyr`, renders 'A' in both built-in fonts.
 
 ## What's booked (not built — future)
 
-- Wide glyphs (> 8 px / multi-byte rows) + Unicode→glyph mapping for runtime
-  fonts (deferred from M1 — see `docs/adr/0002`).
-- Runtime font registry niceties + additional built-in fonts (M2, 0.3.0).
+- Wide glyphs (> 8 px / multi-byte rows) — deferred from M1/M2.
+- PSF Unicode sequence/ligature mappings (`0xFFFE`/`0xFE`).
+- Runtime registry niceties (enumerate / active-font) + additional built-in
+  fonts (rest of M2 → M3).
 - agnos consumption contract hardening + agnos-side integration (M3 / agnos
   **1.38.0**).
 
@@ -58,20 +64,22 @@ See [`roadmap.md`](roadmap.md).
 
 ## Tests
 
-- `src/test.cyr` — 128 assertions (metadata, encoded gate, **exact-byte
+- `src/test.cyr` — 162 assertions (metadata, encoded gate, **exact-byte
   fidelity vs agnos source**, accessor bounds, full 96-glyph coverage,
   library surface, audit: ready flag / `fset` guard / full-`i64`-range
-  safety, **PSF1+PSF2 parse (valid + malformed), runtime register/load,
-  unified dispatch**). `cyrius test` → **0 failed**.
-- `tests/kashi.tcyr` — 18 assertions (byte-bounded rows, space-vs-visible
-  ink, pointer monotonicity, reinit idempotency, **PSF file round-trip**).
-- **146 assertions total, 0 failed.**
-- `tests/kashi.fcyr` — fuzz over the accessor bounds contract **and the PSF
-  parser** (4000 random/truncated/mutated buffers; no crash, bounds-safe).
-- `tests/kashi.bcyr` — `glyph_row` ~18 ns, `glyph_ptr` ~7 ns,
-  `scan_vga_8x16` ~27 µs; unified dispatch `font_row_builtin` ~20 ns,
-  `font_row_runtime` ~28 ns (x86_64). CSV trail in
-  [`benchmarks.md`](../benchmarks.md) / `docs/benchmarks/history.csv`.
+  safety, PSF1+PSF2 parse (valid + malformed), runtime register/load,
+  **Unicode token decode, codepoint→glyph mapping (PSF1 u16 + PSF2 UTF-8),
+  raw-index access**). `cyrius test` → **0 failed**.
+- `tests/kashi.tcyr` — 24 assertions (structural invariants, **PSF file
+  round-trip + a Unicode-table file addressed by codepoint**).
+- **186 assertions total, 0 failed.**
+- `tests/kashi.fcyr` — fuzz over the accessor bounds contract, the PSF
+  parser, **and the Unicode-table map build + codepoint resolution** (4000
+  random/truncated/mutated buffers; no crash, bounds-safe).
+- `tests/kashi.bcyr` — `glyph_row` ~17 ns, `glyph_ptr` ~7 ns,
+  `scan_vga_8x16` ~27 µs; unified dispatch `font_row_builtin` ~19 ns,
+  `font_row_runtime` ~42 ns, `font_row_runtime_cp` ~62 ns (codepoint binary
+  search) (x86_64). CSV trail in [`benchmarks.md`](../benchmarks.md).
 
 ## Cleanliness (P(-1) gates)
 

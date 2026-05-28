@@ -34,7 +34,7 @@ nothing archived, no open strategic questions.
 
 | Bucket | Count | What it means |
 |---|---|---|
-| ✅ **Fresh** | 19 | 0.1.0 inventory + 3 hardening docs (audit, benchmarks.md, benchmarks/history.csv) + 2 M1 docs (ADR 0002, loading-psf-fonts guide). |
+| ✅ **Fresh** | 20 | 0.1.0 inventory + hardening docs + M1 docs (ADR 0002, PSF guide) + M2 doc (ADR 0003). |
 | 🟡 **Stale** | 0 | — |
 | 🟠 **Read-through outstanding** | 0 | — |
 | 🔵 **Probably evergreen** | 2 | `CODE_OF_CONDUCT.md`, `LICENSE` — standard; re-read annually. |
@@ -48,7 +48,7 @@ nothing archived, no open strategic questions.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-05-27 | ✅ Fresh | Two-faces architecture, built-in font table, freestanding-core API, agnos consumption contract, build/test. |
-| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]` + `[Unreleased]`: M1 PSF import + P(-1) hardening (audit, fset guard, ready reader, `0x7F` fix). SemVer + Keep a Changelog. |
+| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]`, `[0.2.0]` (M1 + P(-1)), `[Unreleased]` (M2 Unicode→codepoint mapping + the index→codepoint Changed note). SemVer + Keep a Changelog. |
 | `CLAUDE.md` | 2026-05-27 | ✅ Fresh | Durable-only; freestanding-vs-full-lib split, one-owner/two-faces boundary discipline, standard constraints. State deferred to state.md. |
 | `CONTRIBUTING.md` | 2026-05-27 | ✅ Fresh | The two faces, accessor-bounds rule, glyph-fidelity rule, Cyrius enum/style notes. |
 | `SECURITY.md` | 2026-05-27 | ✅ Fresh | Accessor-bounds = kernel trust boundary; buffer sizing; future PSF-parse validation. |
@@ -64,7 +64,8 @@ nothing archived, no open strategic questions.
 | `adr/README.md` | 2026-05-27 | ✅ Fresh | Index updated with ADR 0001 + 0002. |
 | `adr/template.md` | (scaffold) | ✅ Fresh | Standard ADR template. |
 | `adr/0001-freestanding-font-data-core.md` | 2026-05-27 | ✅ Fresh | The load-bearing split decision. Accepted. |
-| `adr/0002-runtime-font-registry.md` | 2026-05-27 | ✅ Fresh | M1: runtime registry, unified dispatch, width≤8, glyph-index addressing, negative-error convention. Accepted. |
+| `adr/0002-runtime-font-registry.md` | 2026-05-27 | ✅ Fresh | M1: runtime registry, unified dispatch, width≤8, negative-error convention. Accepted (addressing refined by 0003). |
+| `adr/0003-codepoint-addressing-runtime-fonts.md` | 2026-05-27 | ✅ Fresh | M2: PSF Unicode table → codepoint→glyph map; codepoint-addressed accessors + raw-index `kashi_rt_glyph_*`. Accepted. |
 
 ## Tier 3 — `docs/architecture/`
 
@@ -77,15 +78,15 @@ nothing archived, no open strategic questions.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `development/roadmap.md` | 2026-05-27 | ✅ Fresh | M0 ✅ + M1 ✅ (PSF import landed) → M4 (v1.0); deferred wide-glyph/Unicode noted. |
-| `development/state.md` | 2026-05-27 | ✅ Fresh | Live state through M1: impl surface (PSF import), tests (146 assertions), deps, fidelity, audit pointer. |
+| `development/roadmap.md` | 2026-05-27 | ✅ Fresh | M0 ✅, M1 ✅, M2 Unicode ✅ → M4 (v1.0); deferred wide-glyph/ligatures noted. |
+| `development/state.md` | 2026-05-27 | ✅ Fresh | Live state through M2: impl surface (codepoint addressing), tests (186 assertions), deps, fidelity. |
 
 ## Tier 5 — `docs/guides/` + `docs/examples/`
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `guides/getting-started.md` | 2026-05-27 | ✅ Fresh | Build/test/add-a-font, reflecting the two-faces layout. |
-| `guides/loading-psf-fonts.md` | 2026-05-27 | ✅ Fresh | M1: how to load PSF1/PSF2 at runtime + the unified accessors; id table; M1 limits. |
+| `guides/loading-psf-fonts.md` | 2026-05-27 | ✅ Fresh | How to load PSF1/PSF2; codepoint vs raw-index addressing (M2); hot-path ptr pattern; limits. |
 | `examples/.gitkeep` | (scaffold) | ✅ Fresh | Placeholder; the demo lives in `src/main.cyr` for now. Backfill `docs/examples/*.cyr` as the API surface grows. |
 
 ## Tier 6 — `docs/audit/` + `docs/benchmarks*`
@@ -93,7 +94,7 @@ nothing archived, no open strategic questions.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `audit/2026-05-27-audit.md` | 2026-05-27 | ✅ Fresh | First P(-1) security/hardening pass. 3 findings fixed, 2 noted; accessor surface proven `i64`-safe. |
-| `benchmarks.md` | 2026-05-27 | ✅ Fresh | Methodology + 0.1.0 baseline + M1 unified-dispatch overhead; points at the CSV. |
+| `benchmarks.md` | 2026-05-27 | ✅ Fresh | Methodology + 0.1.0 baseline + dispatch/codepoint-lookup overhead (M2); points at the CSV. |
 | `benchmarks/history.csv` | 2026-05-27 | ✅ Fresh | Per-`(version,benchmark)` rows; append each release. |
 
 ---
