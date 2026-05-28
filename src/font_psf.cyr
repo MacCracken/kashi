@@ -13,7 +13,7 @@
 # font must return an error, never a wild dereference (fuzzed in
 # tests/kashi.fcyr).
 #
-# --- Scope (as of 0.6.0) ---
+# --- Scope (as of 1.0.0) ---
 #
 #   * PSF1 (magic 0x36 0x04): 8-wide, 256/512-glyph banks; optional Unicode
 #     table (mode bits HASTAB / SEQ).

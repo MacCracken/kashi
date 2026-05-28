@@ -1,28 +1,30 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-28 (**0.9.0** cut — public API freeze +
-> docs + benchmark trend) | **Refresh cadence**: bumped every
-> release.
+> **Last refresh**: 2026-05-28 (**1.0.0** — stable release) |
+> **Refresh cadence**: bumped every release.
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
 
-**0.9.0** — Public API freeze + every-symbol docs + benchmark
-trend. The penultimate cut before 1.0.0 (clean review + bump).
-**No code changes** — pure docs + benchmark refresh:
-- `docs/api/` — 6-file reference covering all 44 exported
-  functions and 20 enum groups across the freestanding core, the
-  load path, the accessors, the sidecar attach API, the low-level
-  parsers, and the codes/constants. Each symbol gets signature,
-  param/return convention, code example, stability note.
-- `docs/benchmarks.md` — 0.x trend table (0.1.0 → 0.8.0) with
-  structural-shift call-outs; `docs/benchmarks/history.csv` gains
-  a fresh 0.8.0 row from a bench run on the audit-completed
-  surface.
+**1.0.0** — Stable release. The full surface (freestanding core,
+runtime loading for PSF / BDF / PCF, sidecar Unicode-table attach,
+codepoint-addressed accessors) is frozen — see
+[`docs/api/`](../api/) for the reference and stability promise.
+No new features in this cut; the work was a clean review of the
+0.9.0-frozen surface:
+- `README.md` rewritten for the shipped state (was stuck at 0.1.0).
+- `SECURITY.md` refreshed: current buffer sizes, current parser
+  list, current audit trail, supported-versions = 1.x.
+- `CONTRIBUTING.md` polished: `cyaudit vet` workaround, current
+  return-code convention.
+- Stale comments in `src/font_data.cyr` and `src/font_psf.cyr`
+  fixed: agnos-integration language, CGA-blank-high-half
+  (was filled in 0.5.2), scope-as-of-0.6.0 bumped to 1.0.0.
 
-The next move is **1.0.0** — clean review + version bump.
+The roadmap closes here. Post-1.0 ideas are noted as
+out-of-scope; none are booked.
 
 ## Toolchain
 
@@ -89,10 +91,17 @@ The next move is **1.0.0** — clean review + version bump.
 
 ## What's booked (not built — future)
 
-- **1.0.0**: clean review + version bump. No new features; final
-  pass on docs and any drift caught by re-reading the frozen
-  surface.
-- Text shaping / BiDi — out of scope (kashi exposes data only).
+Nothing actively booked post-1.0. Ideas noted in
+[`roadmap.md`](roadmap.md) as out-of-scope:
+
+- BDF lenient-BBX with per-glyph cell padding (display fonts with
+  italic overhangs / descender variation). Would be additive on
+  top of the current strict-BBX policy (ADR 0008).
+- PCF per-glyph metric variation (analog of the above for PCF;
+  ADR 0009 currently strict).
+- Text shaping / BiDi / complex-script handling — kashi exposes
+  data only; shaping is a separate concern that could live in a
+  sibling library.
 
 See [`roadmap.md`](roadmap.md).
 

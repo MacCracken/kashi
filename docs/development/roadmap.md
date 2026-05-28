@@ -1,30 +1,39 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-05-28 (post-0.9.0 — API frozen)
+> **Last Updated**: 2026-05-28 (**1.0.0 shipped — roadmap closed**)
 >
 > Milestone plan through v1.0. Live status lives in [`state.md`](state.md);
 > this file is the sequencing — what ships, in what order, against what
 > dependency gates. The freestanding core (M0) is done; M1+ builds out the
 > stdlib-using library face.
 
-## v1.0 criteria
+## v1.0 criteria — all met
 
-- [ ] Public API frozen — every exported symbol (freestanding core +
-      library face) documented and tested.
-- [x] PSF1 + PSF2 import working and fuzzed. *(M1, 2026-05-27 — width ≤ 8;
-      wider glyphs still to come. Unicode→codepoint mapping landed in M2.)*
-- [x] At least one runtime-loaded font registered and rendered end-to-end.
-      *(M2 — PSF file round-trip, addressed by codepoint; tests/kashi.tcyr.)*
-- [ ] Test coverage adequate for the surface area; accessor bounds fuzzed.
-- [ ] Benchmarks captured in `docs/benchmarks.md` with version-over-version
-      comparison.
+- [x] **Public API frozen** — every exported symbol documented and
+      tested. (0.9.0; `docs/api/` covers all 45 functions and 20
+      enum groups with signatures, param tables, return conventions,
+      code examples, and stability notes.)
+- [x] **PSF1 + PSF2 import working and fuzzed** — width 1..32 with
+      multi-byte rows (ADR 0005), Unicode→codepoint mapping (ADR
+      0003), ligature lookup (ADR 0005), sidecar Unicode-table
+      attach (ADR 0010).
+- [x] **At least one runtime-loaded font registered and rendered
+      end-to-end** — PSF, BDF, PCF file round-trips in
+      `tests/kashi.tcyr`.
+- [x] **Test coverage adequate for the surface area; accessor
+      bounds fuzzed** — 442 assertions, 0 failed; 4 fuzz harnesses
+      (~7,500 rounds) over the parsers and accessors.
+- [x] **Benchmarks captured** in `docs/benchmarks.md` with
+      version-over-version comparison from 0.1.0 to 1.0.0.
 - [x] **Downstream consumer green** — agnos's framebuffer console
-      rendering the freestanding core. *(M3, 2026-05-28 — agnos 1.38.0
-      consumed `src/font_data.cyr` end-to-end via the booked
-      `[deps.kashi] modules=["src/font_data.cyr"]` contract; the
+      rendering the freestanding core. *(M3, 2026-05-28 — agnos
+      1.38.0 consumed `src/font_data.cyr` end-to-end; the
       freestanding boundary held without kashi-side fixes.)*
-- [ ] CHANGELOG complete from 0.1.0 onward.
-- [ ] Security audit pass (`docs/audit/YYYY-MM-DD-audit.md`).
+- [x] **CHANGELOG complete** from 0.1.0 onward.
+- [x] **Security audit pass** — three audits in the trail
+      (`docs/audit/2026-05-27`, `2026-05-28`,
+      `2026-05-28-audit-0.8.0`); most recent is the
+      CVE-research-driven 0.8.0 hardening pass.
 
 ## Milestones
 
@@ -153,18 +162,46 @@ hookup.
 - API surface frozen — no signature or semantic changes through
   the 1.x line.
 
-### M4 — v1.0 freeze (1.0.0) — booked
+### M4 — v1.0 freeze (1.0.0) — ✅ shipped 2026-05-28
 
-- Clean review of the 0.9.0 frozen surface.
-- Version bump to 1.0.0. No new features; this is the seal.
+- Clean review of the 0.9.0 frozen surface: README rewrite from
+  0.1.0 placeholder state, SECURITY.md refresh, CONTRIBUTING.md
+  polish, stale-comment fixes in `src/font_data.cyr` (agnos
+  integration done, CGA high half filled in 0.5.2) and
+  `src/font_psf.cyr` (scope comment bumped to 1.0.0).
+- API surface verified: all 45 public functions documented; all 20
+  enum groups documented; signatures match between code and docs.
+- Final P(-1) gate: build clean, fmt clean, lint 0 warnings,
+  `cyaudit vet` confirms all four parsers "no dependencies",
+  442 / 49 tests pass, fuzz green.
+- Version bump to 1.0.0.
 
-## Out of scope (for v1.0)
+## Out of scope (post-1.0, no plans to take on)
 
-- **Outline / vector fonts** — kashi is bitmap-only. TrueType/OpenType is a
-  different subsystem entirely.
+- **Outline / vector fonts** — kashi is bitmap-only. TrueType / OpenType
+  is a different subsystem entirely.
 - **Text shaping / BiDi / complex scripts** — kashi hands back glyph
-  bitmaps; layout/shaping is the consumer's (or a future shaping lib's) job.
-- **Anti-aliasing / subpixel rendering** — monochrome 1-bit-per-pixel bitmap
-  fonts only.
-- **Rendering policy** (color, scaling, scrolling) — owned by the consumer
-  (agnos `fb_console.cyr` already does this), not by kashi.
+  bitmaps; layout / shaping belongs in a separate library (one that could
+  consume kashi as its glyph-data provider).
+- **Anti-aliasing / subpixel rendering** — monochrome 1-bit-per-pixel
+  only.
+- **Rendering policy** (color, scaling, scrolling) — owned by the
+  consumer (agnos `fb_console.cyr` already does this).
+
+## Post-1.0 ideas (out of scope unless reopened)
+
+These come up as natural extensions but aren't on any commitment list:
+
+- **BDF lenient-BBX with cell padding** — accept per-glyph BBX variation
+  by padding into the FONTBOUNDINGBOX. Currently strict (ADR 0008). Would
+  bring display BDFs with italic overhangs / descender variation into
+  scope. Additive on top of the strict policy.
+- **PCF per-glyph metric variation** — analog of the above for PCF.
+  Currently strict-uniform metrics (ADR 0009).
+- **Streaming load APIs** (`kashi_load_*_stream`) — for consumers that
+  can't fit the whole file in a single buffer. No concrete need yet.
+- **More built-in fonts** — adding a font ID 3 (e.g., a higher-density
+  cell or a different character set) is an additive change kashi-side;
+  would extend `KASHI_RT_FONT_BASE` from 3 to 4 (semver-compatible
+  because the constant is referenced symbolically). No concrete request
+  yet.

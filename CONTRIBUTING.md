@@ -21,10 +21,14 @@ kashi has a **hard, file-level boundary** (see
 - **`src/font_data.cyr`** — the FREESTANDING core. NO stdlib, NO heap, NO
   syscalls, NO sakshi — only `store8`/`load8` intrinsics + arithmetic. The
   agnos kernel `include`s this file directly. **Never add an `include` or a
-  stdlib call here.** `cyrius vet src/font_data.cyr` must report "no
-  dependencies".
-- **`src/lib.cyr`** (and future modules) — the stdlib-using library face.
-  May `include "src/font_data.cyr"`, never the reverse.
+  stdlib call here.** `cyaudit vet src/font_data.cyr` must report "no
+  dependencies" (call `cyaudit vet` directly — the released cyrius 6.0.3
+  has a packaging bug where `cyrius vet` dispatches incorrectly).
+- **`src/lib.cyr`** plus the parser modules (`src/font_psf.cyr`,
+  `src/font_bdf.cyr`, `src/font_pcf.cyr`) — the library face. The parser
+  modules are *also* dependency-free (heapless, load8 + arithmetic only);
+  only `lib.cyr` uses the stdlib (for allocation + file I/O). Each may
+  `include "src/font_data.cyr"`, never the reverse.
 
 A change that adds a built-in font goes in the freestanding core (so the
 kernel can see it). A change that adds runtime loading / PSF import goes in
@@ -40,8 +44,10 @@ the library face.
   glyph, update the corresponding fidelity assertions in `src/test.cyr`.
 - Test after every change, not after the feature is "done".
 - ONE change at a time — never bundle unrelated changes.
-- Library code never panics — errors flow through return codes (and, once
-  the runtime surface lands, sakshi `Result`).
+- Library code never panics — errors flow through return codes: parsers
+  return `KASHI_OK` (0) or a positive `KASHI_E*` value; load and register
+  functions return a `font_id ≥ KASHI_RT_FONT_BASE` or `0 - <code>` so
+  callers can branch with `if (id < 0)`. See `docs/api/codes.md`.
 
 ## Code Style
 

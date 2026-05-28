@@ -33,22 +33,22 @@ few times and take the steady-state figure; sub-microsecond ops use a
 ≥1e6-iteration batch to amortize `clock_gettime` overhead (see the
 `tests/kashi.bcyr` header).
 
-## Current — 0.8.0 (2026-05-28)
+## Current — 1.0.0 (2026-05-28)
 
 Host: AMD Ryzen 7 5800H, x86_64 Linux. Indicative single-host numbers, not
 a cross-machine guarantee.
 
 | Benchmark | avg | iters |
 |---|---|---|
-| `glyph_row` | 18 ns | 1,000,000 |
+| `glyph_row` | 17 ns | 1,000,000 |
 | `glyph_ptr` | 7 ns | 1,000,000 |
-| `scan_vga_8x16` | 63 µs | 10,000 |
-| `font_row_builtin` | 20 ns | 1,000,000 |
+| `scan_vga_8x16` | 64 µs | 10,000 |
+| `font_row_builtin` | 19 ns | 1,000,000 |
 | `font_row_runtime` | 43 ns | 1,000,000 |
-| `font_row_runtime_cp` | 65 ns | 1,000,000 |
+| `font_row_runtime_cp` | 66 ns | 1,000,000 |
 
-`scan_vga_8x16` at 63 µs over 3,584 row reads (224 glyphs × 16 rows)
-≈ 17.6 ns/row, consistent with the standalone `glyph_row` figure — the
+`scan_vga_8x16` at 64 µs over 3,584 row reads (224 glyphs × 16 rows)
+≈ 17.9 ns/row, consistent with the standalone `glyph_row` figure — the
 whole-font sweep carries no per-glyph overhead beyond the accessor itself.
 
 ## 0.x trend
@@ -69,6 +69,7 @@ noise — only structural shifts are called out below.
 | **0.5.2** | 17 | 6 | 62,000 | 19 | 43 | 61 |
 | **0.6.0** | 18 | 7 | 62,000 | 19 | 43 | 62 |
 | **0.8.0** | 18 | 7 | 63,000 | 20 | 43 | 65 |
+| **1.0.0** | 17 | 7 | 64,000 | 19 | 43 | 66 |
 
 > The 0.7.x cuts (BDF, PCF, sidecar tables) added parsers / load paths
 > but **did not touch the hot accessors**, so they aren't separately

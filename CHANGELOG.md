@@ -1,9 +1,85 @@
 # Changelog
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still moving).
+This project adheres to [SemVer](https://semver.org/). Through 0.x the
+surface was moving; **as of 1.0.0 the public API is frozen** (see
+[`docs/api/`](docs/api/) for the full reference and stability promise).
 
 ## [Unreleased]
+
+## [1.0.0] — 2026-05-28
+
+**Stable release.** kashi's full surface — freestanding core, runtime
+loading (PSF / BDF / PCF), sidecar Unicode-table attach, codepoint-
+addressed accessors — is frozen. No new features in this cut; this is
+the seal after the 0.9.0 API freeze. The full release narrative for
+how kashi got here is in the entries below, from 0.1.0 onward.
+
+### What 1.0 commits to
+
+- **API stability** through the 1.x line: no signature changes, no
+  removals, no semantic changes to documented behavior. New
+  functions and new enum members are additive within 1.x. See
+  [`docs/api/README.md`](docs/api/README.md) for the full
+  stability promise.
+- **Freestanding boundary intact**: `cyaudit vet` reports "no
+  dependencies" for each of `src/font_data.cyr`,
+  `src/font_psf.cyr`, `src/font_bdf.cyr`, and `src/font_pcf.cyr`.
+  The agnos kernel consumes only `src/font_data.cyr`, never the
+  library face.
+- **Security posture**: three audits in the trail
+  (`docs/audit/2026-05-27`, `2026-05-28`, `2026-05-28-audit-0.8.0`);
+  the most recent is research-driven against the 2020–2026
+  font-parser CVE corpus and produced 9 findings, all fixed.
+- **Validation-first parsers**: PSF1/PSF2, BDF, PCF, plus the
+  sidecar text-tab parser. All heapless, all dependency-free, all
+  fuzzed (~7,500 rounds across the four input surfaces).
+- **Test coverage**: 442 assertions across unit + integration
+  suites, 0 failed. Fuzz suite: 4000 PSF + 2000 BDF + 1500 PCF +
+  1000 text-tab rounds, no crashes.
+
+### Changed (clean-review fixes)
+
+- **`README.md`** rewritten from the 0.1.0 placeholder text into a
+  current statement: two faces, three built-in fonts, three runtime
+  formats, sidecar attach, hot-path render pattern, link to
+  `docs/api/`. Removed stale "future, M1+" and "booked at agnos
+  1.38.0" language.
+- **`SECURITY.md`** refreshed: buffer sizes updated to the 0.4.0
+  CP437 sizes (`kashi_font16[3584]`, etc.); the "M1+ parsers are
+  future" language replaced with the current list of audited
+  parser modules; the audit trail now lists the three completed
+  audits explicitly; supported-versions changed from "pre-1.0" to
+  "1.x".
+- **`CONTRIBUTING.md`**: replaced `cyrius vet` with `cyaudit vet`
+  (the 6.0.3 packaging-bug workaround); included the per-parser
+  module dependency-freedom statement; replaced the "once the
+  runtime surface lands, sakshi Result" placeholder with the
+  actual return-code convention.
+- **`src/font_data.cyr`** comments: "agnos, booked at its 1.38.0"
+  → "agnos kernel, integrated at agnos 1.38.0"; "CGA 8x8 high
+  half is intentionally blank" updated to reflect the 0.5.2 CGA
+  high-half fill (ADR 0007); the fset-guard comment generalised
+  from "M2 fonts" to "any future built-in font".
+- **`src/font_psf.cyr`** scope comment bumped from "as of 0.6.0"
+  to "as of 1.0.0".
+
+### Tests + benchmarks
+
+- Test counts unchanged from 0.9.0 (442 assertions, 0 failed; full
+  fuzz suite passes). 1.0.0 is a docs / comments cleanup; no code
+  paths exercised differently.
+- Benchmark refresh: a fresh `1.0.0` row in
+  `docs/benchmarks/history.csv`, captured on the same host as the
+  0.x line. Numbers match 0.8.0 within noise (no hot-path changes).
+
+### Roadmap
+
+The roadmap closes here. Post-1.0 ideas (BDF lenient-BBX with cell
+padding, PCF per-glyph metric variation, text shaping / BiDi as a
+separate library) are noted in
+[`docs/development/roadmap.md`](docs/development/roadmap.md) as
+out-of-scope; none are booked.
 
 ## [0.9.0] — 2026-05-28
 
@@ -741,7 +817,8 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.9.0...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/1.0.0...HEAD
+[1.0.0]: https://github.com/MacCracken/kashi/compare/0.9.0...1.0.0
 [0.9.0]: https://github.com/MacCracken/kashi/compare/0.8.0...0.9.0
 [0.8.0]: https://github.com/MacCracken/kashi/compare/0.7.2...0.8.0
 [0.7.2]: https://github.com/MacCracken/kashi/compare/0.7.1...0.7.2

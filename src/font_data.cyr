@@ -41,7 +41,7 @@
 # hi = rows 0-7 (top), lo = rows 8-15; for the 8x8 font, fset8(ch, val)
 # where val = rows 0-7. byte (literal >> 56) is the topmost row.
 #
-# --- Consumption contract (agnos, booked at its 1.38.0) ---
+# --- Consumption contract (agnos kernel, integrated at agnos 1.38.0) ---
 #
 #   [deps.kashi]
 #   path    = "../kashi"
@@ -54,7 +54,7 @@
 #   var bits = kashi_glyph_row(KASHI_FONT_VGA_8X16, ch, row);  # one row byte
 # Metadata:
 #   kashi_font_width(id) / kashi_font_height(id) / kashi_font_first(id) /
-#   kashi_font_count(id)
+#   kashi_font_count(id) / kashi_font_stride(id)
 
 # --- Font identifiers (enum-style constants; pass to every accessor) ---
 # Enum values are compile-time constants — they do NOT consume gvar slots,
@@ -66,11 +66,13 @@ enum KashiFontId {
     KASHI_FONT_VGA_9X16 = 2;   # VGA 9x16 (derived from font16 + VGA col-9 rule; ADR 0006)
 }
 
-# Both fonts share the full CP437 range. As of 0.4.0 VGA 8x16 carries real
-# glyphs for the whole range (sourced from Linux's public-domain font_8x16.c);
-# CGA 8x8's high half (0x80..0xFF) is intentionally blank — extending it
-# would require hand-rolling 128 more glyphs and is not on the M2 table.
-# See ADR 0004.
+# All three built-in fonts cover the full CP437 range (0x20..0xFF, 224
+# glyphs). VGA 8x16 carries the IBM VGA BIOS bytes (sourced from Linux's
+# public-domain font_8x16.c; ADR 0004). CGA 8x8 is dual-sourced:
+# hand-drawn AGNOS-original ASCII low half (0x20..0x7F) + Linux PD
+# font_8x8.c high half (ADR 0007). VGA 9x16 is derived from VGA 8x16 +
+# the VGA col-9 replication rule at init (ADR 0006); no separate byte
+# table on disk.
 enum KashiGlyphRange {
     KASHI_GLYPH_FIRST = 0x20;  # first encoded codepoint (space)
     KASHI_GLYPH_LAST = 0xFF;   # last encoded codepoint (last CP437 cell)
@@ -91,8 +93,8 @@ fn kashi_fset16(ch, hi, lo) {
     # Defensive bound (audit 2026-05-27, F1): a table-authoring typo with
     # ch outside [FIRST, LAST] would compute a negative or overrun offset
     # and silently corrupt BSS before/after the buffer. init runs once, so
-    # this guard is free. All current calls are in-range; this protects the
-    # additional built-in fonts booked for M2.
+    # this guard is free. All current calls are in-range; this protects
+    # any future built-in font added past the current three.
     if (ch < KASHI_GLYPH_FIRST) { return 0; }
     if (ch > KASHI_GLYPH_LAST) { return 0; }
     var g = &kashi_font16 + (ch - KASHI_GLYPH_FIRST) * 16;
