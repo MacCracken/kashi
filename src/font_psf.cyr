@@ -271,6 +271,33 @@ fn kashi_psf_uni_token(buf, pos, end, kind, out) {
         store64(out + KASHI_UT_NEXT, end);
         return 0;
     }
+    # 0.7.2 (ADR 0010): reject overlong sequences per RFC 3629. A
+    # codepoint must be encoded with the minimum number of bytes — e.g.,
+    # U+0041 is `0x41` (1 byte), never `0xC1 0x81` (overlong 2-byte
+    # form). Overlong encodings are a canonical-filter-bypass vector
+    # historically used in security exploits; rejecting them keeps the
+    # decoder canonical.
+    if (need == 2) {
+        if (cp < 0x80) {
+            store64(out + KASHI_UT_TYPE, KASHI_TOK_END);
+            store64(out + KASHI_UT_NEXT, end);
+            return 0;
+        }
+    }
+    if (need == 3) {
+        if (cp < 0x800) {
+            store64(out + KASHI_UT_TYPE, KASHI_TOK_END);
+            store64(out + KASHI_UT_NEXT, end);
+            return 0;
+        }
+    }
+    if (need == 4) {
+        if (cp < 0x10000) {
+            store64(out + KASHI_UT_TYPE, KASHI_TOK_END);
+            store64(out + KASHI_UT_NEXT, end);
+            return 0;
+        }
+    }
     # 0.6.0 audit F2: reject codepoints outside the Unicode range and the
     # UTF-16 surrogate band — these are invalid UTF-8 by spec. No memory
     # safety concern (cp is just a u64 map key) but accepting them lets

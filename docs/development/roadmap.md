@@ -1,6 +1,6 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-05-28 (post-0.7.1)
+> **Last Updated**: 2026-05-28 (post-0.7.2 — 0.7.x track closed)
 >
 > Milestone plan through v1.0. Live status lives in [`state.md`](state.md);
 > this file is the sequencing — what ships, in what order, against what
@@ -123,11 +123,14 @@ hookup.
   byte swap + bit reverse), both compressed and uncompressed metrics
   layouts. Required tables: `PCF_METRICS`, `PCF_BITMAPS`,
   `PCF_BDF_ENCODINGS`. Fuzzed (1500 rounds).
-- **0.7.2 — PSF Unicode-table edge cases** (the "u-variant" item, scoped):
-  sidecar `.tab` table support (Linux `psfaddtable` convention — a `.psf`
-  with no inline table plus a separate `.tab` describing it), optional
-  strict overlong-UTF-8 rejection, larger table-walk caps. Small additive
-  cut; clears the long tail of PSF compatibility.
+- ✅ **0.7.2 — PSF u-variant**, 2026-05-28 (ADR 0010). Sidecar
+  Unicode-table attachment APIs in `src/lib.cyr`
+  (`kashi_attach_unicode_table*` for binary PSF1/PSF2,
+  `kashi_attach_unicode_text*` for `psfgettable` text format) +
+  strict overlong-UTF-8 rejection in the PSF2 decoder (audit F3 per
+  RFC 3629). The "larger table-walk caps" sub-item was dropped as a
+  non-issue on re-examination — the existing walk is buffer-bounded.
+  Closes the 0.7.x track.
 
 ### M4 — v1.0 freeze (1.0.0)
 

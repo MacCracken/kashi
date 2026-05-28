@@ -338,6 +338,49 @@ fn _ti_put32(buf, off, v) {
     return 0;
 }
 
+# PSF + sidecar tab file round-trip: write a tableless PSF and a text-
+# format .tab to /tmp, load the PSF then attach the tab via
+# kashi_attach_unicode_text_file, verify codepoint round-trip end-to-end.
+fn test_psf_tab_file_roundtrip() {
+    test_group("psf + sidecar tab file");
+    # Tableless PSF1: 256 glyphs height 3, glyph 0x21 ('!') = rows 0xAA, 0xBB, 0xCC.
+    var psf_len = 4 + 256 * 3;
+    var psf = alloc(psf_len);
+    var i = 0;
+    while (i < psf_len) { store8(psf + i, 0); i = i + 1; }
+    store8(psf + 0, 0x36); store8(psf + 1, 0x04);
+    store8(psf + 2, 0); store8(psf + 3, 3);
+    store8(psf + 4 + 0x21 * 3 + 0, 0xAA);
+    store8(psf + 4 + 0x21 * 3 + 1, 0xBB);
+    store8(psf + 4 + 0x21 * 3 + 2, 0xCC);
+    var psf_path = "/tmp/kashi_test_tabless.psf";
+    file_write_all(psf_path, psf, psf_len);
+
+    # Text-tab mapping glyph 0x21 to U+2603 (☃) and U+FE0F (variation selector).
+    var tab = alloc(256);
+    var tp = 0;
+    tp = _ti_str(tab, tp, "# kashi integration tab\n");
+    tp = _ti_str(tab, tp, "0x21   U+2603 U+FE0F   # snowman + VS\n");
+    var tab_path = "/tmp/kashi_test_tabless.tab";
+    file_write_all(tab_path, tab, tp);
+
+    var id = kashi_load_psf_file(psf_path);
+    assert_gte(id, KASHI_RT_FONT_BASE, "tableless psf file load");
+    assert_eq(kashi_attach_unicode_text_file(id, tab_path), KASHI_OK,
+    "attach tab file ok");
+    # Both attached codepoints resolve to glyph 0x21.
+    assert_eq(kashi_font_row(id, 0x2603, 0), 0xAA, "U+2603 r0");
+    assert_eq(kashi_font_row(id, 0x2603, 2), 0xCC, "U+2603 r2");
+    assert_eq(kashi_font_row(id, 0xFE0F, 0), 0xAA, "U+FE0F r0");
+    # Missing .tab file -> negative (file_read_all error path).
+    assert_lt(kashi_attach_unicode_text_file(id, "/tmp/kashi_no_such_tab_zzq.tab"), 0,
+    "missing tab file -> negative");
+
+    syscall(SYS_UNLINK, psf_path);
+    syscall(SYS_UNLINK, tab_path);
+    return 0;
+}
+
 fn main() {
     alloc_init();
     kashi_font_init();
@@ -350,6 +393,7 @@ fn main() {
     test_psf_unicode_file();
     test_bdf_file_roundtrip();
     test_pcf_file_roundtrip();
+    test_psf_tab_file_roundtrip();
 
     return assert_summary();
 }

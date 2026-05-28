@@ -1,21 +1,21 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-28 (**0.7.1** cut — PCF import) |
-> **Refresh cadence**: bumped every release (ideally by the release
-> post-hook).
+> **Last refresh**: 2026-05-28 (**0.7.2** cut — PSF u-variant
+> sidecar tables + strict overlong-UTF-8) | **Refresh cadence**:
+> bumped every release (ideally by the release post-hook).
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
 
-**0.7.1** — PCF (Portable Compiled Format) import. New heapless
-binary parser in `src/font_pcf.cyr` (`cyaudit vet` →
-"no dependencies"); library gains `kashi_load_pcf` /
-`kashi_load_pcf_file`. Third format on the 0.7.x import-formats
-track (after PSF in M1 and BDF in 0.7.0); 0.7.2 booked for PSF
-u-variant sidecar tables. Tagged by the user (who handles all git
-operations).
+**0.7.2** — PSF u-variant: sidecar Unicode-table attachment APIs
+(`kashi_attach_unicode_table*` for binary PSF1/PSF2 tables and
+`kashi_attach_unicode_text*` for the `psfgettable` text format), plus
+strict overlong-UTF-8 rejection in the PSF2 decoder per RFC 3629
+(audit F3 follow-up to the 0.6.0 F2 tightening). Closes the 0.7.x
+track (BDF → PCF → u-variant); the next substantial move is M4 /
+1.0.0 freeze. Tagged by the user (who handles all git operations).
 
 ## Toolchain
 
@@ -52,7 +52,7 @@ operations).
   byte-order × bit-order combos, both compressed and uncompressed
   metric layouts. `cyaudit vet` → "no dependencies".
 - **Library face** — `src/lib.cyr`. Runtime font registry + the
-  PSF / BDF / PCF import paths:
+  PSF / BDF / PCF import paths + sidecar table attachment:
   - **PSF**: `kashi_load_psf` / `kashi_load_psf_file` /
     `kashi_register_font` → `font_id ≥ 3` or `0 - <KashiResult>`.
   - **BDF** (0.7.0): `kashi_load_bdf` / `kashi_load_bdf_file`. 4 MiB
@@ -61,6 +61,12 @@ operations).
     file cap. Walks the encoded codepoint range, collects (cp,
     glyph_idx) pairs, insertion-sorts. Multiple codepoints may map
     to the same glyph index.
+  - **Sidecar attach** (0.7.2): `kashi_attach_unicode_table` /
+    `kashi_attach_unicode_table_file` for binary PSF1/PSF2 tables;
+    `kashi_attach_unicode_text` / `kashi_attach_unicode_text_file`
+    for the `psfgettable` text format. Replace semantics; runtime
+    font ids only (built-ins → `KASHI_EINVAL`). 256 KiB file cap
+    (`KASHI_TAB_FILE_CAP`).
   - Unified **codepoint-addressed** `kashi_font_row` / `kashi_font_ptr`
     (built-in 0,1,2 vs runtime ≥ 3).
   - **Multi-byte row access**: `kashi_font_stride` /
@@ -76,8 +82,8 @@ operations).
 
 ## What's booked (not built — future)
 
-- 0.7.2: PSF u-variant sidecar tables.
-- M4 / 1.0.0: API freeze, full audit, benchmark trend.
+- M4 / 1.0.0: API freeze, every public symbol documented with an
+  example, benchmark trend captured, final security audit pass.
 - Text shaping / BiDi — out of scope (kashi exposes data only).
 
 See [`roadmap.md`](roadmap.md).
@@ -89,22 +95,23 @@ See [`roadmap.md`](roadmap.md).
 
 ## Tests
 
-- `src/test.cyr` — 349 assertions (built-in metadata + glyph fidelity,
-  bounds, PSF parse + load, BDF parse + load + error cases, **PCF
-  parse + load (canonical bytes recovered) + LSB-bit-order variant
-  (bit-reverse path) + uncompressed-metrics variant + 5 parse-error
-  cases**). `cyrius test` → **0 failed**.
-- `tests/kashi.tcyr` — 43 assertions (structural invariants, PSF +
-  BDF + **PCF file round-trips**, missing-file negative cases).
-- **392 assertions total, 0 failed.**
+- `src/test.cyr` — 380 assertions (built-in metadata + glyph fidelity,
+  bounds, PSF parse + load, BDF parse + load + error cases, PCF
+  parse + load + LSB-bit + uncompressed-metrics + 5 parse-error
+  cases, **strict overlong-UTF-8 (8 vectors), binary attach
+  round-trip, text attach round-trip, attach error cases**).
+  `cyrius test` → **0 failed**.
+- `tests/kashi.tcyr` — 49 assertions (structural invariants, PSF +
+  BDF + PCF file round-trips, **PSF + sidecar tab file round-trip**,
+  missing-file negative cases).
+- **429 assertions total, 0 failed.**
 - `tests/kashi.fcyr` — fuzz over the accessor bounds contract, the
-  PSF parser (4000 rounds), the BDF parser (2000 rounds), and **the
-  PCF parser (1500 rounds across random / template / mutated /
-  truncated picks)**. PCF is the biggest untrusted-input surface
-  kashi has so far. No crashes; all accept-paths bounds-safe.
+  PSF parser (4000 rounds), the BDF parser (2000 rounds), the PCF
+  parser (1500 rounds), and **the text-tab parser (1000 rounds across
+  random / template / mutated / truncated picks)**. No crashes; all
+  accept-paths bounds-safe.
 - `tests/kashi.bcyr` — bench numbers unchanged (no hot-path code
-  modified in 0.7.1). PCF load not yet benched (one-shot parse +
-  decode; will add in 0.7.x if hot.)
+  modified in 0.7.2).
 
 ## Cleanliness (P(-1) gates)
 
@@ -112,14 +119,17 @@ See [`roadmap.md`](roadmap.md).
 - `cyrius fmt <file> --check` — clean on all src + test files.
 - `cyrius lint` — 0 warnings on all src files.
 - `cyaudit vet src/font_data.cyr` — "no dependencies".
-- `cyaudit vet src/font_psf.cyr` — "no dependencies".
+- `cyaudit vet src/font_psf.cyr` — "no dependencies" (incl. the 0.7.2
+  overlong-UTF-8 tightening — pure arithmetic, no new deps).
 - `cyaudit vet src/font_bdf.cyr` — "no dependencies".
-- `cyaudit vet src/font_pcf.cyr` — "no dependencies" (new in 0.7.1).
+- `cyaudit vet src/font_pcf.cyr` — "no dependencies".
 - `cyaudit vet src/lib.cyr` — 4 deps (lib + core + psf + bdf + pcf),
-  0 untrusted.
+  0 untrusted. The 0.7.2 attach APIs and the text-tab parser are
+  inline in lib.cyr (no new dependency module).
 - **Security audit** — `docs/audit/2026-05-28-audit.md` (0.6.0 P(-1)).
-  PCF parser audit covered via the fuzz exposure path (1500 rounds
-  with no crashes); no separate audit file this cut.
+  Audit F3 (overlong-UTF-8) closed in this cut. PCF + text-tab
+  parser audits covered via the fuzz exposure paths; no separate
+  audit file this cut. Full pre-1.0 audit booked for M4.
 
 ## Glyph fidelity
 

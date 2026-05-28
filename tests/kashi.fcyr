@@ -487,6 +487,91 @@ fn fuzz_pcf(rounds) {
     return 0;
 }
 
+# --- Text-tab fuzz (0.7.2, ADR 0010) ---
+#
+# kashi_attach_unicode_text takes untrusted text and must never crash —
+# returns KASHI_OK or `0 - <KashiResult>`. We load a stub tableless PSF
+# once, then attach randomized text to it on each round.
+
+fn _fz_tab_str(buf, p, s) {
+    var i = 0;
+    var done = 0;
+    while (done == 0) {
+        var c = load8(s + i);
+        if (c == 0) { done = 1; }
+        if (done == 0) {
+            store8(buf + p + i, c);
+            i = i + 1;
+        }
+    }
+    return p + i;
+}
+
+# Plant a small tab template into buf. Used by fuzz_tab.
+fn _fz_tab_template(buf) {
+    var p = 0;
+    p = _fz_tab_str(buf, p, "# kashi tab template\n");
+    p = _fz_tab_str(buf, p, "0x20  U+0020\n");
+    p = _fz_tab_str(buf, p, "0x21  U+0021 U+E001\n");
+    p = _fz_tab_str(buf, p, "0x41  U+0041 U+0391  # A and Alpha\n");
+    p = _fz_tab_str(buf, p, "0x42  U+0042\n");
+    return p;
+}
+
+fn fuzz_tab(font_id, rounds) {
+    var cap = 1024;
+    var buf = alloc(cap);
+    var r = 0;
+    while (r < rounds) {
+        var pick = rng_next() & 3;
+        var len = 0;
+        if (pick == 0) {
+            len = rng_next() % (cap + 1);
+            var i = 0;
+            while (i < len) {
+                store8(buf + i, rng_next() & 0xFF);
+                i = i + 1;
+            }
+        }
+        if (pick == 1) {
+            len = _fz_tab_template(buf);
+        }
+        if (pick == 2) {
+            len = _fz_tab_template(buf);
+            var muts = (rng_next() & 7) + 1;
+            var m = 0;
+            while (m < muts) {
+                var off = rng_next() % len;
+                store8(buf + off, rng_next() & 0xFF);
+                m = m + 1;
+            }
+        }
+        if (pick == 3) {
+            len = _fz_tab_template(buf);
+            len = rng_next() % (len + 1);
+        }
+
+        var rc = kashi_attach_unicode_text(font_id, buf, len);
+        # Contract: returns KASHI_OK (0) or a negative `0 - <code>`.
+        # KASHI_OK is the only non-negative possible value.
+        if (rc > 0) { return 1; }
+        if (rc < 0) {
+            # Must be one of the known negatives.
+            if (rc != 0 - KASHI_EFORMAT) {
+                if (rc != 0 - KASHI_EINVAL) { return 2; }
+            }
+        }
+        # Probe the font for bounds-safety after the attach attempt:
+        # any codepoint lookup must return 0..0xFF.
+        var probe = rng_next() & 0xFFFFF;
+        var rv = kashi_font_row(font_id, probe, 0);
+        if (rv < 0) { return 3; }
+        if (rv > 0xFF) { return 4; }
+        r = r + 1;
+    }
+    return 0;
+}
+
 fn main() {
     alloc_init();
     kashi_font_init();
@@ -518,6 +603,17 @@ fn main() {
     rng_seed(0xA1B2C3D4E5F60718);
     var cr = fuzz_pcf(1500);
     if (cr != 0) { println("fuzz: FAIL pcf"); return cr; }
+
+    # Text-tab parser fuzz: needs an existing runtime font to attach to.
+    # Register a tiny 256-glyph 8x3 stub.
+    var stub = alloc(256 * 3);
+    var si = 0;
+    while (si < 256 * 3) { store8(stub + si, 0); si = si + 1; }
+    var fz_font = kashi_register_font(8, 3, stub, 256);
+    if (fz_font < KASHI_RT_FONT_BASE) { println("fuzz: FAIL tab stub"); return 1; }
+    rng_seed(0xB2A4C6E80123456F);
+    var tr = fuzz_tab(fz_font, 1000);
+    if (tr != 0) { println("fuzz: FAIL tab"); return tr; }
 
     println("fuzz: ok");
     return 0;

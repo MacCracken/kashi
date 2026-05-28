@@ -5,6 +5,80 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-05-28
+
+PSF u-variant: sidecar Unicode-table attachment + strict overlong-UTF-8
+rejection. Closes the 0.7.x track (BDF → PCF → u-variant); the next
+substantial move is M4 / 1.0.0 freeze. See [ADR
+0010](docs/adr/0010-psf-u-variant.md).
+
+### Added
+
+- **Sidecar Unicode-table attachment** (`src/lib.cyr`, ADR 0010):
+  - `kashi_attach_unicode_table(font_id, buf, len, kind)` — attach a
+    raw PSF1 (LE-u16) or PSF2 (UTF-8) Unicode-table byte stream to
+    an already-loaded runtime font. Reuses `_kashi_build_umap` +
+    `_kashi_build_useqs` with `unioff=0`.
+  - `kashi_attach_unicode_table_file(font_id, path, kind)` — file
+    companion, 256 KiB cap (`KASHI_TAB_FILE_CAP`).
+  - `kashi_attach_unicode_text(font_id, buf, len)` — text-format
+    parser for the `psfgettable` convention: `0x<idx> U+<cp> [U+<cp>
+    ...] # comment` per line, blank/comment lines skipped, out-of-
+    range glyph indices silently dropped.
+  - `kashi_attach_unicode_text_file(font_id, path)` — file companion.
+  - **Replace semantics**: any existing umap / seqs on the runtime
+    record are overwritten (the previous arrays leak-conceptually;
+    bump allocator reclaims at process exit). Built-in font ids
+    (< `KASHI_RT_FONT_BASE`) return `KASHI_EINVAL` — attach is
+    runtime-only.
+- **Guide update**: [loading-psf-fonts.md](docs/guides/loading-psf-fonts.md)
+  gains a "Sidecar Unicode tables" section covering both formats,
+  the `psfgettable` text syntax, and replace semantics.
+
+### Security
+
+- **Strict overlong-UTF-8 rejection** (audit F3, RFC 3629): the
+  PSF2 Unicode decoder in `kashi_psf_uni_token` now rejects
+  sequences that encode a codepoint with more bytes than necessary
+  — e.g., `0xC1 0x81` ("encoding" U+0041 in 2 bytes) is rejected.
+  Three minimum-codepoint checks added: 2-byte must produce `cp >=
+  0x80`, 3-byte `>= 0x800`, 4-byte `>= 0x10000`. Same posture as
+  the 0.6.0 audit F2 tightening (over-U+10FFFF and surrogate
+  rejections). No memory safety implication (the codepoint is just
+  a u64 map key) — but the canonical-encoding filter belongs in
+  the parser by RFC 3629 spirit.
+
+### Tests
+
+- Suite now **429 assertions, 0 failed** (380 unit + 49 integration;
+  was 392 at 0.7.1). New: overlong-UTF-8 rejection across the three
+  multi-byte lengths (incl. just-above-boundary acceptance for
+  U+0080 / U+0800 / U+10000), binary attach round-trip (tableless
+  PSF + PSF1 table → codepoint addressing works; pre-attach
+  identity-index fallback verified), text attach round-trip
+  (multiple codepoints per glyph, comment lines ignored, out-of-
+  range indices skipped), attach error cases (built-in id rejected,
+  null buf, bad kind, malformed text, empty text), file round-trip
+  for the sidecar text path (`/tmp` PSF + `/tmp` .tab via
+  `kashi_attach_unicode_text_file`).
+- `tests/kashi.fcyr` gains `fuzz_tab` — 1000 rounds across four pick
+  paths (random / valid template / mutated template / truncated
+  template). Loads a stub PSF once, attaches arbitrary text on each
+  round, verifies the parser never crashes and the font remains
+  bounds-safe under codepoint probes.
+
+### Notes
+
+- **0.7.x track closed** — BDF (0.7.0), PCF (0.7.1), u-variant
+  (0.7.2). The next major move is M4 / 1.0.0 freeze: API audit,
+  every public symbol documented with an example, benchmark trend,
+  final security audit.
+- **Dropped roadmap item**: "larger table-walk caps" was on the
+  0.7.2 list but on re-examination found to be a non-issue — the
+  table walk is buffer-bounded with no infinite-loop risk (each
+  `kashi_psf_uni_token` call advances `pos` or returns `END`).
+  Documented in ADR 0010.
+
 ## [0.7.1] — 2026-05-28
 
 PCF (Portable Compiled Format) import — X11's compiled binary
@@ -520,7 +594,8 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.7.1...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.7.2...HEAD
+[0.7.2]: https://github.com/MacCracken/kashi/compare/0.7.1...0.7.2
 [0.7.1]: https://github.com/MacCracken/kashi/compare/0.7.0...0.7.1
 [0.7.0]: https://github.com/MacCracken/kashi/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/MacCracken/kashi/compare/0.5.2...0.6.0

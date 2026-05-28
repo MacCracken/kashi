@@ -1,6 +1,6 @@
 # Loading PSF fonts at runtime
 
-> **Last Updated**: 2026-05-27 (M1, 0.2.0)
+> **Last Updated**: 2026-05-28 (0.7.2 — sidecar Unicode tables added)
 
 The **library face** (`src/lib.cyr`) can import [PC Screen Font][psf] files
 (PSF1 and PSF2) at runtime and serve their glyphs through the same accessor
@@ -125,6 +125,59 @@ table, null cps_ptr, or non-positive `len`. kashi exposes the data; the
 shaping policy (when to look up a sequence vs render singles) belongs to
 the consumer.
 
+## Sidecar Unicode tables (0.7.2, ADR 0010)
+
+If a PSF carries no inline Unicode table (mode `HASTAB` bit clear in
+PSF1, or `HAS_UNICODE` flag clear in PSF2), the loaded font is
+addressable only by raw glyph index. To make it codepoint-addressable,
+attach an externally-supplied table after loading. Two formats:
+
+### Binary (raw PSF Unicode-table bytes)
+
+```cyrius
+# Tab buffer = the raw bytes a PSF Unicode table would contain.
+# kind = KASHI_PSF_KIND_PSF1 (LE-u16 entries, 0xFFFF terminator) or
+#        KASHI_PSF_KIND_PSF2 (UTF-8, 0xFF terminator).
+var rc = kashi_attach_unicode_table(id, tab_buf, tab_len, KASHI_PSF_KIND_PSF1);
+
+# Or from a file (256 KiB cap):
+var rc2 = kashi_attach_unicode_table_file(id, "/path/to/font.tab", KASHI_PSF_KIND_PSF1);
+```
+
+### Text (psfgettable convention)
+
+One line per glyph: `0x<hex_idx>` then one or more `U+<hex_cp>`
+codepoints, with `#` starting a line comment. Multiple codepoints on
+a line all map to the same glyph (common for alternate encodings —
+e.g., LATIN CAPITAL A and GREEK CAPITAL ALPHA rendering identically).
+
+```
+# example .tab file
+0x0020   U+0020
+0x0041   U+0041 U+0391    # 'A' or Greek Alpha
+0x0042   U+0042
+0xFFFD   U+FFFD U+FFFC    # replacement chars
+```
+
+```cyrius
+var rc = kashi_attach_unicode_text(id, text_buf, text_len);
+# Or from a file (256 KiB cap):
+var rc2 = kashi_attach_unicode_text_file(id, "/path/to/font.tab");
+```
+
+**Semantics:**
+- `font_id` must be a runtime id (≥ `KASHI_RT_FONT_BASE`). Built-in
+  fonts return `KASHI_EINVAL` — they're addressable via ASCII
+  codepoints directly through the freestanding core.
+- Attach **replaces** any existing umap / seqs on the runtime record
+  (the prior allocations leak-conceptually; the bump allocator
+  reclaims at process exit). No "merge" mode.
+- Out-of-range glyph indices in the text are silently skipped
+  (matches the binary path's `if (glyph < count)` guard).
+- The text format does not represent multi-codepoint sequences
+  (ligatures); for those, attach via the binary path with a PSF2 table
+  containing `0xFE` separators.
+
 ## Limits
 
 - **Width 1–32** (up to 4 bytes per row); PSF2 wider than 32 → `KASHI_EFORMAT`.
@@ -133,5 +186,9 @@ the consumer.
 - **Validation-first**: magic, version, header size, geometry, glyph count,
   and total length are all checked before any glyph byte is read. The parser
   (`src/font_psf.cyr`) is fuzzed in `tests/kashi.fcyr`.
+- **Strict UTF-8**: the PSF2 Unicode decoder rejects codepoints
+  > U+10FFFF, the surrogate range U+D800..DFFF (audit F2, 0.6.0),
+  and overlong sequences per RFC 3629 (audit F3, 0.7.2 — e.g.,
+  `0xC1 0x81` "encoding" U+0041 is rejected).
 - Loaded fonts own a copy of their glyph bytes, so you may free the source
   buffer after loading. Stores are not individually freed (bump allocator).

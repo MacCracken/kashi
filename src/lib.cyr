@@ -663,6 +663,315 @@ fn kashi_load_pcf_file(path) {
     return kashi_load_pcf(buf, n);
 }
 
+# --- Sidecar Unicode table attachment (0.7.2; ADR 0010) ---
+#
+# Attach an externally-supplied codepoint→glyph mapping to an
+# already-loaded runtime font. Two source formats:
+#   * Binary — raw PSF1 (LE-u16) or PSF2 (UTF-8) Unicode-table bytes
+#     (the format psfaddtable / psfgettable emit when the PSF carries
+#     no inline table). Reuses _kashi_build_umap + _kashi_build_useqs.
+#   * Text — psfgettable-style: one line per glyph,
+#     "0x<hex_idx>  U+<hex_cp> [U+<hex_cp> ...]   # comment".
+#
+# Replace semantics: any existing umap/seqs on the runtime record are
+# overwritten (the previous allocations leak-conceptually; the bump
+# allocator reclaims at process exit). Built-in fonts return
+# KASHI_EINVAL — attach is for runtime ids (≥ KASHI_RT_FONT_BASE) only.
+# Returns KASHI_OK or `0 - <KashiResult>`.
+
+# Tab file-size cap (matches the existing PSF cap).
+enum KashiTabCap {
+    KASHI_TAB_FILE_CAP = 262144;
+}
+
+# --- Text-tab parser primitives (internal) ---
+
+fn _kashi_tab_ws(buf, pos, end) {
+    var done = 0;
+    while (done == 0) {
+        if (pos >= end) { done = 1; }
+        if (done == 0) {
+            var c = load8(buf + pos);
+            if (c == 0x20) { pos = pos + 1; }
+            if (c == 0x09) { pos = pos + 1; }
+            if (c != 0x20) {
+                if (c != 0x09) { done = 1; }
+            }
+        }
+    }
+    return pos;
+}
+
+fn _kashi_tab_eol(buf, pos, end) {
+    var done = 0;
+    while (done == 0) {
+        if (pos >= end) { done = 1; }
+        if (done == 0) {
+            if (load8(buf + pos) == 0x0A) { done = 1; }
+            if (done == 0) { pos = pos + 1; }
+        }
+    }
+    return pos;
+}
+
+fn _kashi_tab_next_line(buf, pos, end) {
+    var e = _kashi_tab_eol(buf, pos, end);
+    if (e < end) { return e + 1; }
+    return end;
+}
+
+# Check whether buf[pos..pos+2] equals (p0, p1). Returns 1 if yes.
+fn _kashi_tab_pfx2(buf, pos, end, p0, p1) {
+    if (pos + 2 > end) { return 0; }
+    if (load8(buf + pos) != p0) { return 0; }
+    if (load8(buf + pos + 1) != p1) { return 0; }
+    return 1;
+}
+
+# Parse a hex integer at pos (no prefix; just hex digits). Writes
+# value at out + 0, post-position at out + 8. Returns 1 on success,
+# 0 on no-digits. Caps consumed digits at 12 to keep i64 safe.
+fn _kashi_tab_hex(buf, pos, end, out) {
+    store64(out + 0, 0);
+    store64(out + 8, pos);
+    var start = pos;
+    var n = 0;
+    var digits = 0;
+    var done = 0;
+    while (done == 0) {
+        if (pos >= end) { done = 1; }
+        if (done == 0) {
+            if (digits >= 12) { done = 1; }
+            if (done == 0) {
+                var c = load8(buf + pos);
+                var d = 0 - 1;
+                if (c >= 0x30) {
+                    if (c <= 0x39) { d = c - 0x30; }
+                }
+                if (c >= 0x41) {
+                    if (c <= 0x46) { d = c - 0x41 + 10; }
+                }
+                if (c >= 0x61) {
+                    if (c <= 0x66) { d = c - 0x61 + 10; }
+                }
+                if (d < 0) { done = 1; }
+                if (done == 0) {
+                    n = (n << 4) | d;
+                    pos = pos + 1;
+                    digits = digits + 1;
+                }
+            }
+        }
+    }
+    if (pos == start) { return 0; }
+    store64(out + 0, n);
+    store64(out + 8, pos);
+    return 1;
+}
+
+# Text-tab parser. Walks `buf[0..len]`, parses each non-blank /
+# non-comment line as "0x<idx>  U+<cp> [U+<cp> ...]  # comment".
+# Builds the (cp, glyph_idx) pair array, sorts, attaches to `rec`.
+# Returns KASHI_OK on success, KASHI_EFORMAT on syntax error or
+# zero valid pairs. Internal.
+fn _kashi_attach_text_impl(rec, buf, len) {
+    var count = load64(rec + RT_COUNT);
+    var pair[16];
+
+    # Pass 1: count valid (cp, idx) pairs.
+    var n = 0;
+    var p = 0;
+    while (p < len) {
+        var le = _kashi_tab_eol(buf, p, len);
+        var ls = _kashi_tab_ws(buf, p, le);
+        if (ls < le) {
+            var c0 = load8(buf + ls);
+            if (c0 != 0x23) {
+                # 0x or 0X prefix required.
+                var is_0x = _kashi_tab_pfx2(buf, ls, le, 0x30, 0x78);
+                var is_0X = _kashi_tab_pfx2(buf, ls, le, 0x30, 0x58);
+                if (is_0x + is_0X == 0) { return KASHI_EFORMAT; }
+                if (_kashi_tab_hex(buf, ls + 2, le, &pair) == 0) {
+                    return KASHI_EFORMAT;
+                }
+                var glyph = load64(&pair + 0);
+                var q = load64(&pair + 8);
+                q = _kashi_tab_ws(buf, q, le);
+                var more = 1;
+                while (more == 1) {
+                    if (q >= le) { more = 0; }
+                    if (more == 1) {
+                        var cc = load8(buf + q);
+                        if (cc == 0x23) { more = 0; }
+                        if (more == 1) {
+                            if (_kashi_tab_pfx2(buf, q, le, 0x55, 0x2B) == 0) {
+                                return KASHI_EFORMAT;
+                            }
+                            if (_kashi_tab_hex(buf, q + 2, le, &pair) == 0) {
+                                return KASHI_EFORMAT;
+                            }
+                            q = load64(&pair + 8);
+                            if (glyph < count) { n = n + 1; }
+                            q = _kashi_tab_ws(buf, q, le);
+                        }
+                    }
+                }
+            }
+        }
+        p = _kashi_tab_next_line(buf, p, len);
+    }
+    if (n == 0) { return KASHI_EFORMAT; }
+
+    # Pass 2: alloc and fill.
+    var arr = alloc(n * 16);
+    if (arr == 0) { return KASHI_EFORMAT; }
+    var w = 0;
+    p = 0;
+    while (p < len) {
+        var le = _kashi_tab_eol(buf, p, len);
+        var ls = _kashi_tab_ws(buf, p, le);
+        if (ls < le) {
+            var c0 = load8(buf + ls);
+            if (c0 != 0x23) {
+                var is_0x2 = _kashi_tab_pfx2(buf, ls, le, 0x30, 0x78);
+                var is_0X2 = _kashi_tab_pfx2(buf, ls, le, 0x30, 0x58);
+                if (is_0x2 + is_0X2 == 0) { return KASHI_EFORMAT; }
+                if (_kashi_tab_hex(buf, ls + 2, le, &pair) == 0) {
+                    return KASHI_EFORMAT;
+                }
+                var glyph = load64(&pair + 0);
+                var q = load64(&pair + 8);
+                q = _kashi_tab_ws(buf, q, le);
+                var more = 1;
+                while (more == 1) {
+                    if (q >= le) { more = 0; }
+                    if (more == 1) {
+                        var cc = load8(buf + q);
+                        if (cc == 0x23) { more = 0; }
+                        if (more == 1) {
+                            if (_kashi_tab_pfx2(buf, q, le, 0x55, 0x2B) == 0) {
+                                return KASHI_EFORMAT;
+                            }
+                            if (_kashi_tab_hex(buf, q + 2, le, &pair) == 0) {
+                                return KASHI_EFORMAT;
+                            }
+                            var cp = load64(&pair + 0);
+                            q = load64(&pair + 8);
+                            if (glyph < count) {
+                                if (w < n) {
+                                    store64(arr + w * 16 + 0, cp);
+                                    store64(arr + w * 16 + 8, glyph);
+                                    w = w + 1;
+                                }
+                            }
+                            q = _kashi_tab_ws(buf, q, le);
+                        }
+                    }
+                }
+            }
+        }
+        p = _kashi_tab_next_line(buf, p, len);
+    }
+
+    # Insertion-sort the pairs by codepoint (same shape as PSF / PCF /
+    # BDF maps so binary-search at lookup time works).
+    var i = 1;
+    while (i < w) {
+        var kc = load64(arr + i * 16 + 0);
+        var kg = load64(arr + i * 16 + 8);
+        var j = i;
+        var sdone = 0;
+        while (sdone == 0) {
+            if (j == 0) { sdone = 1; }
+            if (sdone == 0) {
+                var cprev = load64(arr + (j - 1) * 16 + 0);
+                if (cprev <= kc) { sdone = 1; }
+                if (sdone == 0) {
+                    store64(arr + j * 16 + 0, cprev);
+                    store64(arr + j * 16 + 8, load64(arr + (j - 1) * 16 + 8));
+                    j = j - 1;
+                }
+            }
+        }
+        store64(arr + j * 16 + 0, kc);
+        store64(arr + j * 16 + 8, kg);
+        i = i + 1;
+    }
+
+    # Replace any existing umap + seqs (text format carries no sequences).
+    store64(rec + RT_UMAP, arr);
+    store64(rec + RT_UCOUNT, w);
+    store64(rec + RT_SEQS, 0);
+    store64(rec + RT_SEQCOUNT, 0);
+    store64(rec + RT_SEQDATA, 0);
+    return KASHI_OK;
+}
+
+# --- Public attach APIs ---
+
+# Attach a binary PSF Unicode table to a runtime font. `kind` is
+# KASHI_PSF_KIND_PSF1 (LE-u16) or KASHI_PSF_KIND_PSF2 (UTF-8).
+# Replaces any existing umap/seqs. Returns KASHI_OK or `0 - <code>`.
+fn kashi_attach_unicode_table(font_id, buf, len, kind) {
+    if (font_id < KASHI_RT_FONT_BASE) { return 0 - KASHI_EINVAL; }
+    if (buf == 0) { return 0 - KASHI_EINVAL; }
+    if (len < 0) { return 0 - KASHI_EINVAL; }
+    if (kind != KASHI_PSF_KIND_PSF1) {
+        if (kind != KASHI_PSF_KIND_PSF2) { return 0 - KASHI_EINVAL; }
+    }
+    var rec = _kashi_rt_get(font_id);
+    if (rec == 0) { return 0 - KASHI_EINVAL; }
+
+    # Clear any existing map; the build helpers below populate fresh
+    # ones (or leave them zero if the table is empty).
+    store64(rec + RT_UMAP, 0);
+    store64(rec + RT_UCOUNT, 0);
+    store64(rec + RT_SEQS, 0);
+    store64(rec + RT_SEQCOUNT, 0);
+    store64(rec + RT_SEQDATA, 0);
+
+    _kashi_build_umap(rec, buf, len, kind, 0);
+    _kashi_build_useqs(rec, buf, len, kind, 0);
+    if (load64(rec + RT_UCOUNT) == 0) {
+        if (load64(rec + RT_SEQCOUNT) == 0) { return 0 - KASHI_EFORMAT; }
+    }
+    return KASHI_OK;
+}
+
+# File companion for kashi_attach_unicode_table. Reads at most 256 KiB.
+fn kashi_attach_unicode_table_file(font_id, path, kind) {
+    var cap = KASHI_TAB_FILE_CAP;
+    var buf = alloc(cap);
+    if (buf == 0) { return 0 - KASHI_EINVAL; }
+    var n = file_read_all(path, buf, cap);
+    if (n < 0) { return 0 - KASHI_EINVAL; }
+    if (n == 0) { return 0 - KASHI_EFORMAT; }
+    return kashi_attach_unicode_table(font_id, buf, n, kind);
+}
+
+# Attach a text-format Unicode table (psfgettable convention).
+fn kashi_attach_unicode_text(font_id, buf, len) {
+    if (font_id < KASHI_RT_FONT_BASE) { return 0 - KASHI_EINVAL; }
+    if (buf == 0) { return 0 - KASHI_EINVAL; }
+    if (len < 0) { return 0 - KASHI_EINVAL; }
+    var rec = _kashi_rt_get(font_id);
+    if (rec == 0) { return 0 - KASHI_EINVAL; }
+    var rc = _kashi_attach_text_impl(rec, buf, len);
+    if (rc == KASHI_OK) { return KASHI_OK; }
+    return 0 - rc;
+}
+
+# File companion for kashi_attach_unicode_text. Reads at most 256 KiB.
+fn kashi_attach_unicode_text_file(font_id, path) {
+    var cap = KASHI_TAB_FILE_CAP;
+    var buf = alloc(cap);
+    if (buf == 0) { return 0 - KASHI_EINVAL; }
+    var n = file_read_all(path, buf, cap);
+    if (n < 0) { return 0 - KASHI_EINVAL; }
+    if (n == 0) { return 0 - KASHI_EFORMAT; }
+    return kashi_attach_unicode_text(font_id, buf, n);
+}
+
 # --- Raw glyph-INDEX accessors (runtime fonts only) ---
 
 # Base pointer to runtime-font glyph `idx`'s row bytes (idx in [0,count)).

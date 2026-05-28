@@ -1385,6 +1385,193 @@ fn test_pcf_parse_errors() {
     return 0;
 }
 
+# --- 0.7.2: PSF u-variant (ADR 0010) — sidecar attach + strict UTF-8 ---
+
+# Overlong-UTF-8 rejection: a codepoint encoded with more bytes than
+# necessary must be rejected per RFC 3629. The decoder returns
+# KASHI_TOK_END (same as the F2 surrogate/out-of-range path).
+fn test_psf_overlong_utf8() {
+    test_group("audit F3: UTF-8 strict overlong");
+    var tok[24];
+    var b = alloc(8);
+    # 2-byte overlong of U+0000: 0xC0 0x80
+    store8(b + 0, 0xC0); store8(b + 1, 0x80);
+    kashi_psf_uni_token(b, 0, 2, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
+    "overlong 2-byte U+0000 -> END");
+    # 2-byte overlong of U+0041 ('A'): 0xC1 0x81
+    store8(b + 0, 0xC1); store8(b + 1, 0x81);
+    kashi_psf_uni_token(b, 0, 2, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
+    "overlong 2-byte U+0041 -> END");
+    # 3-byte overlong of U+0000: 0xE0 0x80 0x80
+    store8(b + 0, 0xE0); store8(b + 1, 0x80); store8(b + 2, 0x80);
+    kashi_psf_uni_token(b, 0, 3, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
+    "overlong 3-byte U+0000 -> END");
+    # 3-byte overlong of U+0080: 0xE0 0x82 0x80
+    store8(b + 0, 0xE0); store8(b + 1, 0x82); store8(b + 2, 0x80);
+    kashi_psf_uni_token(b, 0, 3, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
+    "overlong 3-byte U+0080 -> END");
+    # 4-byte overlong of U+0000: 0xF0 0x80 0x80 0x80
+    store8(b + 0, 0xF0); store8(b + 1, 0x80);
+    store8(b + 2, 0x80); store8(b + 3, 0x80);
+    kashi_psf_uni_token(b, 0, 4, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
+    "overlong 4-byte U+0000 -> END");
+    # 4-byte overlong of U+FFFF: 0xF0 0x8F 0xBF 0xBF
+    store8(b + 0, 0xF0); store8(b + 1, 0x8F);
+    store8(b + 2, 0xBF); store8(b + 3, 0xBF);
+    kashi_psf_uni_token(b, 0, 4, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
+    "overlong 4-byte U+FFFF -> END");
+
+    # Just above the boundaries — should still parse.
+    # Smallest valid 2-byte: U+0080 = 0xC2 0x80
+    store8(b + 0, 0xC2); store8(b + 1, 0x80);
+    kashi_psf_uni_token(b, 0, 2, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_CP, "min 2-byte U+0080 -> CP");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0x80, "min 2-byte cp value");
+    # Smallest valid 3-byte: U+0800 = 0xE0 0xA0 0x80
+    store8(b + 0, 0xE0); store8(b + 1, 0xA0); store8(b + 2, 0x80);
+    kashi_psf_uni_token(b, 0, 3, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_CP, "min 3-byte U+0800 -> CP");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0x800, "min 3-byte cp value");
+    # Smallest valid 4-byte: U+10000 = 0xF0 0x90 0x80 0x80
+    store8(b + 0, 0xF0); store8(b + 1, 0x90);
+    store8(b + 2, 0x80); store8(b + 3, 0x80);
+    kashi_psf_uni_token(b, 0, 4, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_CP, "min 4-byte U+10000 -> CP");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0x10000, "min 4-byte cp value");
+    return 0;
+}
+
+# Build a tableless PSF1 (256 glyphs, height 3, mode 0 = no Unicode
+# table). Returns total length. Glyph 0x41 ('A') planted with rows
+# 0x11, 0x22, 0x33 so we can verify the attach made it codepoint-
+# addressable.
+fn _mk_tableless_psf(buf) {
+    var total = 4 + 256 * 3;
+    var i = 0;
+    while (i < total) { store8(buf + i, 0); i = i + 1; }
+    store8(buf + 0, 0x36); store8(buf + 1, 0x04);
+    store8(buf + 2, 0);   # mode 0: no table, 256 glyphs
+    store8(buf + 3, 3);   # charsize 3 (height 3)
+    store8(buf + 4 + 0x41 * 3 + 0, 0x11);
+    store8(buf + 4 + 0x41 * 3 + 1, 0x22);
+    store8(buf + 4 + 0x41 * 3 + 2, 0x33);
+    return total;
+}
+
+# Attach a binary PSF1 Unicode table to a tableless PSF.
+fn test_attach_binary() {
+    test_group("attach binary table");
+    var psf = alloc(2048);
+    var psf_len = _mk_tableless_psf(psf);
+    var id = kashi_load_psf(psf, psf_len);
+    assert_gte(id, KASHI_RT_FONT_BASE, "tableless psf loads");
+    # Before attach: codepoint addressing falls back to identity
+    # (no map). 'A' (0x41) as a *codepoint* would resolve to glyph
+    # index 0x41 via identity, which IS the glyph we planted.
+    assert_eq(kashi_font_row(id, 0x41, 0), 0x11, "identity-index pre-attach");
+
+    # Build a PSF1 LE-u16 table: 256 entries, each one glyph's
+    # mapping followed by 0xFFFF terminator. We map only glyph 0x41
+    # to a NEW codepoint U+E000 (Private Use Area) so the identity
+    # fallback would no longer reach it.
+    var tab = alloc(256 * 4);
+    var ti = 0;
+    while (ti < 256 * 4) { store8(tab + ti, 0); ti = ti + 1; }
+    var pos = 0;
+    var g = 0;
+    while (g < 256) {
+        if (g == 0x41) {
+            store8(tab + pos + 0, 0x00);   # 0xE000 low byte
+            store8(tab + pos + 1, 0xE0);   # 0xE000 high byte
+            pos = pos + 2;
+        }
+        store8(tab + pos + 0, 0xFF);    # 0xFFFF terminator
+        store8(tab + pos + 1, 0xFF);
+        pos = pos + 2;
+        g = g + 1;
+    }
+
+    assert_eq(kashi_attach_unicode_table(id, tab, pos, KASHI_PSF_KIND_PSF1),
+    KASHI_OK, "attach binary ok");
+    # Post-attach: U+E000 resolves to glyph 0x41 (rows 0x11/0x22/0x33).
+    assert_eq(kashi_font_row(id, 0xE000, 0), 0x11, "binary attach -> U+E000 r0");
+    assert_eq(kashi_font_row(id, 0xE000, 1), 0x22, "binary attach -> U+E000 r1");
+    assert_eq(kashi_font_row(id, 0xE000, 2), 0x33, "binary attach -> U+E000 r2");
+    # Now codepoint 0x41 (the old identity hit) is no longer mapped
+    # (we replaced the map).
+    assert_eq(kashi_font_row(id, 0x41, 0), 0, "old identity cp unmapped after attach");
+    return 0;
+}
+
+# Attach a text-format ".tab" to a tableless PSF.
+fn test_attach_text() {
+    test_group("attach text table");
+    var psf = alloc(2048);
+    var psf_len = _mk_tableless_psf(psf);
+    var id = kashi_load_psf(psf, psf_len);
+    assert_gte(id, KASHI_RT_FONT_BASE, "tableless psf loads");
+
+    # Build a small text-tab buffer using _bdf_str (it just copies
+    # null-terminated bytes — works for arbitrary text).
+    var tab = alloc(512);
+    var p = 0;
+    p = _bdf_str(tab, p, "# kashi test .tab\n");
+    p = _bdf_str(tab, p, "0x41   U+0041 U+E001\n");
+    p = _bdf_str(tab, p, "\n");
+    p = _bdf_str(tab, p, "0x42   U+0042  # 'B'\n");
+    p = _bdf_str(tab, p, "0xFFFF U+0044  # out-of-range glyph idx, silently skipped\n");
+
+    assert_eq(kashi_attach_unicode_text(id, tab, p), KASHI_OK, "attach text ok");
+    # Multiple codepoints (U+0041 and U+E001) both map to glyph 0x41.
+    assert_eq(kashi_font_row(id, 0x41, 0), 0x11, "text attach U+0041 r0");
+    assert_eq(kashi_font_row(id, 0xE001, 0), 0x11, "text attach U+E001 r0");
+    # Glyph 0x42 was zero-filled in _mk_tableless_psf; row 0 = 0.
+    assert_eq(kashi_font_row(id, 0x42, 0), 0, "text attach glyph 0x42 still zero");
+    # Unmapped codepoint returns 0.
+    assert_eq(kashi_font_row(id, 0x99, 0), 0, "text attach unmapped 0x99 -> 0");
+    return 0;
+}
+
+fn test_attach_errors() {
+    test_group("attach errors");
+    var psf = alloc(2048);
+    var psf_len = _mk_tableless_psf(psf);
+    var id = kashi_load_psf(psf, psf_len);
+    var tab = alloc(64);
+    store8(tab + 0, 0x00); store8(tab + 1, 0xE0);
+    store8(tab + 2, 0xFF); store8(tab + 3, 0xFF);
+    # Built-in id rejected.
+    assert_lt(kashi_attach_unicode_table(KASHI_FONT_VGA_8X16, tab, 4, KASHI_PSF_KIND_PSF1),
+    0, "attach to builtin -> negative");
+    assert_lt(kashi_attach_unicode_text(KASHI_FONT_CGA_8X8, tab, 4), 0,
+    "attach text to builtin -> negative");
+    # Null buf rejected.
+    assert_lt(kashi_attach_unicode_table(id, 0, 4, KASHI_PSF_KIND_PSF1), 0,
+    "attach null buf -> negative");
+    # Bad kind rejected.
+    assert_lt(kashi_attach_unicode_table(id, tab, 4, 99), 0,
+    "attach bad kind -> negative");
+    # Text parser: malformed line (no 0x prefix).
+    var bad = alloc(64);
+    var bp = 0;
+    bp = _bdf_str(bad, bp, "garbage line\n");
+    assert_lt(kashi_attach_unicode_text(id, bad, bp), 0,
+    "attach text malformed -> negative");
+    # Text parser: 0x prefix but missing U+ codepoints (no valid pairs).
+    var empty = alloc(64);
+    var ep = 0;
+    ep = _bdf_str(empty, ep, "# just a comment\n");
+    assert_lt(kashi_attach_unicode_text(id, empty, ep), 0,
+    "attach text no pairs -> negative");
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -1426,6 +1613,10 @@ fn main() {
     test_pcf_lsb_bit();
     test_pcf_uncompressed();
     test_pcf_parse_errors();
+    test_psf_overlong_utf8();
+    test_attach_binary();
+    test_attach_text();
+    test_attach_errors();
 
     return assert_summary();
 }
