@@ -6,7 +6,7 @@ type: state
 
 # Documentation Health — kashi
 
-> **Last refresh**: 2026-05-27 (**0.5.0** cut — wide-glyph + ligatures).
+> **Last refresh**: 2026-05-27 (**0.5.1** cut — VGA 9×16 derived built-in).
 > **Refresh cadence**: when a doc is touched, update its row. Full-tree
 > sweep at minor-version closeouts.
 >
@@ -33,7 +33,7 @@ nothing archived, no open strategic questions.
 
 | Bucket | Count | What it means |
 |---|---|---|
-| ✅ **Fresh** | 22 | 0.1.0 inventory + hardening docs + M1 docs (ADR 0002, PSF guide) + M2 docs (ADR 0003, ADR 0004) + 0.5.0 (ADR 0005). |
+| ✅ **Fresh** | 23 | 0.1.0 inventory + hardening docs + M1 docs (ADR 0002, PSF guide) + M2 docs (ADR 0003, ADR 0004) + 0.5.0 (ADR 0005) + 0.5.1 (ADR 0006). |
 | 🟡 **Stale** | 0 | — |
 | 🟠 **Read-through outstanding** | 0 | — |
 | 🔵 **Probably evergreen** | 2 | `CODE_OF_CONDUCT.md`, `LICENSE` — standard; re-read annually. |
@@ -47,7 +47,7 @@ nothing archived, no open strategic questions.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-05-27 | ✅ Fresh | Two-faces architecture, built-in font table, freestanding-core API, agnos consumption contract, build/test. |
-| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]`–`[0.5.0]` (0.5.0: wide-glyph + ligatures). SemVer + Keep a Changelog. |
+| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]`–`[0.5.1]` (0.5.1: VGA 9×16 derived built-in). SemVer + Keep a Changelog. |
 | `CLAUDE.md` | 2026-05-27 | ✅ Fresh | Durable-only; freestanding-vs-full-lib split, one-owner/two-faces boundary discipline, standard constraints. State deferred to state.md. |
 | `CONTRIBUTING.md` | 2026-05-27 | ✅ Fresh | The two faces, accessor-bounds rule, glyph-fidelity rule, Cyrius enum/style notes. |
 | `SECURITY.md` | 2026-05-27 | ✅ Fresh | Accessor-bounds = kernel trust boundary; buffer sizing; future PSF-parse validation. |
@@ -67,6 +67,7 @@ nothing archived, no open strategic questions.
 | `adr/0003-codepoint-addressing-runtime-fonts.md` | 2026-05-27 | ✅ Fresh | M2: PSF Unicode table → codepoint→glyph map; codepoint-addressed accessors + raw-index `kashi_rt_glyph_*`. Accepted. |
 | `adr/0004-cp437-glyph-range.md` | 2026-05-27 | ✅ Fresh | 0.4.0: widen freestanding range to `0x20..0xFF` (full CP437) in VGA 8×16 from Linux PD source; CGA high-half blank. Accepted. |
 | `adr/0005-wide-glyph-and-ligatures.md` | 2026-05-27 | ✅ Fresh | 0.5.0: multi-byte rows (widths 1–32) via `kashi_font_stride` + `*_row_byte`; PSF Unicode sequences harvested via `kashi_font_seq_glyph`. Refines 0002/0003. Accepted. |
+| `adr/0006-vga-9x16-derived-builtin.md` | 2026-05-27 | ✅ Fresh | 0.5.1: `KASHI_FONT_VGA_9X16 = 2` derived at init via the VGA col-9 rule; `KASHI_RT_FONT_BASE` 2→3. Accepted. |
 
 ## Tier 3 — `docs/architecture/`
 

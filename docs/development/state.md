@@ -1,21 +1,21 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-27 (**0.5.0** cut — wide-glyph (1–32 px) +
-> PSF ligature lookup; see `docs/adr/0005`) | **Refresh cadence**: bumped
-> every release (ideally by the release post-hook).
+> **Last refresh**: 2026-05-27 (**0.5.1** cut — VGA 9×16 derived built-in;
+> see `docs/adr/0006`) | **Refresh cadence**: bumped every release
+> (ideally by the release post-hook).
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
 
-**0.5.0** — wide-glyph (multi-byte rows for widths 1–32) + PSF ligature
-lookup. New accessors: `kashi_font_stride`, `kashi_glyph_row_byte`,
-`kashi_rt_font_stride`, `kashi_rt_glyph_row_byte`, `kashi_font_row_byte`,
-`kashi_font_seq_glyph`. PSF2 widths > 8 now accepted. Backward-compatible
-for 8-wide consumers (single-byte accessors unchanged). Tagged by the
-user (who handles all git operations); the tag push drives the release
-workflow.
+**0.5.1** — VGA 9×16 derived built-in (`KASHI_FONT_VGA_9X16 = 2`). Bytes
+computed at `kashi_font_init` time from the existing VGA 8×16 + the VGA
+col-9 replication rule (CP437 box-drawing range `0xC0..0xDF` repeats col 7
+into col 8; else col 8 is 0). `KASHI_RT_FONT_BASE` bumped `2 → 3`
+(pre-1.0). `kashi_glyph_row` is now stride-aware (backward-compatible for
+the 8-wide built-ins). Tagged by the user (who handles all git operations);
+the tag push drives the release workflow.
 
 ## Toolchain
 
@@ -25,15 +25,18 @@ workflow.
 
 - **Freestanding font-data core** — `src/font_data.cyr`. NO stdlib
   (`cyaudit vet` → "no dependencies"). Range `0x20..0xFF` (full CP437, 224
-  slots; widened in 0.4.0 per `docs/adr/0004`). Two built-in fonts:
+  slots; widened in 0.4.0 per `docs/adr/0004`). Three built-in fonts:
   - `KASHI_FONT_VGA_8X16` (id 0) — IBM VGA BIOS 8×16, 224 glyphs (full
     CP437; PD source = Linux's `font_8x16.c`).
   - `KASHI_FONT_CGA_8X8` (id 1) — hand-drawn CGA 8×8, 96 ASCII glyphs
     (`0x20..0x7F`); high-half slots exist but render blank.
-  - Accessors: `kashi_font_init`, `kashi_font_is_ready`, `kashi_glyph_row`,
-    `kashi_glyph_ptr`, `kashi_font_{width,height,first,count}`,
-    `kashi_glyph_encoded`. All bounds-safe for the full `i64` input domain
-    (audited 2026-05-27).
+  - `KASHI_FONT_VGA_9X16` (id 2) — VGA 9×16 **derived at init** from
+    `KASHI_FONT_VGA_8X16` + the VGA col-9 replication rule (`0xC0..0xDF`
+    box-drawing range); ADR 0006.
+  - Accessors: `kashi_font_init`, `kashi_font_is_ready`, `kashi_glyph_row`
+    (stride-aware), `kashi_glyph_row_byte`, `kashi_glyph_ptr`,
+    `kashi_font_{width,height,first,count,stride}`, `kashi_glyph_encoded`.
+    All bounds-safe for the full `i64` input domain (audited 2026-05-27).
 - **PSF parser** — `src/font_psf.cyr` (self-contained, heapless).
   `kashi_psf_parse` validates PSF1/PSF2 headers + reports the Unicode-table
   offset; `kashi_psf_uni_token` decodes the table (PSF1 LE-u16 / PSF2 UTF-8).

@@ -48,9 +48,11 @@ include "src/font_psf.cyr"
 # glyph-INDEX access (tooling / enumeration) is kashi_rt_glyph_ptr / _row.
 # ---------------------------------------------------------------------------
 
-# Runtime fonts start at id 2 (0 = VGA 8x16, 1 = CGA 8x8 are the built-ins).
+# Runtime fonts start at id 3 (0 = VGA 8x16, 1 = CGA 8x8, 2 = VGA 9x16 are
+# the freestanding-core built-ins). Bumped 2 -> 3 in 0.5.1 (ADR 0006) when
+# the 9x16 derived built-in landed.
 enum KashiRtBase {
-    KASHI_RT_FONT_BASE = 2;
+    KASHI_RT_FONT_BASE = 3;
 }
 
 # Runtime font record: 88 bytes (grown in 0.5.0 for stride + sequences).
@@ -574,13 +576,13 @@ fn kashi_font_seq_glyph(font_id, cps_ptr, len) {
     return 0 - 1;
 }
 
-# Number of fonts kashi currently knows: the two built-ins plus every
-# runtime-registered font. Font ids are dense `[0, kashi_font_total())`, so
-# enumeration is a plain `for id in 0..total` loop through the existing
-# accessors — no separate enumerate API needed.
+# Number of fonts kashi currently knows: the three freestanding built-ins
+# (VGA 8x16, CGA 8x8, VGA 9x16) plus every runtime-registered font. Font
+# ids are dense `[0, kashi_font_total())`, so enumeration is a plain
+# `for id in 0..total` loop through the existing accessors.
 fn kashi_font_total() {
-    if (_rt_registry == 0) { return 2; }
-    return 2 + vec_len(_rt_registry);
+    if (_rt_registry == 0) { return 3; }
+    return 3 + vec_len(_rt_registry);
 }
 
 # --- Active-font knob (M2 registry nicety) ---

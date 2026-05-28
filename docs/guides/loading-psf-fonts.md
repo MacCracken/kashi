@@ -17,7 +17,8 @@ kernel that only `include`s `src/font_data.cyr` does **not** get it (see
 |---|---|
 | `0` | built-in VGA 8×16 (`KASHI_FONT_VGA_8X16`) |
 | `1` | built-in CGA 8×8 (`KASHI_FONT_CGA_8X8`) |
-| `≥ 2` | runtime-loaded fonts, in load order (`KASHI_RT_FONT_BASE = 2`) |
+| `2` | built-in VGA 9×16, derived (`KASHI_FONT_VGA_9X16`; 0.5.1, ADR 0006) |
+| `≥ 3` | runtime-loaded fonts, in load order (`KASHI_RT_FONT_BASE = 3`) |
 
 ## Loading
 

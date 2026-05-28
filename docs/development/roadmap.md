@@ -72,8 +72,12 @@
 - ✅ **Wide-glyph + PSF ligatures** — shipped 0.5.0 (ADR 0005). Multi-byte
   rows (widths 1–32), `kashi_font_stride` / `*_row_byte` accessors,
   PSF2 wider widths accepted, ligature lookup helper. Backward-compatible
-  for 8-wide consumers. Still open (later cuts): the 9×16 box-drawing
-  built-in (infrastructure now exists), CGA 8×8 high half.
+  for 8-wide consumers.
+- ✅ **VGA 9×16 derived built-in** — shipped 0.5.1 (ADR 0006).
+  `KASHI_FONT_VGA_9X16 = 2`, derived at init from the existing VGA 8×16
+  via the VGA col-9 replication rule (`0xC0..0xDF`); no new byte tables.
+  `KASHI_RT_FONT_BASE` bumped `2 → 3`.
+- Still open: CGA 8×8 high half (still blank — slated for 0.5.2).
 
 ### M3 — Consumption contract hardening + agnos integration (0.6.0+)
 

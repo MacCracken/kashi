@@ -5,6 +5,46 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-05-27
+
+VGA 9×16 box-drawing built-in (derived from the existing VGA 8×16 + the
+VGA hardware's col-9 replication rule). The freestanding core gains its
+third built-in font without any new byte tables — bytes are computed at
+init time from the existing data + the rule. `cyaudit vet` stays
+"no dependencies".
+
+### Added
+
+- **`KASHI_FONT_VGA_9X16 = 2`** (ADR 0006) — a 9-pixel-wide built-in font
+  in the freestanding core. The 9th column is the well-known VGA
+  text-mode rule: for CP437 box-drawing codepoints (`0xC0..0xDF`) col 8
+  repeats bit 0 of the underlying 8-wide row, so line characters connect
+  cell-to-cell at a 9-pixel cell width; for all other codepoints col 8 is
+  blank. Stride 2, height 16, count 224. `kashi_font_init` derives the
+  bytes from the existing `font16` once at boot.
+- Fidelity tests for the derivation rule (in/out of `0xC0..0xDF`, full
+  block extension, double-line characters, off-range boundaries).
+
+### Changed
+
+- **`KASHI_RT_FONT_BASE` bumped `2 → 3`** (pre-1.0 breaking). The new
+  built-in occupies id 2, so the runtime registry's id space shifts up by
+  one. Consumers that read the symbolic constant are unaffected; anyone
+  hard-coding `2` for "first runtime id" needs to update.
+- `kashi_font_total()` returns `3 + vec_len(registry)` (was `2 + …`).
+- `kashi_glyph_row` is now stride-aware: `load8(base + row * stride)`.
+  Unchanged behavior for stride-1 fonts (`row*1 == row`); for the new
+  9×16 it returns the LEADING byte of the row, matching the ADR 0005
+  documented semantics for wide fonts.
+
+### Tests
+
+- Suite now **289 assertions, 0 failed** (265 unit + 24 integration; was
+  267 at 0.5.0). New: VGA 9×16 metadata (width/height/first/count/stride),
+  byte 0 matches the existing 8×16 source, col-9 replication for
+  box-drawing range, blank col 8 outside range, library dispatcher routes
+  the new built-in to the core.
+
 ## [0.5.0] — 2026-05-27
 
 Wide-glyph rows + PSF ligature lookup. Additive accessors only; no
@@ -232,7 +272,8 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.5.0...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.5.1...HEAD
+[0.5.1]: https://github.com/MacCracken/kashi/compare/0.5.0...0.5.1
 [0.5.0]: https://github.com/MacCracken/kashi/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/MacCracken/kashi/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/MacCracken/kashi/compare/0.2.0...0.3.0
