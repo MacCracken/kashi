@@ -27,6 +27,32 @@ fn test_metadata() {
     assert_eq(kashi_font_height(99), 0, "unknown height 0");
     assert_eq(kashi_font_first(99), 0, "unknown first 0");
     assert_eq(kashi_font_count(99), 0, "unknown count 0");
+    # 0.5.0 stride accessor: both built-ins are 8-wide -> stride 1.
+    assert_eq(kashi_font_stride(KASHI_FONT_VGA_8X16), 1, "vga stride 1");
+    assert_eq(kashi_font_stride(KASHI_FONT_CGA_8X8), 1, "cga stride 1");
+    assert_eq(kashi_font_stride(99), 0, "unknown stride 0");
+    return 0;
+}
+
+# 0.5.0: kashi_glyph_row_byte is the multi-byte-aware sibling of
+# kashi_glyph_row. For stride-1 built-ins, byte_idx 0 must match the
+# existing accessor and every other byte_idx must be 0.
+fn test_glyph_row_byte() {
+    test_group("glyph row byte");
+    # byte_idx 0 matches kashi_glyph_row for both built-ins, every row.
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0x41, 7, 0),
+    kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), "vga A r7 b0 == glyph_row");
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0xDB, 0, 0), 0xFF, "vga 0xDB r0 b0");
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_CGA_8X8, 0x41, 4, 0),
+    kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x41, 4), "cga A r4 b0 == glyph_row");
+    # byte_idx > 0 always 0 for stride-1 fonts.
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0x41, 7, 1), 0, "vga b1 -> 0");
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_CGA_8X8, 0x41, 4, 2), 0, "cga b2 -> 0");
+    # bounds-safety: negative / out-of-range inputs -> 0.
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0x41, 7, 0 - 1), 0, "neg byte_idx");
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0x41, 0 - 1, 0), 0, "neg row");
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0x100, 0, 0), 0, "oob ch");
+    assert_eq(kashi_glyph_row_byte(99, 0x41, 0, 0), 0, "unknown font");
     return 0;
 }
 
@@ -291,20 +317,23 @@ fn _mk_psf1(buf, mode, charsize) {
     return 4 + count * charsize;
 }
 
-# Lay down a PSF2 header in buf (charsize forced to height = 1 byte/row);
-# return total length. Glyph data left uninitialized.
+# Lay down a PSF2 header in buf; charsize set to height * ceil(width/8) so
+# the builder is valid for any width 1..32. Returns total length. Glyph
+# data left uninitialized.
 fn _mk_psf2(buf, count, height, width, flags) {
     var i = 0;
     while (i < 32) { store8(buf + i, 0); i = i + 1; }
+    var stride = (width + 7) / 8;
+    var charsize = height * stride;
     _put32(buf, 0, 0x864AB572);   # magic
     _put32(buf, 4, 0);            # version
     _put32(buf, 8, 32);           # headersize
     _put32(buf, 12, flags);
     _put32(buf, 16, count);
-    _put32(buf, 20, height);      # charsize = height
+    _put32(buf, 20, charsize);
     _put32(buf, 24, height);
     _put32(buf, 28, width);
-    return 32 + count * height;
+    return 32 + count * charsize;
 }
 
 # Lay down a PSF1 (256 glyphs, mode HASTAB) with a Unicode table that maps a
@@ -369,6 +398,26 @@ fn test_psf2_parse() {
     return 0;
 }
 
+# 0.5.0: PSF2 widths > 8 (stride > 1) parse with charsize = height * stride.
+fn test_psf2_wide() {
+    test_group("psf2 wide parse");
+    # width 12 -> stride 2 -> charsize = 16 * 2 = 32, total = 32 + 2*32 = 96.
+    var buf = alloc(32 + 2 * 32);
+    var len = _mk_psf2(buf, 2, 16, 12, 0);
+    var hdr[56];
+    assert_eq(kashi_psf_parse(buf, len, &hdr), KASHI_OK, "psf2 width 12 ok");
+    assert_eq(load64(&hdr + KASHI_PH_WIDTH), 12, "psf2 width 12");
+    assert_eq(load64(&hdr + KASHI_PH_HEIGHT), 16, "psf2 height 16");
+    assert_eq(load64(&hdr + KASHI_PH_CHARSIZE), 32, "psf2 charsize 32 (h*stride)");
+    # width 32 (max) -> stride 4 -> charsize = 4 * 4 = 16 (small font for the cap).
+    var b2 = alloc(32 + 1 * 16);
+    var l2 = _mk_psf2(b2, 1, 4, 32, 0);
+    assert_eq(kashi_psf_parse(b2, l2, &hdr), KASHI_OK, "psf2 width 32 (max) ok");
+    assert_eq(load64(&hdr + KASHI_PH_WIDTH), 32, "psf2 width 32");
+    assert_eq(load64(&hdr + KASHI_PH_CHARSIZE), 16, "psf2 charsize 16 (4*4)");
+    return 0;
+}
+
 # Validation-first: every malformed/unsupported/truncated input is rejected
 # with a sentinel, never a wild read.
 fn test_psf_errors() {
@@ -386,10 +435,10 @@ fn test_psf_errors() {
     store8(t + 0, 0x36); store8(t + 1, 0x04); store8(t + 2, 0); store8(t + 3, 8);
     assert_eq(kashi_psf_parse(t, 64, &hdr), KASHI_EFORMAT, "psf1 truncated eformat");
 
-    # PSF2 width 9 (> 8) — unsupported in M1.
+    # PSF2 width 33 (> KASHI_PSF_MAX_WIDTH = 32) — unsupported.
     var w = alloc(32 + 2 * 16);
-    var wlen = _mk_psf2(w, 2, 16, 9, 0);
-    assert_eq(kashi_psf_parse(w, wlen, &hdr), KASHI_EFORMAT, "psf2 wide eformat");
+    var wlen = _mk_psf2(w, 2, 16, 33, 0);
+    assert_eq(kashi_psf_parse(w, wlen, &hdr), KASHI_EFORMAT, "psf2 too-wide eformat");
 
     # PSF2 version != 0.
     var v = alloc(32 + 2 * 16);
@@ -594,6 +643,134 @@ fn test_active_font() {
     return 0;
 }
 
+# --- 0.5.0 wide-glyph (ADR 0005): multi-byte rows in the library face ---
+
+fn test_rt_wide() {
+    test_group("runtime wide-glyph");
+    # Register a 9-wide x 8-tall font (stride 2). 2 glyphs * 8 rows * 2 bytes
+    # = 32 bytes. Plant glyph 0: row 0 = (0x12, 0x34) i.e. 9 bits in two
+    # bytes; row 1 = (0x56, 0x78). Glyph 1: row 0 = (0xAA, 0xBB).
+    var data = alloc(32);
+    var i = 0;
+    while (i < 32) { store8(data + i, 0); i = i + 1; }
+    store8(data + 0, 0x12); store8(data + 1, 0x34);   # g0 r0
+    store8(data + 2, 0x56); store8(data + 3, 0x78);   # g0 r1
+    store8(data + 16, 0xAA); store8(data + 17, 0xBB); # g1 r0  (g1 starts at 8*2=16)
+    var id = kashi_register_font(9, 8, data, 2);
+    assert_gte(id, KASHI_RT_FONT_BASE, "register 9x8 returns id");
+    assert_eq(kashi_rt_font_width(id), 9, "rt width 9");
+    assert_eq(kashi_rt_font_height(id), 8, "rt height 8");
+    assert_eq(kashi_rt_font_count(id), 2, "rt count 2");
+    assert_eq(kashi_rt_font_stride(id), 2, "rt stride 2 (ceil(9/8))");
+    # Multi-byte row reads via raw-index accessor.
+    assert_eq(kashi_rt_glyph_row_byte(id, 0, 0, 0), 0x12, "g0 r0 b0");
+    assert_eq(kashi_rt_glyph_row_byte(id, 0, 0, 1), 0x34, "g0 r0 b1");
+    assert_eq(kashi_rt_glyph_row_byte(id, 0, 1, 0), 0x56, "g0 r1 b0");
+    assert_eq(kashi_rt_glyph_row_byte(id, 0, 1, 1), 0x78, "g0 r1 b1");
+    assert_eq(kashi_rt_glyph_row_byte(id, 1, 0, 0), 0xAA, "g1 r0 b0");
+    assert_eq(kashi_rt_glyph_row_byte(id, 1, 0, 1), 0xBB, "g1 r0 b1");
+    # kashi_rt_glyph_row returns the LEADING byte for wide fonts.
+    assert_eq(kashi_rt_glyph_row(id, 0, 1), 0x56, "rt_glyph_row = leading byte");
+    # Bounds-safety on byte_idx.
+    assert_eq(kashi_rt_glyph_row_byte(id, 0, 0, 2), 0, "byte_idx >= stride -> 0");
+    assert_eq(kashi_rt_glyph_row_byte(id, 0, 0, 0 - 1), 0, "neg byte_idx -> 0");
+    assert_eq(kashi_rt_glyph_row_byte(id, 2, 0, 0), 0, "oob glyph idx -> 0");
+    # Codepoint dispatcher (identity fallback since no Unicode table).
+    assert_eq(kashi_font_row_byte(id, 0, 0, 0), 0x12, "font_row_byte cp 0 b0");
+    assert_eq(kashi_font_row_byte(id, 0, 0, 1), 0x34, "font_row_byte cp 0 b1");
+    # Built-in passthrough still works.
+    assert_eq(kashi_font_row_byte(KASHI_FONT_VGA_8X16, 0x41, 7, 0),
+    kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), "dispatch builtin row_byte b0");
+    assert_eq(kashi_font_row_byte(KASHI_FONT_VGA_8X16, 0x41, 7, 1), 0, "builtin b1 -> 0");
+    return 0;
+}
+
+# 0.5.0 wide PSF2 load: build a PSF2 width 12 / stride 2 with a Unicode
+# map (codepoint 'X' (0x58) -> glyph 1), plant bytes, load, read by cp.
+fn test_psf_wide_load() {
+    test_group("psf wide load");
+    # Header (32) + glyph data (2 glyphs * 8 rows * 2 bytes = 32) + table.
+    var buf = alloc(128);
+    var i = 0;
+    while (i < 128) { store8(buf + i, 0); i = i + 1; }
+    _put32(buf, 0, 0x864AB572); _put32(buf, 4, 0); _put32(buf, 8, 32);
+    _put32(buf, 12, 1);             # flags = HAS_UNICODE
+    _put32(buf, 16, 2);             # count
+    _put32(buf, 20, 16);            # charsize = height*stride = 8*2 = 16
+    _put32(buf, 24, 8);             # height
+    _put32(buf, 28, 12);            # width 12 -> stride 2
+    # glyph 1 (idx 1) at offset 32 + 1*16 = 48; plant r0=(0xCC,0xDD), r1=(0xEE,0xFF)
+    store8(buf + 48, 0xCC); store8(buf + 49, 0xDD);   # g1 r0
+    store8(buf + 50, 0xEE); store8(buf + 51, 0xFF);   # g1 r1
+    # Unicode table at 32 + 2*16 = 64: g0 = FF, g1 = 0x58 ('X') FF
+    var tp = 64;
+    store8(buf + tp, 0xFF); tp = tp + 1;
+    store8(buf + tp, 0x58); store8(buf + tp + 1, 0xFF); tp = tp + 2;
+    var id = kashi_load_psf(buf, tp);
+    assert_gte(id, KASHI_RT_FONT_BASE, "psf wide load ok");
+    assert_eq(kashi_rt_font_width(id), 12, "psf width 12");
+    assert_eq(kashi_rt_font_stride(id), 2, "psf stride 2");
+    # Codepoint 'X' -> glyph 1, multi-byte read.
+    assert_eq(kashi_font_row_byte(id, 0x58, 0, 0), 0xCC, "cp X r0 b0");
+    assert_eq(kashi_font_row_byte(id, 0x58, 0, 1), 0xDD, "cp X r0 b1");
+    assert_eq(kashi_font_row_byte(id, 0x58, 1, 0), 0xEE, "cp X r1 b0");
+    assert_eq(kashi_font_row_byte(id, 0x58, 1, 1), 0xFF, "cp X r1 b1");
+    # kashi_font_row still works (leading byte).
+    assert_eq(kashi_font_row(id, 0x58, 0), 0xCC, "cp X r0 leading");
+    return 0;
+}
+
+# --- 0.5.0 ligature lookup (ADR 0005) ---
+#
+# Build a PSF2 carrying both a single-codepoint mapping ('A' -> glyph 0)
+# and a ligature ('A','B' -> glyph 1), and confirm kashi_font_seq_glyph
+# resolves the multi-codepoint sequence to the right glyph.
+fn test_seq_glyph() {
+    test_group("ligature lookup");
+    var buf = alloc(128);
+    var i = 0;
+    while (i < 128) { store8(buf + i, 0); i = i + 1; }
+    _put32(buf, 0, 0x864AB572); _put32(buf, 4, 0); _put32(buf, 8, 32);
+    _put32(buf, 12, 1);          # flags = HAS_UNICODE
+    _put32(buf, 16, 2);          # count
+    _put32(buf, 20, 8);          # charsize = 8 (height*stride = 8*1)
+    _put32(buf, 24, 8);          # height
+    _put32(buf, 28, 8);          # width
+    # Glyph data (zeros) at 32..47. Table at 48:
+    #   g0: 0x41 0xFF                  -> 'A' (single) maps to glyph 0
+    #   g1: 0xFE 0x41 0x42 0xFF        -> sequence 'A','B' maps to glyph 1
+    var tp = 48;
+    store8(buf + tp, 0x41); store8(buf + tp + 1, 0xFF); tp = tp + 2;
+    store8(buf + tp, 0xFE); store8(buf + tp + 1, 0x41);
+    store8(buf + tp + 2, 0x42); store8(buf + tp + 3, 0xFF); tp = tp + 4;
+    var id = kashi_load_psf(buf, tp);
+    assert_gte(id, KASHI_RT_FONT_BASE, "psf w/ seq load ok");
+    # The single-codepoint map still works.
+    assert_eq(_kashi_rt_cp_to_glyph(_kashi_rt_get(id), 0x41), 0, "single 'A' -> g0");
+    # The ligature lookup resolves the matching 2-codepoint sequence.
+    var cps_ab[16];
+    store64(&cps_ab + 0, 0x41);
+    store64(&cps_ab + 8, 0x42);
+    assert_eq(kashi_font_seq_glyph(id, &cps_ab, 2), 1, "seq 'AB' -> g1");
+    # Non-matching sequence of the same length -> 0 - 1.
+    var cps_ac[16];
+    store64(&cps_ac + 0, 0x41);
+    store64(&cps_ac + 8, 0x43);
+    assert_eq(kashi_font_seq_glyph(id, &cps_ac, 2), 0 - 1, "seq 'AC' -> unmapped");
+    # Wrong length: the recorded sequence is length 2; len 1 or 3 don't match.
+    assert_eq(kashi_font_seq_glyph(id, &cps_ab, 1), 0 - 1, "seq len 1 -> unmapped");
+    # Built-in ids have no sequence table.
+    assert_eq(kashi_font_seq_glyph(KASHI_FONT_VGA_8X16, &cps_ab, 2), 0 - 1, "builtin -> -1");
+    # Null cps_ptr / zero len -> 0 - 1.
+    assert_eq(kashi_font_seq_glyph(id, 0, 2), 0 - 1, "null cps -> -1");
+    assert_eq(kashi_font_seq_glyph(id, &cps_ab, 0), 0 - 1, "len 0 -> -1");
+    # A runtime font with NO unicode table (no sequences) -> 0 - 1.
+    var data = alloc(8);
+    var nid = kashi_register_font(8, 8, data, 1);
+    assert_eq(kashi_font_seq_glyph(nid, &cps_ab, 2), 0 - 1, "no-table font -> -1");
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -602,6 +779,7 @@ fn main() {
     kashi_font_init();
 
     test_metadata();
+    test_glyph_row_byte();
     test_encoded_gate();
     test_vga_8x16_bytes();
     test_cga_8x8_bytes();
@@ -613,11 +791,15 @@ fn main() {
     test_extreme_inputs();
     test_psf1_parse();
     test_psf2_parse();
+    test_psf2_wide();
     test_psf_errors();
     test_psf_uni_token();
     test_rt_fonts();
     test_rt_unicode();
     test_active_font();
+    test_rt_wide();
+    test_psf_wide_load();
+    test_seq_glyph();
 
     return assert_summary();
 }

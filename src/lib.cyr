@@ -53,7 +53,7 @@ enum KashiRtBase {
     KASHI_RT_FONT_BASE = 2;
 }
 
-# Runtime font record: 56 bytes, seven u64 fields at these offsets.
+# Runtime font record: 88 bytes (grown in 0.5.0 for stride + sequences).
 enum KashiRtRec {
     RT_WIDTH = 0;
     RT_HEIGHT = 8;
@@ -62,6 +62,10 @@ enum KashiRtRec {
     RT_DATA = 32;       # ptr to owned glyph bytes (count * charsize)
     RT_UMAP = 40;       # ptr to sorted {u64 codepoint, u64 glyph} pairs, 0 if none
     RT_UCOUNT = 48;     # number of codepoint->glyph pairs in RT_UMAP
+    RT_STRIDE = 56;     # bytes per glyph row = ceil(width / 8)
+    RT_SEQS = 64;       # ptr to {u64 cps_ptr, u64 length, u64 glyph} records, 0 if none
+    RT_SEQCOUNT = 72;   # number of sequence records in RT_SEQS
+    RT_SEQDATA = 80;    # ptr to flat codepoint stream backing RT_SEQS, 0 if none
 }
 
 # Registry: a vec of record pointers, lazily created on first register.
@@ -80,8 +84,9 @@ fn _kashi_rt_get(font_id) {
 # now owns — no copy). Returns the new font_id. Internal.
 fn _kashi_rt_register(width, height, count, charsize, data) {
     if (_rt_registry == 0) { _rt_registry = vec_new(); }
-    var rec = alloc(56);
+    var rec = alloc(88);
     if (rec == 0) { return 0 - KASHI_EINVAL; }
+    var stride = (width + 7) / 8;
     store64(rec + RT_WIDTH, width);
     store64(rec + RT_HEIGHT, height);
     store64(rec + RT_COUNT, count);
@@ -89,6 +94,10 @@ fn _kashi_rt_register(width, height, count, charsize, data) {
     store64(rec + RT_DATA, data);
     store64(rec + RT_UMAP, 0);
     store64(rec + RT_UCOUNT, 0);
+    store64(rec + RT_STRIDE, stride);
+    store64(rec + RT_SEQS, 0);
+    store64(rec + RT_SEQCOUNT, 0);
+    store64(rec + RT_SEQDATA, 0);
     vec_push(_rt_registry, rec);
     return KASHI_RT_FONT_BASE + vec_len(_rt_registry) - 1;
 }
@@ -190,6 +199,133 @@ fn _kashi_build_umap(rec, buf, len, kind, unioff) {
     return 0;
 }
 
+# Build the sequence (ligature) list for a runtime font: walk the same PSF
+# Unicode table that _kashi_build_umap consumes, this time harvesting
+# multi-codepoint runs that follow a SEQ separator. Each sequence becomes
+# one record `{cps_ptr, length, glyph}` (24 bytes) into RT_SEQS, with all
+# codepoints packed into a single flat backing store (RT_SEQDATA). Two
+# passes: count sequences + total codepoints, then alloc both and fill.
+# Lookup is linear (sequences are typically few per font). Internal.
+fn _kashi_build_useqs(rec, buf, len, kind, unioff) {
+    var tok[24];
+    var count = load64(rec + RT_COUNT);
+
+    # Pass 1 — count sequences and total codepoint length.
+    var nseqs = 0;
+    var ntotal = 0;
+    var pos = unioff;
+    var glyph = 0;
+    var inseq = 0;
+    var curlen = 0;
+    while (pos < len) {
+        kashi_psf_uni_token(buf, pos, len, kind, &tok);
+        var t = load64(&tok + KASHI_UT_TYPE);
+        if (t == KASHI_TOK_END) { pos = len; }
+        if (t != KASHI_TOK_END) {
+            pos = load64(&tok + KASHI_UT_NEXT);
+            if (t == KASHI_TOK_SEQ) {
+                if (inseq == 1) {
+                    if (curlen > 0) {
+                        if (glyph < count) {
+                            nseqs = nseqs + 1;
+                            ntotal = ntotal + curlen;
+                        }
+                    }
+                }
+                inseq = 1;
+                curlen = 0;
+            }
+            if (t == KASHI_TOK_TERM) {
+                if (inseq == 1) {
+                    if (curlen > 0) {
+                        if (glyph < count) {
+                            nseqs = nseqs + 1;
+                            ntotal = ntotal + curlen;
+                        }
+                    }
+                }
+                glyph = glyph + 1;
+                inseq = 0;
+                curlen = 0;
+            }
+            if (t == KASHI_TOK_CP) {
+                if (inseq == 1) { curlen = curlen + 1; }
+            }
+        }
+    }
+    if (nseqs == 0) { return 0; }
+
+    var seqs = alloc(nseqs * 24);
+    if (seqs == 0) { return 0; }
+    var cps = alloc(ntotal * 8);
+    if (cps == 0) { return 0; }
+
+    # Pass 2 — fill records and the codepoint backing store.
+    var w = 0;
+    var wcps = 0;
+    var curstart = 0;
+    pos = unioff;
+    glyph = 0;
+    inseq = 0;
+    curlen = 0;
+    while (pos < len) {
+        kashi_psf_uni_token(buf, pos, len, kind, &tok);
+        var t2 = load64(&tok + KASHI_UT_TYPE);
+        if (t2 == KASHI_TOK_END) { pos = len; }
+        if (t2 != KASHI_TOK_END) {
+            pos = load64(&tok + KASHI_UT_NEXT);
+            if (t2 == KASHI_TOK_SEQ) {
+                if (inseq == 1) {
+                    if (curlen > 0) {
+                        if (glyph < count) {
+                            if (w < nseqs) {
+                                store64(seqs + w * 24 + 0, cps + curstart * 8);
+                                store64(seqs + w * 24 + 8, curlen);
+                                store64(seqs + w * 24 + 16, glyph);
+                                w = w + 1;
+                            }
+                        }
+                    }
+                }
+                inseq = 1;
+                curstart = wcps;
+                curlen = 0;
+            }
+            if (t2 == KASHI_TOK_TERM) {
+                if (inseq == 1) {
+                    if (curlen > 0) {
+                        if (glyph < count) {
+                            if (w < nseqs) {
+                                store64(seqs + w * 24 + 0, cps + curstart * 8);
+                                store64(seqs + w * 24 + 8, curlen);
+                                store64(seqs + w * 24 + 16, glyph);
+                                w = w + 1;
+                            }
+                        }
+                    }
+                }
+                glyph = glyph + 1;
+                inseq = 0;
+                curlen = 0;
+            }
+            if (t2 == KASHI_TOK_CP) {
+                if (inseq == 1) {
+                    if (wcps < ntotal) {
+                        store64(cps + wcps * 8, load64(&tok + KASHI_UT_CP));
+                        wcps = wcps + 1;
+                        curlen = curlen + 1;
+                    }
+                }
+            }
+        }
+    }
+
+    store64(rec + RT_SEQS, seqs);
+    store64(rec + RT_SEQCOUNT, w);
+    store64(rec + RT_SEQDATA, cps);
+    return 0;
+}
+
 # Resolve a codepoint to a glyph index for a runtime font record. With a
 # Unicode map: binary search (returns 0 - 1 if the codepoint is unmapped).
 # Without a map: identity (the codepoint as a raw index if in [0,count), else
@@ -216,9 +352,10 @@ fn _kashi_rt_cp_to_glyph(rec, cp) {
 }
 
 # Register a runtime font from caller-supplied glyph data. width must be
-# 1..8 (one byte per row), height 1..32, glyph_count >= 1. The glyph bytes
-# are COPIED into a store the registry owns, so the caller may free/reuse
-# its buffer afterward. Returns font_id (>= 2) or `0 - KASHI_EINVAL`.
+# 1..32, height 1..32, glyph_count >= 1. Rows are ceil(width/8) bytes each
+# (one byte per row for <= 8 wide). The glyph bytes are COPIED into a store
+# the registry owns, so the caller may free/reuse its buffer afterward.
+# Returns font_id (>= 2) or `0 - KASHI_EINVAL`.
 fn kashi_register_font(width, height, glyph_data, glyph_count) {
     if (width < 1) { return 0 - KASHI_EINVAL; }
     if (width > KASHI_PSF_MAX_WIDTH) { return 0 - KASHI_EINVAL; }
@@ -226,7 +363,8 @@ fn kashi_register_font(width, height, glyph_data, glyph_count) {
     if (height > KASHI_PSF_MAX_HEIGHT) { return 0 - KASHI_EINVAL; }
     if (glyph_count < 1) { return 0 - KASHI_EINVAL; }
     if (glyph_data == 0) { return 0 - KASHI_EINVAL; }
-    var charsize = height;   # one byte per row for <= 8 wide
+    var stride = (width + 7) / 8;
+    var charsize = height * stride;
     var nbytes = glyph_count * charsize;
     var owned = alloc(nbytes);
     if (owned == 0) { return 0 - KASHI_EINVAL; }
@@ -259,7 +397,10 @@ fn kashi_load_psf(buf, len) {
     # the unified accessors can address this font by codepoint.
     if (unioff != 0) {
         var rec = _kashi_rt_get(id);
-        if (rec != 0) { _kashi_build_umap(rec, buf, len, kind, unioff); }
+        if (rec != 0) {
+            _kashi_build_umap(rec, buf, len, kind, unioff);
+            _kashi_build_useqs(rec, buf, len, kind, unioff);
+        }
     }
     return id;
 }
@@ -294,8 +435,10 @@ fn kashi_rt_glyph_ptr(font_id, idx) {
     return data + idx * charsize;
 }
 
-# One row byte of runtime-font glyph `idx` (bit 7 = leftmost). Returns 0 for
-# an unknown runtime font, out-of-range index, or out-of-range row.
+# One row byte of runtime-font glyph `idx` (bit 7 = leftmost). For wide
+# fonts (stride > 1) this returns the LEADING byte of the row (byte_idx 0);
+# use kashi_rt_glyph_row_byte for the other bytes. Returns 0 for an unknown
+# runtime font, out-of-range index, or out-of-range row.
 fn kashi_rt_glyph_row(font_id, idx, row) {
     var rec = _kashi_rt_get(font_id);
     if (rec == 0) { return 0; }
@@ -304,7 +447,25 @@ fn kashi_rt_glyph_row(font_id, idx, row) {
     if (row >= height) { return 0; }
     var base = kashi_rt_glyph_ptr(font_id, idx);
     if (base == 0) { return 0; }
-    return load8(base + row);
+    var stride = load64(rec + RT_STRIDE);
+    return load8(base + row * stride);
+}
+
+# One row byte at column-byte position `byte_idx` for runtime-font glyph
+# `idx`. Multi-byte-aware sibling of kashi_rt_glyph_row. Returns 0 for any
+# out-of-range input (unknown font, bad idx/row/byte_idx). Added in 0.5.0.
+fn kashi_rt_glyph_row_byte(font_id, idx, row, byte_idx) {
+    if (byte_idx < 0) { return 0; }
+    var rec = _kashi_rt_get(font_id);
+    if (rec == 0) { return 0; }
+    var stride = load64(rec + RT_STRIDE);
+    if (byte_idx >= stride) { return 0; }
+    var height = load64(rec + RT_HEIGHT);
+    if (row < 0) { return 0; }
+    if (row >= height) { return 0; }
+    var base = kashi_rt_glyph_ptr(font_id, idx);
+    if (base == 0) { return 0; }
+    return load8(base + row * stride + byte_idx);
 }
 
 # --- Unified, CODEPOINT-addressed accessors: built-in (0,1) vs runtime (>=2) ---
@@ -325,7 +486,9 @@ fn kashi_font_ptr(font_id, cp) {
 }
 
 # One row byte of a glyph for ANY font, addressed by codepoint (see
-# kashi_font_ptr). Returns 0 for an unknown font, unmapped cp, or bad row.
+# kashi_font_ptr). For wide fonts (stride > 1) this is the LEADING byte;
+# use kashi_font_row_byte for the other bytes. Returns 0 for an unknown
+# font, unmapped cp, or bad row.
 fn kashi_font_row(font_id, cp, row) {
     if (font_id < KASHI_RT_FONT_BASE) {
         return kashi_glyph_row(font_id, cp, row);
@@ -335,6 +498,21 @@ fn kashi_font_row(font_id, cp, row) {
     var idx = _kashi_rt_cp_to_glyph(rec, cp);
     if (idx < 0) { return 0; }
     return kashi_rt_glyph_row(font_id, idx, row);
+}
+
+# Multi-byte-aware row accessor for ANY font, addressed by codepoint.
+# `byte_idx` 0 is the leftmost 8 px, then 8..15, etc. For stride-1 fonts
+# only byte_idx 0 is meaningful. Bounds-safe across the full input domain.
+# Added in 0.5.0 (ADR 0005).
+fn kashi_font_row_byte(font_id, cp, row, byte_idx) {
+    if (font_id < KASHI_RT_FONT_BASE) {
+        return kashi_glyph_row_byte(font_id, cp, row, byte_idx);
+    }
+    var rec = _kashi_rt_get(font_id);
+    if (rec == 0) { return 0; }
+    var idx = _kashi_rt_cp_to_glyph(rec, cp);
+    if (idx < 0) { return 0; }
+    return kashi_rt_glyph_row_byte(font_id, idx, row, byte_idx);
 }
 
 # Runtime-font metadata (ids >= 2). Unknown id -> 0.
@@ -354,6 +532,46 @@ fn kashi_rt_font_count(font_id) {
     var rec = _kashi_rt_get(font_id);
     if (rec == 0) { return 0; }
     return load64(rec + RT_COUNT);
+}
+
+# Bytes per row for a runtime font (= ceil(width/8)). Mirrors the core's
+# kashi_font_stride for built-ins. Added in 0.5.0. Unknown id -> 0.
+fn kashi_rt_font_stride(font_id) {
+    var rec = _kashi_rt_get(font_id);
+    if (rec == 0) { return 0; }
+    return load64(rec + RT_STRIDE);
+}
+
+# PSF ligature lookup: given a sequence of `len` codepoints (each a u64 at
+# `cps_ptr + i*8`), return the glyph index of the matching ligature in
+# `font_id`, or `0 - 1` if there's no match (incl. built-in ids, fonts
+# without a sequence table, null inputs, or non-positive `len`). Linear
+# scan — sequences are typically few per font. Added in 0.5.0 (ADR 0005).
+fn kashi_font_seq_glyph(font_id, cps_ptr, len) {
+    if (font_id < KASHI_RT_FONT_BASE) { return 0 - 1; }
+    if (cps_ptr == 0) { return 0 - 1; }
+    if (len < 1) { return 0 - 1; }
+    var rec = _kashi_rt_get(font_id);
+    if (rec == 0) { return 0 - 1; }
+    var seqs = load64(rec + RT_SEQS);
+    if (seqs == 0) { return 0 - 1; }
+    var seqcount = load64(rec + RT_SEQCOUNT);
+    var i = 0;
+    while (i < seqcount) {
+        var rec_len = load64(seqs + i * 24 + 8);
+        if (rec_len == len) {
+            var rec_cps = load64(seqs + i * 24 + 0);
+            var eq = 1;
+            var j = 0;
+            while (j < len) {
+                if (load64(rec_cps + j * 8) != load64(cps_ptr + j * 8)) { eq = 0; }
+                j = j + 1;
+            }
+            if (eq == 1) { return load64(seqs + i * 24 + 16); }
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
 }
 
 # Number of fonts kashi currently knows: the two built-ins plus every

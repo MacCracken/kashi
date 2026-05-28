@@ -1,19 +1,21 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-27 (**0.4.0** cut — registry niceties + full
-> CP437 in the VGA built-in; see `docs/adr/0004`) | **Refresh cadence**:
-> bumped every release (ideally by the release post-hook).
+> **Last refresh**: 2026-05-27 (**0.5.0** cut — wide-glyph (1–32 px) +
+> PSF ligature lookup; see `docs/adr/0005`) | **Refresh cadence**: bumped
+> every release (ideally by the release post-hook).
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
 
-**0.4.0** — rest of M2: `kashi_set/active_font` registry niceties + the
-VGA 8×16 built-in extended to the full CP437 range (`0x20..0xFF`, 224
-glyphs) from Linux's PD source. `KASHI_GLYPH_LAST`/`COUNT` widened
-(pre-1.0 breaking); CGA 8×8 high half deferred. Tagged by the user (who
-handles all git operations); the tag push drives the release workflow.
+**0.5.0** — wide-glyph (multi-byte rows for widths 1–32) + PSF ligature
+lookup. New accessors: `kashi_font_stride`, `kashi_glyph_row_byte`,
+`kashi_rt_font_stride`, `kashi_rt_glyph_row_byte`, `kashi_font_row_byte`,
+`kashi_font_seq_glyph`. PSF2 widths > 8 now accepted. Backward-compatible
+for 8-wide consumers (single-byte accessors unchanged). Tagged by the
+user (who handles all git operations); the tag push drives the release
+workflow.
 
 ## Toolchain
 
@@ -37,26 +39,34 @@ handles all git operations); the tag push drives the release workflow.
   offset; `kashi_psf_uni_token` decodes the table (PSF1 LE-u16 / PSF2 UTF-8).
   Validation-first, fuzzed.
 - **Library face** — `src/lib.cyr`. Runtime font registry + the PSF import
-  path (see `docs/adr/0002`, `docs/adr/0003`):
+  path (see `docs/adr/0002`, `docs/adr/0003`, `docs/adr/0005`):
   - `kashi_load_psf` / `kashi_load_psf_file` / `kashi_register_font` →
     `font_id ≥ 2` or negative `0 - <KashiResult>`. A loaded font's Unicode
-    table is built into a sorted codepoint→glyph map.
+    table is built into a sorted codepoint→glyph map **and** (0.5.0) a
+    flat list of multi-codepoint ligature records.
   - Unified **codepoint-addressed** `kashi_font_row` / `kashi_font_ptr`
     (built-in 0,1 vs runtime ≥ 2; runtime resolves codepoint via the map,
     or identity index if the font carried no table).
+  - **Multi-byte row access** (0.5.0): `kashi_font_stride` /
+    `kashi_glyph_row_byte` in the core; `kashi_rt_font_stride` /
+    `kashi_rt_glyph_row_byte` / codepoint `kashi_font_row_byte` in the
+    library. Single-byte accessors return the leading byte for wide fonts.
+  - **Ligature lookup** (0.5.0): `kashi_font_seq_glyph(id, cps_ptr, len)`
+    → glyph index or `0 - 1`. Linear scan; sequences are typically few.
   - Raw glyph-index `kashi_rt_glyph_row` / `kashi_rt_glyph_ptr`;
-    `kashi_rt_font_{width,height,count}`; `kashi_font_total`;
-    **`kashi_set_active_font` / `kashi_active_font`** (default 0 = VGA).
-  - Scope: width ≤ 8; Unicode sequences (ligatures) parsed-and-skipped.
+    `kashi_rt_font_{width,height,count,stride}`; `kashi_font_total`;
+    `kashi_set_active_font` / `kashi_active_font` (default 0 = VGA).
+  - Scope: width 1–32 (multi-byte rows up to 4 bytes/row).
 - **Demo** — `src/main.cyr`, renders 'A' in both built-in fonts.
 
 ## What's booked (not built — future)
 
-- Wide glyphs (> 8 px / multi-byte rows) — slated for **0.5.0** alongside
-  the 9×16 box-drawing built-in and PSF ligature/sequence mappings.
+- 9×16 box-drawing built-in (wide-glyph infrastructure now exists; adding
+  the font data is a future cut).
 - CGA 8×8 high half — currently blank; would need 128 hand-rolled glyphs.
 - agnos consumption contract hardening + agnos-side integration (M3 / agnos
   **1.38.0**).
+- Text shaping / BiDi — out of scope (kashi exposes data only).
 
 See [`roadmap.md`](roadmap.md).
 
@@ -68,18 +78,19 @@ See [`roadmap.md`](roadmap.md).
 
 ## Tests
 
-- `src/test.cyr` — 188 assertions (metadata, encoded gate, exact-byte
-  fidelity vs agnos for ASCII **+ Linux PD source for CP437 high-half**,
-  accessor bounds, full 224-glyph coverage, library surface, audit, PSF
-  parse, runtime register/load, Unicode token decode + codepoint mapping,
-  raw-index access, **active-font set/get**). `cyrius test` → **0 failed**.
+- `src/test.cyr` — 243 assertions (metadata + stride, encoded gate,
+  exact-byte fidelity (ASCII + CP437 high-half), accessor bounds, full
+  224-glyph coverage, library surface, audit, PSF parse (8-wide + width
+  12/32), runtime register/load (incl. 9-wide), Unicode token decode +
+  codepoint mapping, raw-index + multi-byte row access, active-font,
+  **ligature lookup**). `cyrius test` → **0 failed**.
 - `tests/kashi.tcyr` — 24 assertions (structural invariants over the full
-  0x20..0xFF range, PSF file round-trip + a Unicode-table file addressed
-  by codepoint).
-- **212 assertions total, 0 failed.**
+  0x20..0xFF range, PSF file round-trip + Unicode-table file by codepoint).
+- **267 assertions total, 0 failed.**
 - `tests/kashi.fcyr` — fuzz over the accessor bounds contract, the PSF
-  parser, and the Unicode-table map build + codepoint resolution (4000
-  random/truncated/mutated buffers; no crash, bounds-safe).
+  parser, the Unicode-table map build, codepoint resolution, **multi-byte
+  row access (random byte_idx), and ligature lookup** (4000 rounds with
+  random widths 1–32; no crash, bounds-safe).
 - `tests/kashi.bcyr` — `glyph_row` ~17 ns, `glyph_ptr` ~7 ns,
   `scan_vga_8x16` ~60 µs (now over 224 glyphs); unified dispatch
   `font_row_builtin` ~19 ns, `font_row_runtime` ~42 ns,

@@ -69,12 +69,13 @@
 - ✅ **Additional built-in glyph data** — shipped 0.4.0: the VGA 8×16
   built-in extended to the full CP437 range (`0x20..0xFF`, 224 glyphs)
   from Linux's PD source. See [ADR 0004](0004-cp437-glyph-range.md).
-- Carried to **0.5.0**: glyph width > 8 (multi-byte rows), the 9×16
-  box-drawing built-in (needs wide-glyph), and PSF Unicode
-  sequence/ligature mappings. The CGA 8×8 high half — currently blank —
-  may also land then or later.
+- ✅ **Wide-glyph + PSF ligatures** — shipped 0.5.0 (ADR 0005). Multi-byte
+  rows (widths 1–32), `kashi_font_stride` / `*_row_byte` accessors,
+  PSF2 wider widths accepted, ligature lookup helper. Backward-compatible
+  for 8-wide consumers. Still open (later cuts): the 9×16 box-drawing
+  built-in (infrastructure now exists), CGA 8×8 high half.
 
-### M3 — Consumption contract hardening + agnos integration (0.5.0+)
+### M3 — Consumption contract hardening + agnos integration (0.6.0+)
 
 - Lock the `kashi`↔agnos contract: confirm `[deps.kashi] modules=
   ["src/font_data.cyr"]` drops into agnos's `fb_console.cyr` cleanly and the

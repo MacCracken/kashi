@@ -5,6 +5,50 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-27
+
+Wide-glyph rows + PSF ligature lookup. Additive accessors only; no
+breaking change for 8-wide consumers. Freestanding core stays
+dependency-free (`cyaudit vet` → "no dependencies").
+
+### Added
+
+- **Multi-byte row access** (ADR 0005): `kashi_font_stride(id)` +
+  `kashi_glyph_row_byte(id, ch, row, byte_idx)` in the freestanding core;
+  `kashi_rt_font_stride(id)` + `kashi_rt_glyph_row_byte(id, idx, row,
+  byte_idx)` + codepoint-addressed `kashi_font_row_byte(id, cp, row,
+  byte_idx)` in the library. `byte_idx 0` is the leftmost 8 px; for
+  stride-1 fonts only `0` is meaningful (other `byte_idx` returns `0`).
+- **Wider PSF2 fonts accepted** — `KASHI_PSF_MAX_WIDTH` rises from `8` to
+  `32` (up to 4 bytes/row). `kashi_register_font` accepts width 1–32 and
+  copies `count * height * stride` bytes into an owned store.
+- **PSF ligature lookup** (ADR 0005): the Unicode-table walk now also
+  harvests multi-codepoint sequences (previously parsed-and-skipped).
+  Public `kashi_font_seq_glyph(id, cps_ptr, len)` returns the matching
+  glyph index, or `0 - 1` if there's no match / no sequence table / bad
+  args. kashi still doesn't do shaping — this exposes the *data* a
+  shaping layer needs.
+
+### Changed
+
+- PSF parser's strict `charsize == height` rule becomes
+  `charsize == height * ceil(width/8)` (correct for any stride; still
+  catches mangled fonts).
+- Runtime font record grows 56 → 88 B (new `RT_STRIDE`, `RT_SEQS`,
+  `RT_SEQCOUNT`, `RT_SEQDATA`).
+- Existing single-byte accessors (`kashi_glyph_row`, `kashi_rt_glyph_row`,
+  `kashi_font_row`) now return the **leading byte** for wide fonts —
+  identical behavior for stride-1, documented for stride > 1.
+
+### Tests
+
+- Suite now **267 assertions, 0 failed** (243 unit + 24 integration; was
+  212 at 0.4.0): stride/row_byte for built-ins, 9-wide register +
+  multi-byte read, PSF2 width 12 / 32 parse and load, ligature lookup
+  (matched / unmatched / wrong length / built-in / null). Fuzz now
+  exercises random width 1–32, random `byte_idx`, and seq_glyph probes —
+  4000 rounds, bounds-safe.
+
 ## [0.4.0] — 2026-05-27
 
 Rest of M2 — registry niceties + extending the freestanding-core glyph
@@ -188,7 +232,8 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.4.0...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/MacCracken/kashi/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/MacCracken/kashi/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/MacCracken/kashi/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/MacCracken/kashi/compare/0.1.0...0.2.0

@@ -81,12 +81,54 @@ if (p != 0) {
 > enumeration), use `kashi_rt_glyph_ptr(id, idx)` / `kashi_rt_glyph_row(id,
 > idx, row)`.
 
+## Wide-glyph fonts (0.5.0+)
+
+For fonts wider than 8 pixels, each row spans multiple bytes
+(`stride = ceil(width/8)`). Use the byte-position accessors:
+
+```cyrius
+var stride = kashi_rt_font_stride(id);   # bytes per row (built-ins: 1)
+var row = 0;
+while (row < rows) {
+    var bi = 0;
+    while (bi < stride) {
+        var b = kashi_font_row_byte(id, codepoint, row, bi);  # codepoint-addressed
+        # ... blit b at column (bi*8) ...
+        bi = bi + 1;
+    }
+    row = row + 1;
+}
+```
+
+`kashi_font_row(id, cp, row)` keeps returning a single byte — for wide
+fonts that's the **leading byte** (`byte_idx 0`). Stride-1 fonts are
+unchanged.
+
+## Ligature lookup (0.5.0+)
+
+PSF Unicode tables can record multi-codepoint→glyph sequences (e.g. an
+"fi" ligature). `kashi_font_seq_glyph` resolves them:
+
+```cyrius
+var cps[16];                        # u64 per codepoint
+store64(&cps + 0, 0x66);            # 'f'
+store64(&cps + 8, 0x69);            # 'i'
+var g = kashi_font_seq_glyph(id, &cps, 2);
+if (g >= 0) {
+    # render glyph index `g` via kashi_rt_glyph_row(id, g, row) ...
+}
+```
+
+Returns `0 - 1` for no match, built-in ids, fonts without a sequence
+table, null cps_ptr, or non-positive `len`. kashi exposes the data; the
+shaping policy (when to look up a sequence vs render singles) belongs to
+the consumer.
+
 ## Limits
 
-- **Width ≤ 8** (one byte per row). PSF1 is always 8 wide; a PSF2 font wider
-  than 8 px is rejected with `KASHI_EFORMAT`.
-- **Unicode sequences/ligatures** (PSF `0xFFFE`/`0xFE` multi-codepoint
-  entries) are parsed-and-skipped, not mapped.
+- **Width 1–32** (up to 4 bytes per row); PSF2 wider than 32 → `KASHI_EFORMAT`.
+- **Unicode sequences** are now harvested into the lookup table above;
+  kashi itself does not do shaping — that stays the consumer's job.
 - **Validation-first**: magic, version, header size, geometry, glyph count,
   and total length are all checked before any glyph byte is read. The parser
   (`src/font_psf.cyr`) is fuzzed in `tests/kashi.fcyr`.

@@ -511,6 +511,15 @@ fn kashi_font_count(font_id) {
     return 0;
 }
 
+# Bytes per glyph row = ceil(width / 8). Both built-ins are 8 wide so this
+# returns 1; the accessor exists so a wide-glyph consumer can ask any font
+# uniformly. Unknown id -> 0. Added in 0.5.0 (ADR 0005).
+fn kashi_font_stride(font_id) {
+    if (font_id == KASHI_FONT_VGA_8X16) { return 1; }
+    if (font_id == KASHI_FONT_CGA_8X8) { return 1; }
+    return 0;
+}
+
 # 1 if `ch` is in the encoded range [0x20, 0x7F], else 0. Caller-facing
 # bounds gate so consumers can decide their own fallback for control chars.
 fn kashi_glyph_encoded(ch) {
@@ -536,7 +545,9 @@ fn kashi_glyph_ptr(font_id, ch) {
 
 # One row byte of a glyph (bit 7 = leftmost pixel). row is 0-based, top
 # first. Returns 0 for an out-of-range char, unknown font, or out-of-range
-# row — a 0 byte renders as blank, the safe default for a console.
+# row — a 0 byte renders as blank, the safe default for a console. For
+# wide-glyph fonts (stride > 1) this returns the LEADING byte (byte_idx 0);
+# use kashi_glyph_row_byte for the other bytes.
 fn kashi_glyph_row(font_id, ch, row) {
     if (kashi_glyph_encoded(ch) == 0) { return 0; }
     var h = kashi_font_height(font_id);
@@ -546,4 +557,25 @@ fn kashi_glyph_row(font_id, ch, row) {
     var base = kashi_glyph_ptr(font_id, ch);
     if (base == 0) { return 0; }
     return load8(base + row);
+}
+
+# One row byte at column-byte position `byte_idx` (0 = leftmost 8 px).
+# Multi-byte-aware sibling of kashi_glyph_row: for stride-1 fonts (both
+# built-ins) only byte_idx == 0 is meaningful — anything else returns 0.
+# Bounds-safe: all out-of-range inputs return 0 (blank). Added in 0.5.0
+# (ADR 0005); enables wide-glyph access uniformly across the freestanding
+# and library-face accessor families.
+fn kashi_glyph_row_byte(font_id, ch, row, byte_idx) {
+    if (byte_idx < 0) { return 0; }
+    var stride = kashi_font_stride(font_id);
+    if (stride == 0) { return 0; }
+    if (byte_idx >= stride) { return 0; }
+    if (kashi_glyph_encoded(ch) == 0) { return 0; }
+    var h = kashi_font_height(font_id);
+    if (h == 0) { return 0; }
+    if (row < 0) { return 0; }
+    if (row >= h) { return 0; }
+    var base = kashi_glyph_ptr(font_id, ch);
+    if (base == 0) { return 0; }
+    return load8(base + row * stride + byte_idx);
 }

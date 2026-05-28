@@ -140,7 +140,27 @@ fn fuzz_psf(rounds) {
                 var cv = kashi_font_row(id, cp, row);
                 if (cv < 0) { return 7; }
                 if (cv > 0xFF) { return 8; }
+                # 0.5.0: multi-byte row accessor with random byte_idx
+                # (covers stride > 1 fonts the parser now accepts).
+                var bi = rng_next() & 7;
+                var bv = kashi_font_row_byte(id, cp, row, bi);
+                if (bv < 0) { return 9; }
+                if (bv > 0xFF) { return 10; }
+                # Also exercise the raw-index byte accessor.
+                var rbv = kashi_rt_glyph_row_byte(id, idx, row, bi);
+                if (rbv < 0) { return 11; }
+                if (rbv > 0xFF) { return 12; }
                 g = g + 1;
+            }
+            # 0.5.0: ligature lookup contract — never crashes; returns
+            # either a non-negative glyph index or `0 - 1`.
+            var probe[16];
+            store64(&probe + 0, rng_next() & 0xFFFFF);
+            store64(&probe + 8, rng_next() & 0xFFFFF);
+            var sg = kashi_font_seq_glyph(id, &probe, 2);
+            if (sg < 0 - 1) { return 13; }   # only sentinel is 0 - 1
+            if (sg >= count) {
+                if (sg != 0 - 1) { return 14; }   # any non-sentinel must be in range
             }
         }
         r = r + 1;
