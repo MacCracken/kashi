@@ -36,7 +36,7 @@ fn test_row_byte_bounded() {
     test_group("row byte-bounded");
     var ch = 0x20;
     var ok = 1;
-    while (ch <= 0x7F) {
+    while (ch <= 0xFF) {
         var row = 0;
         while (row < 16) {
             if (kashi_glyph_row(KASHI_FONT_VGA_8X16, ch, row) > 0xFF) { ok = 0; }
@@ -70,7 +70,7 @@ fn test_pointer_monotone() {
     var ok16 = 1;
     var ok8 = 1;
     var ch = 0x21;
-    while (ch <= 0x7F) {
+    while (ch <= 0xFF) {
         var prev16 = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, ch - 1);
         var cur16 = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, ch);
         if (cur16 - prev16 != 16) { ok16 = 0; }

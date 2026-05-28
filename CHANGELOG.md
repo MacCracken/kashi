@@ -5,6 +5,49 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-27
+
+Rest of M2 — registry niceties + extending the freestanding-core glyph
+range to full CP437. The freestanding boundary holds (`cyaudit vet` →
+"no dependencies"); the agnos consumption contract is widened before
+agnos integrates (booked at agnos 1.38.0).
+
+### Added
+
+- **Full CP437 in the VGA 8×16 built-in** — 128 new glyphs for `0x80–0xFF`
+  (line/box drawing, block shading, accented letters, Greek/math symbols)
+  sourced byte-for-byte from Linux's public-domain `lib/fonts/font_8x16.c`,
+  the same PD IBM VGA BIOS table that already supplied the ASCII half.
+  Spot-fidelity asserts lock the transcription. See
+  [ADR 0004](docs/adr/0004-cp437-glyph-range.md).
+- **Active-font knob** (registry nicety) — `kashi_set_active_font(id)` /
+  `kashi_active_font()` let a console stash its current selection
+  centrally; defaults to `0` (VGA 8×16). Purely additive — the accessors
+  don't consult it; the consumer reads it and passes the id along.
+
+### Changed
+
+- **Freestanding addressing range widened** (pre-1.0 breaking):
+  `KASHI_GLYPH_LAST` `0x7F → 0xFF`, `KASHI_GLYPH_COUNT` `96 → 224`,
+  `KASHI_GLYPH_FIRST` unchanged. Consumers that use the accessors
+  (`kashi_font_count`, `kashi_glyph_encoded`) are unaffected; consumers
+  that hard-coded `0x7F`/`96` will be off. CGA 8×8's high half is
+  intentionally **blank** in 0.4.0 (slots exist, every row reads `0`) —
+  extending the hand-drawn font is deferred.
+- BSS for the built-ins grows ≈ 2.3× (`var kashi_font16[3584]`,
+  `var kashi_font8[1792]`); architecture note 001's `var X[N] = N bytes
+  used` shape preserved.
+- `tests/kashi.bcyr` `scan_vga_8x16` now sweeps the full 224-glyph range
+  (was 96), so the captured bench rises ≈ 2.3× (~26 µs → ~60 µs) — this
+  is the new workload, not a regression.
+
+### Tests
+
+- Suite now **212 assertions, 0 failed** (188 unit + 24 integration; was
+  186 at 0.3.0): high-half VGA fidelity (`0xDB` block, `0xB0` dither,
+  `0xC9` corner, `0xCD` h-line, `0xE9` theta, `0xFF` blank), CGA
+  high-half stays blank, active-font set/get round-trip + error cases.
+
 ## [0.3.0] — 2026-05-27
 
 M2 (part) — Unicode→glyph mapping so runtime PSF fonts are addressed by
@@ -145,7 +188,8 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/MacCracken/kashi/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/MacCracken/kashi/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/MacCracken/kashi/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/MacCracken/kashi/releases/tag/0.1.0

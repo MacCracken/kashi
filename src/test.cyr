@@ -16,12 +16,12 @@ fn test_metadata() {
     assert_eq(kashi_font_width(KASHI_FONT_VGA_8X16), 8, "vga width 8");
     assert_eq(kashi_font_height(KASHI_FONT_VGA_8X16), 16, "vga height 16");
     assert_eq(kashi_font_first(KASHI_FONT_VGA_8X16), 0x20, "vga first 0x20");
-    assert_eq(kashi_font_count(KASHI_FONT_VGA_8X16), 96, "vga count 96");
+    assert_eq(kashi_font_count(KASHI_FONT_VGA_8X16), 224, "vga count 224");
 
     assert_eq(kashi_font_width(KASHI_FONT_CGA_8X8), 8, "cga width 8");
     assert_eq(kashi_font_height(KASHI_FONT_CGA_8X8), 8, "cga height 8");
     assert_eq(kashi_font_first(KASHI_FONT_CGA_8X8), 0x20, "cga first 0x20");
-    assert_eq(kashi_font_count(KASHI_FONT_CGA_8X8), 96, "cga count 96");
+    assert_eq(kashi_font_count(KASHI_FONT_CGA_8X8), 224, "cga count 224");
 
     assert_eq(kashi_font_width(99), 0, "unknown width 0");
     assert_eq(kashi_font_height(99), 0, "unknown height 0");
@@ -38,7 +38,9 @@ fn test_encoded_gate() {
     assert_eq(kashi_glyph_encoded(0x20), 1, "0x20 encoded");
     assert_eq(kashi_glyph_encoded(0x41), 1, "A encoded");
     assert_eq(kashi_glyph_encoded(0x7F), 1, "0x7F encoded");
-    assert_eq(kashi_glyph_encoded(0x80), 0, "0x80 not encoded");
+    assert_eq(kashi_glyph_encoded(0x80), 1, "0x80 encoded (CP437)");
+    assert_eq(kashi_glyph_encoded(0xFF), 1, "0xFF encoded (last CP437)");
+    assert_eq(kashi_glyph_encoded(0x100), 0, "0x100 not encoded");
     assert_eq(kashi_glyph_encoded(0), 0, "NUL not encoded");
     return 0;
 }
@@ -88,6 +90,27 @@ fn test_vga_8x16_bytes() {
     assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x7E, 1), 0x76, "vga ~ row1");
     assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x7E, 2), 0xDC, "vga ~ row2");
     assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x7E, 3), 0x00, "vga ~ row3");
+
+    # --- CP437 high half (added in 0.4.0) — lock transcription against the
+    # public-domain Linux font_8x16.c source. Spot-checks across distinctive
+    # glyphs: solid block, dither, line-art, accented letter, end-of-table.
+    # 0xDB '█' full block — every row 0xFF.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xDB, 0), 0xFF, "vga 0xDB block r0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xDB, 15), 0xFF, "vga 0xDB block r15");
+    # 0xB0 '░' light shade — alternating 0x11 / 0x44 dither rows.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xB0, 0), 0x11, "vga 0xB0 dither r0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xB0, 1), 0x44, "vga 0xB0 dither r1");
+    # 0xC9 '╔' double upper-left corner — row 5 = 0x3F, row 8 onward = 0x36.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xC9, 5), 0x3F, "vga 0xC9 corner r5");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xC9, 8), 0x36, "vga 0xC9 corner r8");
+    # 0xCD '═' double horizontal — rows 5 and 7 are 0xFF, others 0.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xCD, 5), 0xFF, "vga 0xCD hline r5");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xCD, 6), 0x00, "vga 0xCD hline r6");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xCD, 7), 0xFF, "vga 0xCD hline r7");
+    # 0xE9 'Θ' Greek capital theta — crossbar row 6 = 0xFE.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xE9, 6), 0xFE, "vga 0xE9 theta r6");
+    # 0xFF — last cell, intentionally blank.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xFF, 0), 0x00, "vga 0xFF blank");
     return 0;
 }
 
@@ -116,6 +139,16 @@ fn test_cga_8x8_bytes() {
     # '_' (0x5F) = 0x00000000000000FF -> only bottom row set.
     assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x5F, 0), 0x00, "cga _ row0");
     assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x5F, 7), 0xFF, "cga _ row7");
+
+    # CGA high-half (0x80..0xFF) is intentionally blank in 0.4.0 — extending
+    # the hand-drawn font would require 128 more glyphs (see ADR 0004).
+    # Spot-check a couple of slots to lock the "blank" behavior so a future
+    # change can't accidentally light them up.
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x80, 0), 0, "cga 0x80 blank r0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xDB, 4), 0, "cga 0xDB blank r4");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xFF, 7), 0, "cga 0xFF blank r7");
+    # The slot exists (ptr non-null), it's just zeroed.
+    assert_neq(kashi_glyph_ptr(KASHI_FONT_CGA_8X8, 0xC9), 0, "cga 0xC9 slot exists");
     return 0;
 }
 
@@ -124,9 +157,9 @@ fn test_cga_8x8_bytes() {
 fn test_accessor_bounds() {
     test_group("accessor bounds");
     assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x1F, 0), 0, "row oob-char-lo 0");
-    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x80, 0), 0, "row oob-char-hi 0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x100, 0), 0, "row oob-char-hi 0");
     assert_eq(kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x1F), 0, "ptr oob-char-lo null");
-    assert_eq(kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x80), 0, "ptr oob-char-hi null");
+    assert_eq(kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x100), 0, "ptr oob-char-hi null");
 
     assert_eq(kashi_glyph_row(7, 0x41, 0), 0, "row unknown-font 0");
     assert_eq(kashi_glyph_ptr(7, 0x41), 0, "ptr unknown-font null");
@@ -158,13 +191,13 @@ fn test_full_coverage() {
     var ch = 0x20;
     var all_ok16 = 1;
     var all_ok8 = 1;
-    while (ch <= 0x7F) {
+    while (ch <= 0xFF) {
         if (kashi_glyph_ptr(KASHI_FONT_VGA_8X16, ch) == 0) { all_ok16 = 0; }
         if (kashi_glyph_ptr(KASHI_FONT_CGA_8X8, ch) == 0) { all_ok8 = 0; }
         ch = ch + 1;
     }
-    assert_eq(all_ok16, 1, "all 96 vga glyphs present");
-    assert_eq(all_ok8, 1, "all 96 cga glyphs present");
+    assert_eq(all_ok16, 1, "all 224 vga glyphs present");
+    assert_eq(all_ok8, 1, "all 224 cga glyph slots present (high-half blank)");
     return 0;
 }
 
@@ -197,12 +230,12 @@ fn test_font_ready() {
 fn test_fset_guard() {
     test_group("fset guard");
     var ones = 0xFFFFFFFFFFFFFFFF;
-    # Below FIRST (0x20) and above LAST (0x7F), both fonts.
+    # Below FIRST (0x20) and above LAST (0xFF), both fonts.
     kashi_fset16(0x1F, ones, ones);
-    kashi_fset16(0x80, ones, ones);
+    kashi_fset16(0x100, ones, ones);
     kashi_fset16(0 - 1, ones, ones);
     kashi_fset8(0x1F, ones);
-    kashi_fset8(0x80, ones);
+    kashi_fset8(0x100, ones);
     kashi_fset8(0 - 1, ones);
     # In-range glyphs unchanged: space blank, 'A' row, DEL triangle base.
     assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x20, 0), 0x00, "guard: vga space intact");
@@ -541,6 +574,26 @@ fn test_rt_unicode() {
     return 0;
 }
 
+# --- M2 registry nicety: active-font knob ---
+
+fn test_active_font() {
+    test_group("active font");
+    # Default is 0 (VGA built-in) — established at module load, valid even
+    # before any registration.
+    assert_eq(kashi_active_font(), 0, "default active = 0");
+    # Round-trip set/get for both built-ins.
+    assert_eq(kashi_set_active_font(KASHI_FONT_CGA_8X8), KASHI_OK, "set to CGA ok");
+    assert_eq(kashi_active_font(), KASHI_FONT_CGA_8X8, "active reads CGA");
+    assert_eq(kashi_set_active_font(KASHI_FONT_VGA_8X16), KASHI_OK, "set back to VGA ok");
+    assert_eq(kashi_active_font(), KASHI_FONT_VGA_8X16, "active reads VGA");
+    # Out-of-range ids -> negative error; active unchanged.
+    assert_eq(kashi_set_active_font(0 - 1), 0 - KASHI_EINVAL, "neg id -> -einval");
+    assert_eq(kashi_set_active_font(kashi_font_total()), 0 - KASHI_EINVAL, "total id -> -einval");
+    assert_eq(kashi_set_active_font(0x7FFFFFFF), 0 - KASHI_EINVAL, "huge id -> -einval");
+    assert_eq(kashi_active_font(), KASHI_FONT_VGA_8X16, "active unchanged on reject");
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -564,6 +617,7 @@ fn main() {
     test_psf_uni_token();
     test_rt_fonts();
     test_rt_unicode();
+    test_active_font();
 
     return assert_summary();
 }

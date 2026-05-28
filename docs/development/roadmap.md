@@ -57,20 +57,24 @@
 - **Deferred** (future milestone): glyph width > 8 (multi-byte rows) and the
   PSF Unicode→glyph map (runtime fonts are addressed by glyph index for now).
 
-### M2 — Runtime registry, Unicode addressing, additional fonts
+### M2 — Runtime registry, Unicode addressing, additional fonts — ✅ shipped
 
 - `kashi_register_font` + the runtime registry landed in M1.
 - ✅ **PSF Unicode→glyph map** (codepoint addressing for runtime fonts) —
   shipped 0.3.0, 2026-05-27. See
   [ADR 0003](0003-codepoint-addressing-runtime-fonts.md).
-- Still open for later cuts: registry niceties (enumerate available fonts,
-  select an "active" font); glyph width > 8 (multi-byte rows); PSF Unicode
-  sequence/ligature mappings.
-- Additional built-in fonts (candidates: a denser 8×16, a wider 9×16 with
-  proper box-drawing, a small 6×8) — added to the **freestanding core** so
-  the kernel can use them.
+- ✅ **Active-font knob** (`kashi_set/active_font`) — shipped 0.4.0,
+  2026-05-27. Enumeration of dense ids `[0, kashi_font_total())` is
+  implicit through the existing accessors; no separate API needed.
+- ✅ **Additional built-in glyph data** — shipped 0.4.0: the VGA 8×16
+  built-in extended to the full CP437 range (`0x20..0xFF`, 224 glyphs)
+  from Linux's PD source. See [ADR 0004](0004-cp437-glyph-range.md).
+- Carried to **0.5.0**: glyph width > 8 (multi-byte rows), the 9×16
+  box-drawing built-in (needs wide-glyph), and PSF Unicode
+  sequence/ligature mappings. The CGA 8×8 high half — currently blank —
+  may also land then or later.
 
-### M3 — Consumption contract hardening + agnos integration (0.4.0)
+### M3 — Consumption contract hardening + agnos integration (0.5.0+)
 
 - Lock the `kashi`↔agnos contract: confirm `[deps.kashi] modules=
   ["src/font_data.cyr"]` drops into agnos's `fb_console.cyr` cleanly and the

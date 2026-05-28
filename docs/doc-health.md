@@ -6,9 +6,9 @@ type: state
 
 # Documentation Health — kashi
 
-> **Last refresh**: 2026-05-27 (**0.3.0** cut — M2 Unicode→codepoint
-> addressing). **Refresh cadence**: when a doc is touched, update its row.
-> Full-tree sweep at minor-version closeouts.
+> **Last refresh**: 2026-05-27 (**0.4.0** cut — rest of M2: registry
+> niceties + VGA extended to full CP437). **Refresh cadence**: when a doc
+> is touched, update its row. Full-tree sweep at minor-version closeouts.
 >
 > **Scope**: this repo only (`kashi`) — the `docs/` tree plus root-level
 > files (README, CLAUDE.md, CHANGELOG, CONTRIBUTING, SECURITY,
@@ -33,7 +33,7 @@ nothing archived, no open strategic questions.
 
 | Bucket | Count | What it means |
 |---|---|---|
-| ✅ **Fresh** | 20 | 0.1.0 inventory + hardening docs + M1 docs (ADR 0002, PSF guide) + M2 doc (ADR 0003). |
+| ✅ **Fresh** | 21 | 0.1.0 inventory + hardening docs + M1 docs (ADR 0002, PSF guide) + M2 docs (ADR 0003, ADR 0004). |
 | 🟡 **Stale** | 0 | — |
 | 🟠 **Read-through outstanding** | 0 | — |
 | 🔵 **Probably evergreen** | 2 | `CODE_OF_CONDUCT.md`, `LICENSE` — standard; re-read annually. |
@@ -47,7 +47,7 @@ nothing archived, no open strategic questions.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-05-27 | ✅ Fresh | Two-faces architecture, built-in font table, freestanding-core API, agnos consumption contract, build/test. |
-| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]`, `[0.2.0]` (M1 + P(-1)), `[0.3.0]` (M2 Unicode→codepoint addressing). SemVer + Keep a Changelog. |
+| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]`, `[0.2.0]`, `[0.3.0]`, `[0.4.0]` (rest of M2: niceties + CP437 in VGA). SemVer + Keep a Changelog. |
 | `CLAUDE.md` | 2026-05-27 | ✅ Fresh | Durable-only; freestanding-vs-full-lib split, one-owner/two-faces boundary discipline, standard constraints. State deferred to state.md. |
 | `CONTRIBUTING.md` | 2026-05-27 | ✅ Fresh | The two faces, accessor-bounds rule, glyph-fidelity rule, Cyrius enum/style notes. |
 | `SECURITY.md` | 2026-05-27 | ✅ Fresh | Accessor-bounds = kernel trust boundary; buffer sizing; future PSF-parse validation. |
@@ -65,6 +65,7 @@ nothing archived, no open strategic questions.
 | `adr/0001-freestanding-font-data-core.md` | 2026-05-27 | ✅ Fresh | The load-bearing split decision. Accepted. |
 | `adr/0002-runtime-font-registry.md` | 2026-05-27 | ✅ Fresh | M1: runtime registry, unified dispatch, width≤8, negative-error convention. Accepted (addressing refined by 0003). |
 | `adr/0003-codepoint-addressing-runtime-fonts.md` | 2026-05-27 | ✅ Fresh | M2: PSF Unicode table → codepoint→glyph map; codepoint-addressed accessors + raw-index `kashi_rt_glyph_*`. Accepted. |
+| `adr/0004-cp437-glyph-range.md` | 2026-05-27 | ✅ Fresh | 0.4.0: widen freestanding range to `0x20..0xFF` (full CP437) in VGA 8×16 from Linux PD source; CGA high-half blank. Accepted. |
 
 ## Tier 3 — `docs/architecture/`
 
@@ -77,8 +78,8 @@ nothing archived, no open strategic questions.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `development/roadmap.md` | 2026-05-27 | ✅ Fresh | M0 ✅, M1 ✅, M2 Unicode ✅ → M4 (v1.0); deferred wide-glyph/ligatures noted. |
-| `development/state.md` | 2026-05-27 | ✅ Fresh | Live state through M2: impl surface (codepoint addressing), tests (186 assertions), deps, fidelity. |
+| `development/roadmap.md` | 2026-05-27 | ✅ Fresh | M0 ✅, M1 ✅, M2 ✅ (Unicode + niceties + CP437) → M3 (agnos 1.38.0) / 0.5.0 wide-glyph. |
+| `development/state.md` | 2026-05-27 | ✅ Fresh | Live state through 0.4.0: range widened to CP437, active-font knob, tests (212 assertions), deps. |
 
 ## Tier 5 — `docs/guides/` + `docs/examples/`
 

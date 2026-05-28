@@ -16,7 +16,7 @@ include "src/lib.cyr"
 fn scan_font(font_id) {
     var acc = 0;
     var ch = 0x20;
-    while (ch <= 0x7F) {
+    while (ch <= 0xFF) {   # full CP437 range as of 0.4.0
         var row = 0;
         var h = kashi_font_height(font_id);
         while (row < h) {

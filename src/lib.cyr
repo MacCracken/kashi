@@ -357,8 +357,32 @@ fn kashi_rt_font_count(font_id) {
 }
 
 # Number of fonts kashi currently knows: the two built-ins plus every
-# runtime-registered font.
+# runtime-registered font. Font ids are dense `[0, kashi_font_total())`, so
+# enumeration is a plain `for id in 0..total` loop through the existing
+# accessors — no separate enumerate API needed.
 fn kashi_font_total() {
     if (_rt_registry == 0) { return 2; }
     return 2 + vec_len(_rt_registry);
+}
+
+# --- Active-font knob (M2 registry nicety) ---
+#
+# A console (or any consumer with the concept of a "current font") can stash
+# its selection here instead of plumbing the id everywhere. Defaults to 0 (the
+# VGA 8x16 built-in). Purely additive — the accessors never consult this; the
+# consumer reads it and passes the id to kashi_font_ptr/row themselves.
+var _kashi_active_font = 0;
+
+# Set the active font_id. Returns KASHI_OK or `0 - KASHI_EINVAL` for an id
+# outside `[0, kashi_font_total())`.
+fn kashi_set_active_font(font_id) {
+    if (font_id < 0) { return 0 - KASHI_EINVAL; }
+    if (font_id >= kashi_font_total()) { return 0 - KASHI_EINVAL; }
+    _kashi_active_font = font_id;
+    return KASHI_OK;
+}
+
+# Read the active font_id (default 0 = VGA 8x16).
+fn kashi_active_font() {
+    return _kashi_active_font;
 }

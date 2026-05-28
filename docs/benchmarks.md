@@ -45,6 +45,11 @@ a cross-machine guarantee.
 with the standalone `glyph_row` figure — the whole-font sweep carries no
 per-glyph overhead beyond the accessor itself.
 
+**Workload change in 0.4.0**: `scan_vga_8x16` now sweeps the full 224-glyph
+CP437 range (was 96 ASCII glyphs), so the captured number rises ≈ 2.3× to
+~60 µs. Not a regression — it's the new workload; per-row cost is
+unchanged. The 0.4.0 row in the CSV reflects the wider sweep.
+
 ### Unified-dispatcher overhead (0.3.0)
 
 `kashi_font_row` routes built-in vs runtime ids and (post-M2) resolves the
