@@ -1,0 +1,151 @@
+# === kashi — PSF (PC Screen Font) parser ===
+#
+# Self-contained, heapless PSF1/PSF2 header parser. Uses ONLY the
+# load8/load32/load64 intrinsics + arithmetic — no stdlib, no heap, no
+# registry — so it lints standalone and fuzzes in isolation. The runtime
+# registry, glyph-store allocation, and the unified accessors that build on
+# this parser live in the LIBRARY face (src/lib.cyr); this file is the pure
+# byte-level validation layer.
+#
+# This is kashi's first untrusted-input surface (font bytes from a file or
+# the network). Every field is validated and every length bound checked
+# BEFORE any indexed read past the fixed header — a malformed or truncated
+# font must return an error, never a wild dereference (fuzzed in
+# tests/kashi.fcyr).
+#
+# --- Scope (M1, 0.2.0) ---
+#
+#   * PSF1 (magic 0x36 0x04): 8-wide, 256/512-glyph banks.
+#   * PSF2 (magic 0x72 0xB5 0x4A 0x86 = LE 0x864AB572): width 1..8 only
+#     (kashi's accessors are one byte per row; wider glyphs are a future
+#     milestone). Unicode table presence is recorded, not yet mapped —
+#     runtime glyphs are addressed by raw glyph index. See docs/adr/0002.
+#
+# This file is part of the stdlib-using library face. It must NEVER be
+# `include`d by the freestanding core (src/font_data.cyr); the dependency
+# only ever flows lib.cyr -> font_psf.cyr, never the reverse.
+
+# Result codes for the runtime/library surface. Cyrius enum values must be
+# plain non-negative literals, so errors use a positive 10x namespace; the
+# public load/register functions return font_id (>= 2) on success or
+# `0 - <code>` (negative) on failure (see src/lib.cyr).
+enum KashiResult {
+    KASHI_OK = 0;
+    KASHI_ENOSYS = 101;         # booked, not built
+    KASHI_EINVAL = 102;         # invalid argument
+    KASHI_EFORMAT = 103;        # malformed / unsupported font file
+}
+
+# PSF magic + validation bounds (all plain literals).
+enum KashiPsfConst {
+    KASHI_PSF1_MAGIC0 = 0x36;
+    KASHI_PSF1_MAGIC1 = 0x04;
+    KASHI_PSF1_MODE512 = 1;       # mode bit 0: 512-glyph bank
+    KASHI_PSF1_HDR = 4;           # magic(2) + mode(1) + charsize(1)
+    KASHI_PSF2_MAGIC = 0x864AB572;
+    KASHI_PSF2_HDR_MIN = 32;      # fixed PSF2 header size
+    KASHI_PSF_MAX_HEIGHT = 32;    # sanity bound on glyph height
+    KASHI_PSF_MAX_WIDTH = 8;      # M1: one byte per row
+    KASHI_PSF_MAX_COUNT = 65536;  # sanity bound on glyph count
+    KASHI_PSF_KIND_PSF1 = 1;
+    KASHI_PSF_KIND_PSF2 = 2;
+}
+
+# Parsed-header out struct, written by psf_parse into a caller-provided
+# 48-byte buffer (function-local `var hdr[48]`). Fields are u64 at fixed
+# byte offsets.
+enum KashiPsfHdr {
+    KASHI_PH_KIND = 0;       # 1 = PSF1, 2 = PSF2
+    KASHI_PH_WIDTH = 8;      # glyph width in pixels (1..8)
+    KASHI_PH_HEIGHT = 16;    # glyph height in pixels = rows per glyph
+    KASHI_PH_COUNT = 24;     # number of glyphs
+    KASHI_PH_CHARSIZE = 32;  # bytes per glyph (= height for <=8 wide)
+    KASHI_PH_DATAOFF = 40;   # byte offset of glyph data within the buffer
+}
+
+# Parse a PSF1 header (caller already matched the 2-byte magic and ensured
+# len >= KASHI_PSF1_HDR). Internal.
+fn _kashi_psf1_parse(buf, len, out) {
+    var charsize = load8(buf + 3);   # bytes per glyph; = height for 8-wide
+    var height = charsize;
+    if (height < 1) { return KASHI_EFORMAT; }
+    if (height > KASHI_PSF_MAX_HEIGHT) { return KASHI_EFORMAT; }
+    var mode = load8(buf + 2);
+    var count = 256;
+    if ((mode & KASHI_PSF1_MODE512) != 0) { count = 512; }
+    var glyph_bytes = count * charsize;   # <= 512 * 32, fits i64
+    if (len < KASHI_PSF1_HDR + glyph_bytes) { return KASHI_EFORMAT; }
+    store64(out + KASHI_PH_KIND, KASHI_PSF_KIND_PSF1);
+    store64(out + KASHI_PH_WIDTH, 8);
+    store64(out + KASHI_PH_HEIGHT, height);
+    store64(out + KASHI_PH_COUNT, count);
+    store64(out + KASHI_PH_CHARSIZE, charsize);
+    store64(out + KASHI_PH_DATAOFF, KASHI_PSF1_HDR);
+    return KASHI_OK;
+}
+
+# Parse a PSF2 header (caller already matched the 4-byte magic and ensured
+# len >= KASHI_PSF2_HDR_MIN). Internal. load32 is little-endian.
+fn _kashi_psf2_parse(buf, len, out) {
+    var version = load32(buf + 4);
+    if (version != 0) { return KASHI_EFORMAT; }
+    var headersize = load32(buf + 8);
+    if (headersize < KASHI_PSF2_HDR_MIN) { return KASHI_EFORMAT; }
+    if (headersize > len) { return KASHI_EFORMAT; }
+    var count = load32(buf + 16);
+    var charsize = load32(buf + 20);
+    var height = load32(buf + 24);
+    var width = load32(buf + 28);
+    if (height < 1) { return KASHI_EFORMAT; }
+    if (height > KASHI_PSF_MAX_HEIGHT) { return KASHI_EFORMAT; }
+    if (width < 1) { return KASHI_EFORMAT; }
+    if (width > KASHI_PSF_MAX_WIDTH) { return KASHI_EFORMAT; }   # M1: <=8 px
+    # One byte per row for <=8 wide, so charsize must equal height. This also
+    # rejects fonts whose declared charsize disagrees with their geometry.
+    if (charsize != height) { return KASHI_EFORMAT; }
+    if (count < 1) { return KASHI_EFORMAT; }
+    if (count > KASHI_PSF_MAX_COUNT) { return KASHI_EFORMAT; }
+    var glyph_bytes = count * charsize;   # bounded by checks above
+    if (len < headersize + glyph_bytes) { return KASHI_EFORMAT; }
+    store64(out + KASHI_PH_KIND, KASHI_PSF_KIND_PSF2);
+    store64(out + KASHI_PH_WIDTH, width);
+    store64(out + KASHI_PH_HEIGHT, height);
+    store64(out + KASHI_PH_COUNT, count);
+    store64(out + KASHI_PH_CHARSIZE, charsize);
+    store64(out + KASHI_PH_DATAOFF, headersize);
+    return KASHI_OK;
+}
+
+# Detect and validate a PSF1/PSF2 font in `buf` (`len` bytes). On success
+# fills the 48-byte `out` header struct and returns KASHI_OK; otherwise
+# returns KASHI_EINVAL (bad args) or KASHI_EFORMAT (bad/unsupported/truncated
+# font) and leaves `out` zeroed. Does NOT read glyph data — only the fixed
+# header — so it is safe to call on any buffer, including hostile ones.
+fn kashi_psf_parse(buf, len, out) {
+    if (buf == 0) { return KASHI_EINVAL; }
+    if (out == 0) { return KASHI_EINVAL; }
+    if (len < 0) { return KASHI_EINVAL; }
+    # Zero the out header first — a caller's `var hdr[48]` is uninitialized.
+    store64(out + KASHI_PH_KIND, 0);
+    store64(out + KASHI_PH_WIDTH, 0);
+    store64(out + KASHI_PH_HEIGHT, 0);
+    store64(out + KASHI_PH_COUNT, 0);
+    store64(out + KASHI_PH_CHARSIZE, 0);
+    store64(out + KASHI_PH_DATAOFF, 0);
+
+    # PSF2: 4-byte LE magic (needs the full 32-byte fixed header present).
+    if (len >= KASHI_PSF2_HDR_MIN) {
+        if (load32(buf) == KASHI_PSF2_MAGIC) {
+            return _kashi_psf2_parse(buf, len, out);
+        }
+    }
+    # PSF1: 2-byte magic (header is 4 bytes).
+    if (len >= KASHI_PSF1_HDR) {
+        if (load8(buf) == KASHI_PSF1_MAGIC0) {
+            if (load8(buf + 1) == KASHI_PSF1_MAGIC1) {
+                return _kashi_psf1_parse(buf, len, out);
+            }
+        }
+    }
+    return KASHI_EFORMAT;
+}

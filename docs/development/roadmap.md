@@ -11,7 +11,8 @@
 
 - [ ] Public API frozen — every exported symbol (freestanding core +
       library face) documented and tested.
-- [ ] PSF1 + PSF2 import working and fuzzed.
+- [x] PSF1 + PSF2 import working and fuzzed. *(M1, 2026-05-27 — width ≤ 8;
+      wider glyphs + Unicode mapping still to come.)*
 - [ ] At least one runtime-loaded font registered and rendered end-to-end.
 - [ ] Test coverage adequate for the surface area; accessor bounds fuzzed.
 - [ ] Benchmarks captured in `docs/benchmarks.md` with version-over-version
@@ -37,25 +38,31 @@
 - Demo, unit + integration tests (81 assertions), fuzz harness, benchmarks.
 - ADR 0001 (freestanding split), architecture note 001 (u64-unit BSS).
 
-### M1 — PSF import path (0.2.0)
+### M1 — PSF import path (0.2.0) — ✅ landed 2026-05-27 *(unreleased)*
 
-- **PSF1** import (`kashi_load_psf` for 0x36 0x04 magic): 8×N glyphs,
-  256/512 glyph banks. Parse header, validate `charsize`, copy glyph
-  bitmaps into a runtime font slot.
-- **PSF2** import (0x72 0xB5 0x4A 0x86 magic): arbitrary `width`×`height`,
-  Unicode table (`flags & 0x01`). Parse `headersize`/`length`/`charsize`,
-  validate, load glyphs.
-- Validation-first parsing — magic, header lengths, glyph-count bounds
-  checked before any indexed read (fuzz the parser).
-- **Dep gate**: needs stdlib `io` (read a `.psf`) + `fs` and heap for the
-  loaded font store — added to `cyrius.cyml [deps]` when this lands.
-- Reference: [PSF format note in genesis memory `reference_psf_font_format`].
+- **PSF1** (`0x36 0x04`) and **PSF2** (`0x72 0xB5 0x4A 0x86`) import via
+  `kashi_load_psf` / `kashi_load_psf_file`, plus `kashi_register_font` for
+  raw tables. Parsed by a self-contained `src/font_psf.cyr`; glyph bytes
+  copied into an owned runtime store (registry in `src/lib.cyr`).
+- Validation-first parsing — magic, version, header size, geometry, glyph
+  count, and total length all checked before any glyph read. Fuzzed in
+  `tests/kashi.fcyr` (4000 random/truncated/mutated buffers, no crashes).
+- Unified `kashi_font_row` / `kashi_font_ptr` dispatch built-in (ids 0,1) vs
+  runtime (ids ≥ 2); `kashi_rt_font_{width,height,count}`. See
+  [ADR 0002](0002-runtime-font-registry.md) +
+  [the guide](../guides/loading-psf-fonts.md).
+- **Dep gate**: satisfied by the already-declared `io`/`alloc`/`vec`/`string`
+  — no `cyrius.cyml` change was needed.
+- **Deferred** (future milestone): glyph width > 8 (multi-byte rows) and the
+  PSF Unicode→glyph map (runtime fonts are addressed by glyph index for now).
 
 ### M2 — Runtime font registry + additional fonts (0.3.0)
 
-- `kashi_register_font` implemented: register a runtime (loaded) font, get a
-  `font_id`; query it through the same accessors as the built-ins.
-- Font registry: enumerate available fonts, select active font.
+- `kashi_register_font` + the runtime registry already landed in M1; M2
+  builds on it.
+- Font registry niceties: enumerate available fonts, select an "active"
+  font, and the deferred M1 items — glyph width > 8 (multi-byte rows) and
+  the PSF Unicode→glyph map (codepoint addressing for runtime fonts).
 - Additional built-in fonts (candidates: a denser 8×16, a wider 9×16 with
   proper box-drawing, a small 6×8) — added to the **freestanding core** so
   the kernel can use them.

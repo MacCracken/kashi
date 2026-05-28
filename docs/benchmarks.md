@@ -45,6 +45,16 @@ a cross-machine guarantee.
 with the standalone `glyph_row` figure — the whole-font sweep carries no
 per-glyph overhead beyond the accessor itself.
 
+### Unified-dispatcher overhead (M1, unreleased)
+
+The M1 `kashi_font_row` dispatcher routes built-in vs runtime ids. Measured
+on the same host (not yet a release row in the CSV):
+
+| Benchmark | avg | iters | vs direct |
+|---|---|---|---|
+| `font_row_builtin` | 20 ns | 1,000,000 | +~2 ns over `glyph_row` (one compare + branch) |
+| `font_row_runtime` | 28 ns | 1,000,000 | +~10 ns (registry lookup + bounds + load) |
+
 ## Updating
 
 Each release (or whenever an accessor's cost changes), append rows to

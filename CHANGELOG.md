@@ -5,11 +5,30 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
-P(-1) hardening pass opening the post-0.1.0 cycle. No glyph byte changed —
-fidelity vs agnos source is preserved.
+Post-0.1.0 cycle: the **M1 PSF font-import path** plus a P(-1) hardening
+pass. No glyph byte changed — fidelity vs agnos source is preserved, and the
+freestanding core stays dependency-free (`cyrius vet` → "no dependencies").
 
 ### Added
 
+- **PSF1/PSF2 font import (M1)** — load runtime bitmap fonts beside the two
+  built-ins:
+  - `kashi_load_psf(buf, len)` / `kashi_load_psf_file(path)` — parse and
+    register a PSF1 (`0x36 0x04`) or PSF2 (`0x72 0xB5 0x4A 0x86`) font;
+    validation-first (every header field + length bound checked before any
+    glyph read). Returns `font_id ≥ 2` or a negative `0 - <code>`.
+  - `kashi_register_font(width, height, glyph_data, glyph_count)` — register
+    a raw 8-wide glyph table (bytes copied into an owned store).
+  - Unified accessors `kashi_font_row(id, ch, row)` / `kashi_font_ptr(id, ch)`
+    dispatch built-in ids (0,1) to the freestanding core and runtime ids
+    (≥ 2) to the registry; `kashi_rt_font_{width,height,count}` for runtime
+    metadata; `kashi_font_total()` now spans both.
+  - New self-contained, heapless parser `src/font_psf.cyr` (fuzzed in
+    `tests/kashi.fcyr` — 4000 random/truncated/mutated buffers, no crashes).
+  - Scope: width ≤ 8 (one byte/row; wider PSF2 → `KASHI_EFORMAT`); runtime
+    glyphs addressed by index, Unicode table validated but not mapped. See
+    [ADR 0002](docs/adr/0002-runtime-font-registry.md) and
+    [the guide](docs/guides/loading-psf-fonts.md).
 - `kashi_font_is_ready()` — reads back the (previously write-only)
   init-complete flag, so a freestanding consumer can assert
   `kashi_font_init()` ran before the first render. Freestanding-safe
@@ -17,10 +36,13 @@ fidelity vs agnos source is preserved.
 - **Benchmark baseline** — `docs/benchmarks.md` + `docs/benchmarks/history.csv`
   (CSV, appended per release for version-over-version tracking). 0.1.0
   accessors: `glyph_row` 17 ns, `glyph_ptr` 7 ns, `scan_vga_8x16` 27 µs
-  (x86_64, AMD Ryzen 7 5800H).
+  (x86_64, AMD Ryzen 7 5800H). Unified dispatch adds ~2 ns (built-in path)
+  / ~10 ns (runtime path).
 - **Security & hardening audit** — `docs/audit/2026-05-27-audit.md` (P(-1)
-  pass). 15 new test assertions (full-`i64`-range accessor safety, the
-  `fset` guard, the ready flag); suite now **96 assertions, 0 failed**.
+  pass). Test suite now **146 assertions, 0 failed** (was 81 at 0.1.0):
+  full-`i64`-range accessor safety, the `fset` guard, the ready flag, PSF
+  parse (valid + malformed), runtime register/load/dispatch, and a PSF
+  file round-trip.
 
 ### Changed
 

@@ -34,7 +34,7 @@ nothing archived, no open strategic questions.
 
 | Bucket | Count | What it means |
 |---|---|---|
-| ✅ **Fresh** | 17 | Everything below — 0.1.0 inventory + the 3 hardening docs (audit, benchmarks.md, benchmarks/history.csv). |
+| ✅ **Fresh** | 19 | 0.1.0 inventory + 3 hardening docs (audit, benchmarks.md, benchmarks/history.csv) + 2 M1 docs (ADR 0002, loading-psf-fonts guide). |
 | 🟡 **Stale** | 0 | — |
 | 🟠 **Read-through outstanding** | 0 | — |
 | 🔵 **Probably evergreen** | 2 | `CODE_OF_CONDUCT.md`, `LICENSE` — standard; re-read annually. |
@@ -48,7 +48,7 @@ nothing archived, no open strategic questions.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `README.md` | 2026-05-27 | ✅ Fresh | Two-faces architecture, built-in font table, freestanding-core API, agnos consumption contract, build/test. |
-| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]` entry + `[Unreleased]` P(-1) hardening (audit, fset guard, ready reader, `0x7F` comment fix). SemVer + Keep a Changelog. |
+| `CHANGELOG.md` | 2026-05-27 | ✅ Fresh | `[0.1.0]` + `[Unreleased]`: M1 PSF import + P(-1) hardening (audit, fset guard, ready reader, `0x7F` fix). SemVer + Keep a Changelog. |
 | `CLAUDE.md` | 2026-05-27 | ✅ Fresh | Durable-only; freestanding-vs-full-lib split, one-owner/two-faces boundary discipline, standard constraints. State deferred to state.md. |
 | `CONTRIBUTING.md` | 2026-05-27 | ✅ Fresh | The two faces, accessor-bounds rule, glyph-fidelity rule, Cyrius enum/style notes. |
 | `SECURITY.md` | 2026-05-27 | ✅ Fresh | Accessor-bounds = kernel trust boundary; buffer sizing; future PSF-parse validation. |
@@ -61,9 +61,10 @@ nothing archived, no open strategic questions.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `adr/README.md` | 2026-05-27 | ✅ Fresh | Index updated with ADR 0001. |
+| `adr/README.md` | 2026-05-27 | ✅ Fresh | Index updated with ADR 0001 + 0002. |
 | `adr/template.md` | (scaffold) | ✅ Fresh | Standard ADR template. |
 | `adr/0001-freestanding-font-data-core.md` | 2026-05-27 | ✅ Fresh | The load-bearing split decision. Accepted. |
+| `adr/0002-runtime-font-registry.md` | 2026-05-27 | ✅ Fresh | M1: runtime registry, unified dispatch, width≤8, glyph-index addressing, negative-error convention. Accepted. |
 
 ## Tier 3 — `docs/architecture/`
 
@@ -76,14 +77,15 @@ nothing archived, no open strategic questions.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `development/roadmap.md` | 2026-05-27 | ✅ Fresh | M0 (done) → M4 (v1.0); books PSF import / runtime registry / agnos-1.38.0 consumption. |
-| `development/state.md` | 2026-05-27 | ✅ Fresh | 0.1.0 live state + post-audit refresh: impl-vs-booked, tests (96 assertions), sizes, fidelity, audit pointer. |
+| `development/roadmap.md` | 2026-05-27 | ✅ Fresh | M0 ✅ + M1 ✅ (PSF import landed) → M4 (v1.0); deferred wide-glyph/Unicode noted. |
+| `development/state.md` | 2026-05-27 | ✅ Fresh | Live state through M1: impl surface (PSF import), tests (146 assertions), deps, fidelity, audit pointer. |
 
 ## Tier 5 — `docs/guides/` + `docs/examples/`
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `guides/getting-started.md` | 2026-05-27 | ✅ Fresh | Build/test/add-a-font, reflecting the two-faces layout. |
+| `guides/loading-psf-fonts.md` | 2026-05-27 | ✅ Fresh | M1: how to load PSF1/PSF2 at runtime + the unified accessors; id table; M1 limits. |
 | `examples/.gitkeep` | (scaffold) | ✅ Fresh | Placeholder; the demo lives in `src/main.cyr` for now. Backfill `docs/examples/*.cyr` as the API surface grows. |
 
 ## Tier 6 — `docs/audit/` + `docs/benchmarks*`
@@ -91,7 +93,7 @@ nothing archived, no open strategic questions.
 | File | Last touched | Status | Notes |
 |---|---|---|---|
 | `audit/2026-05-27-audit.md` | 2026-05-27 | ✅ Fresh | First P(-1) security/hardening pass. 3 findings fixed, 2 noted; accessor surface proven `i64`-safe. |
-| `benchmarks.md` | 2026-05-27 | ✅ Fresh | Methodology + 0.1.0 baseline table; points at the CSV. |
+| `benchmarks.md` | 2026-05-27 | ✅ Fresh | Methodology + 0.1.0 baseline + M1 unified-dispatch overhead; points at the CSV. |
 | `benchmarks/history.csv` | 2026-05-27 | ✅ Fresh | Per-`(version,benchmark)` rows; append each release. |
 
 ---

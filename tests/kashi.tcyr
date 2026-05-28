@@ -94,6 +94,40 @@ fn test_reinit_idempotent() {
     return 0;
 }
 
+# End-to-end PSF import: build a real PSF1 font, write it to a file, load it
+# back via kashi_load_psf_file, and read glyph rows through the unified
+# dispatcher — the way a userland consumer would. Exercises the parser,
+# the io.file_read_all path, the glyph-store copy, and the registry.
+fn test_psf_file_roundtrip() {
+    test_group("psf file round-trip");
+    # 256 glyphs, height 3. Plant glyph 'B' (index 0x42) rows = 0x11,0x22,0x33.
+    var n = 4 + 256 * 3;
+    var buf = alloc(n);
+    var i = 0;
+    while (i < n) { store8(buf + i, 0); i = i + 1; }
+    store8(buf + 0, 0x36); store8(buf + 1, 0x04); store8(buf + 2, 0); store8(buf + 3, 3);
+    store8(buf + 4 + 0x42 * 3 + 0, 0x11);
+    store8(buf + 4 + 0x42 * 3 + 1, 0x22);
+    store8(buf + 4 + 0x42 * 3 + 2, 0x33);
+
+    var path = "/tmp/kashi_test_roundtrip.psf";
+    file_write_all(path, buf, n);
+
+    var id = kashi_load_psf_file(path);
+    assert_gte(id, KASHI_RT_FONT_BASE, "file load returns id >= 2");
+    assert_eq(kashi_rt_font_width(id), 8, "file font width 8");
+    assert_eq(kashi_rt_font_height(id), 3, "file font height 3");
+    assert_eq(kashi_rt_font_count(id), 256, "file font count 256");
+    assert_eq(kashi_font_row(id, 0x42, 0), 0x11, "file glyph 0x42 r0");
+    assert_eq(kashi_font_row(id, 0x42, 1), 0x22, "file glyph 0x42 r1");
+    assert_eq(kashi_font_row(id, 0x42, 2), 0x33, "file glyph 0x42 r2");
+    # A missing file is a negative error, not a crash.
+    assert_lt(kashi_load_psf_file("/tmp/kashi_no_such_font_zzq.psf"), 0, "missing file -> negative");
+
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
 fn main() {
     alloc_init();
     kashi_font_init();
@@ -102,6 +136,7 @@ fn main() {
     test_space_vs_visible();
     test_pointer_monotone();
     test_reinit_idempotent();
+    test_psf_file_roundtrip();
 
     return assert_summary();
 }

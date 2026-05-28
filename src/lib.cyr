@@ -26,58 +26,177 @@
 # include is a placeholder to be filled in.
 
 include "src/font_data.cyr"
+include "src/font_psf.cyr"
 
 # ---------------------------------------------------------------------------
-# Future full-library surface (skeleton — booked, not yet built).
+# Runtime font surface (M1). The PSF byte parser + result codes (KashiResult)
+# and PSF constants live in src/font_psf.cyr; this file owns the runtime
+# registry, glyph-store allocation, and the unified accessors that dispatch
+# across the built-in (ids 0,1) and runtime (ids >= 2) id spaces. See
+# docs/adr/0002.
 #
-# These are intentional NO-OPS / NOT-IMPLEMENTED markers so the API shape is
-# booked and consumers see a stable symbol set, without committing behavior
-# that isn't built yet. Each returns a sentinel rather than
-# panicking — library code never panics (first-party standard).
+# Return convention: kashi_load_psf / kashi_register_font return a font_id
+# (>= KASHI_RT_FONT_BASE) on success, or `0 - <KashiResult>` (negative) on
+# failure. Built-in ids 0,1 are never returned by these. (`0 - N` form per
+# the no-negative-literals rule.)
+#
+# Glyph addressing: runtime fonts are addressed by raw glyph index [0,count);
+# the PSF Unicode table is validated but not mapped (codepoint->glyph is a
+# future milestone). So in the unified accessors, the `ch` argument is an
+# ASCII codepoint for built-ins (0x20..0x7F) but a glyph index for runtime
+# fonts.
 # ---------------------------------------------------------------------------
 
-# Return code convention for the not-yet-implemented runtime surface.
-# Cyrius enum values must be plain non-negative integer literals, so the
-# error codes use a small positive namespace (1xx) rather than negative
-# errnos. 0 = ok; any non-zero = error. KASHI_ENOSYS marks "booked, not
-# built". This may switch to a sakshi Result type when the runtime surface
-# lands; until then this keeps the skeleton stdlib-light.
-enum KashiResult {
-    KASHI_OK = 0;
-    KASHI_ENOSYS = 101;         # not implemented yet (booked for M1)
-    KASHI_EINVAL = 102;         # invalid argument
-    KASHI_EFORMAT = 103;        # malformed font file
+# Runtime fonts start at id 2 (0 = VGA 8x16, 1 = CGA 8x8 are the built-ins).
+enum KashiRtBase {
+    KASHI_RT_FONT_BASE = 2;
 }
 
-# PSF (PC Screen Font) magic constants — booked for the import path.
-# PSF1: 0x36 0x04 ; PSF2: 0x72 0xB5 0x4A 0x86. See docs/roadmap M1.
-enum KashiPsfMagic {
-    KASHI_PSF1_MAGIC0 = 0x36;
-    KASHI_PSF1_MAGIC1 = 0x04;
-    KASHI_PSF2_MAGIC = 0x864AB572;  # little-endian dword
+# Runtime font record: 40 bytes, five u64 fields at these offsets.
+enum KashiRtRec {
+    RT_WIDTH = 0;
+    RT_HEIGHT = 8;
+    RT_COUNT = 16;
+    RT_CHARSIZE = 24;
+    RT_DATA = 32;       # ptr to owned glyph bytes (count * charsize)
+}
+
+# Registry: a vec of record pointers, lazily created on first register.
+var _rt_registry = 0;
+
+# Fetch the record for a runtime font_id, or 0 if out of range / no registry.
+fn _kashi_rt_get(font_id) {
+    if (_rt_registry == 0) { return 0; }
+    var idx = font_id - KASHI_RT_FONT_BASE;
+    if (idx < 0) { return 0; }
+    if (idx >= vec_len(_rt_registry)) { return 0; }
+    return vec_get(_rt_registry, idx);
+}
+
+# Register an ALREADY-OWNED glyph store (count * charsize bytes the registry
+# now owns — no copy). Returns the new font_id. Internal.
+fn _kashi_rt_register(width, height, count, charsize, data) {
+    if (_rt_registry == 0) { _rt_registry = vec_new(); }
+    var rec = alloc(40);
+    if (rec == 0) { return 0 - KASHI_EINVAL; }
+    store64(rec + RT_WIDTH, width);
+    store64(rec + RT_HEIGHT, height);
+    store64(rec + RT_COUNT, count);
+    store64(rec + RT_CHARSIZE, charsize);
+    store64(rec + RT_DATA, data);
+    vec_push(_rt_registry, rec);
+    return KASHI_RT_FONT_BASE + vec_len(_rt_registry) - 1;
+}
+
+# Register a runtime font from caller-supplied glyph data. width must be
+# 1..8 (one byte per row), height 1..32, glyph_count >= 1. The glyph bytes
+# are COPIED into a store the registry owns, so the caller may free/reuse
+# its buffer afterward. Returns font_id (>= 2) or `0 - KASHI_EINVAL`.
+fn kashi_register_font(width, height, glyph_data, glyph_count) {
+    if (width < 1) { return 0 - KASHI_EINVAL; }
+    if (width > KASHI_PSF_MAX_WIDTH) { return 0 - KASHI_EINVAL; }
+    if (height < 1) { return 0 - KASHI_EINVAL; }
+    if (height > KASHI_PSF_MAX_HEIGHT) { return 0 - KASHI_EINVAL; }
+    if (glyph_count < 1) { return 0 - KASHI_EINVAL; }
+    if (glyph_data == 0) { return 0 - KASHI_EINVAL; }
+    var charsize = height;   # one byte per row for <= 8 wide
+    var nbytes = glyph_count * charsize;
+    var owned = alloc(nbytes);
+    if (owned == 0) { return 0 - KASHI_EINVAL; }
+    memcpy(owned, glyph_data, nbytes);
+    return _kashi_rt_register(width, height, glyph_count, charsize, owned);
 }
 
 # Load a PSF1/PSF2 font from an in-memory buffer into a runtime font slot.
-# BOOKED — M1. Returns KASHI_ENOSYS until implemented.
+# Validates via kashi_psf_parse, copies the glyph bytes into an owned store,
+# and registers it. Returns font_id (>= 2) or `0 - <KashiResult>` on a
+# malformed / unsupported / truncated font (so a caller can `if (id < 0)`).
 fn kashi_load_psf(buf, len) {
-    # Silence unused-arg lints without doing work.
-    if (len < 0) { return KASHI_EINVAL; }
-    if (buf == 0) { return KASHI_EINVAL; }
-    return KASHI_ENOSYS;
+    var hdr[48];
+    var rc = kashi_psf_parse(buf, len, &hdr);
+    if (rc != KASHI_OK) { return 0 - rc; }
+    var width = load64(&hdr + KASHI_PH_WIDTH);
+    var height = load64(&hdr + KASHI_PH_HEIGHT);
+    var count = load64(&hdr + KASHI_PH_COUNT);
+    var charsize = load64(&hdr + KASHI_PH_CHARSIZE);
+    var dataoff = load64(&hdr + KASHI_PH_DATAOFF);
+    var nbytes = count * charsize;
+    var owned = alloc(nbytes);
+    if (owned == 0) { return 0 - KASHI_EFORMAT; }
+    memcpy(owned, buf + dataoff, nbytes);
+    return _kashi_rt_register(width, height, count, charsize, owned);
 }
 
-# Register a runtime (loaded) font and return its font_id, or a negative
-# error. BOOKED — M1. Until then, only the two built-in fonts exist.
-fn kashi_register_font(width, height, glyph_data, glyph_count) {
-    if (width <= 0) { return KASHI_EINVAL; }
-    if (height <= 0) { return KASHI_EINVAL; }
-    if (glyph_count <= 0) { return KASHI_EINVAL; }
-    if (glyph_data == 0) { return KASHI_EINVAL; }
-    return KASHI_ENOSYS;
+# Load a PSF font from a file path. Reads the file into a capped buffer
+# (256 KiB — ample for any console font; larger is rejected) and hands it to
+# kashi_load_psf. Returns font_id (>= 2) or `0 - <KashiResult>`.
+fn kashi_load_psf_file(path) {
+    var cap = 262144;
+    var buf = alloc(cap);
+    if (buf == 0) { return 0 - KASHI_EINVAL; }
+    var n = file_read_all(path, buf, cap);
+    if (n < 0) { return 0 - KASHI_EINVAL; }      # open/read error
+    if (n == 0) { return 0 - KASHI_EFORMAT; }    # empty / not found
+    return kashi_load_psf(buf, n);
 }
 
-# Number of fonts kashi currently knows. As of 0.1.0 exactly the two
-# built-ins (VGA 8x16, CGA 8x8). Grows once runtime registration lands.
+# --- Unified accessors: dispatch built-in (id 0,1) vs runtime (id >= 2) ---
+
+# Base pointer to a glyph's row bytes for ANY font. For built-ins `ch` is an
+# ASCII codepoint; for runtime fonts `ch` is a glyph index [0,count). Returns
+# 0 (null) for an unknown font or out-of-range glyph.
+fn kashi_font_ptr(font_id, ch) {
+    if (font_id < KASHI_RT_FONT_BASE) {
+        return kashi_glyph_ptr(font_id, ch);
+    }
+    var rec = _kashi_rt_get(font_id);
+    if (rec == 0) { return 0; }
+    if (ch < 0) { return 0; }
+    var count = load64(rec + RT_COUNT);
+    if (ch >= count) { return 0; }
+    var charsize = load64(rec + RT_CHARSIZE);
+    var data = load64(rec + RT_DATA);
+    return data + ch * charsize;
+}
+
+# One row byte of a glyph for ANY font (bit 7 = leftmost pixel). Returns 0
+# for an unknown font, out-of-range glyph, or out-of-range row.
+fn kashi_font_row(font_id, ch, row) {
+    if (font_id < KASHI_RT_FONT_BASE) {
+        return kashi_glyph_row(font_id, ch, row);
+    }
+    var rec = _kashi_rt_get(font_id);
+    if (rec == 0) { return 0; }
+    var height = load64(rec + RT_HEIGHT);
+    if (row < 0) { return 0; }
+    if (row >= height) { return 0; }
+    var base = kashi_font_ptr(font_id, ch);
+    if (base == 0) { return 0; }
+    return load8(base + row);
+}
+
+# Runtime-font metadata (ids >= 2). Unknown id -> 0.
+fn kashi_rt_font_width(font_id) {
+    var rec = _kashi_rt_get(font_id);
+    if (rec == 0) { return 0; }
+    return load64(rec + RT_WIDTH);
+}
+
+fn kashi_rt_font_height(font_id) {
+    var rec = _kashi_rt_get(font_id);
+    if (rec == 0) { return 0; }
+    return load64(rec + RT_HEIGHT);
+}
+
+fn kashi_rt_font_count(font_id) {
+    var rec = _kashi_rt_get(font_id);
+    if (rec == 0) { return 0; }
+    return load64(rec + RT_COUNT);
+}
+
+# Number of fonts kashi currently knows: the two built-ins plus every
+# runtime-registered font.
 fn kashi_font_total() {
-    return 2;
+    if (_rt_registry == 0) { return 2; }
+    return 2 + vec_len(_rt_registry);
 }

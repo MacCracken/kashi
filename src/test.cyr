@@ -168,16 +168,16 @@ fn test_full_coverage() {
     return 0;
 }
 
-# --- library skeleton (src/lib.cyr): booked-not-built surface ---
+# --- library surface (src/lib.cyr): result codes + bad-arg rejection ---
+# Runs before any runtime registration, so kashi_font_total is still 2.
 
 fn test_lib_skeleton() {
-    test_group("library skeleton");
-    assert_eq(kashi_font_total(), 2, "two built-in fonts");
-    assert_eq(kashi_load_psf(&kashi_font16, 100), KASHI_ENOSYS, "psf load enosys");
-    assert_eq(kashi_load_psf(0, 100), KASHI_EINVAL, "psf load null einval");
-    assert_eq(kashi_register_font(8, 16, &kashi_font16, 96), KASHI_ENOSYS, "register enosys");
-    assert_eq(kashi_register_font(0, 16, &kashi_font16, 96), KASHI_EINVAL, "register bad-w einval");
+    test_group("library surface");
+    assert_eq(kashi_font_total(), 2, "two built-in fonts (pre-load)");
     assert_eq(KASHI_OK, 0, "ok is zero");
+    # load/register reject bad args with a NEGATIVE error (0 - code).
+    assert_eq(kashi_load_psf(0, 100), 0 - KASHI_EINVAL, "psf load null -> -einval");
+    assert_eq(kashi_register_font(0, 16, &kashi_font16, 96), 0 - KASHI_EINVAL, "register bad-w -> -einval");
     return 0;
 }
 
@@ -234,6 +234,169 @@ fn test_extreme_inputs() {
     return 0;
 }
 
+# --- M1: PSF parser (src/font_psf.cyr) ---
+
+# Write a 32-bit little-endian value into buf at off (no store32 dependency).
+fn _put32(buf, off, v) {
+    store8(buf + off + 0, v & 0xFF);
+    store8(buf + off + 1, (v >> 8) & 0xFF);
+    store8(buf + off + 2, (v >> 16) & 0xFF);
+    store8(buf + off + 3, (v >> 24) & 0xFF);
+    return 0;
+}
+
+# Lay down a PSF1 header in buf; return total byte length. count is 256, or
+# 512 if mode bit 0 is set. Glyph data is left uninitialized (the parser
+# validates length but never reads glyph bytes).
+fn _mk_psf1(buf, mode, charsize) {
+    store8(buf + 0, 0x36);
+    store8(buf + 1, 0x04);
+    store8(buf + 2, mode);
+    store8(buf + 3, charsize);
+    var count = 256;
+    if ((mode & 1) != 0) { count = 512; }
+    return 4 + count * charsize;
+}
+
+# Lay down a PSF2 header in buf (charsize forced to height = 1 byte/row);
+# return total length. Glyph data left uninitialized.
+fn _mk_psf2(buf, count, height, width, flags) {
+    var i = 0;
+    while (i < 32) { store8(buf + i, 0); i = i + 1; }
+    _put32(buf, 0, 0x864AB572);   # magic
+    _put32(buf, 4, 0);            # version
+    _put32(buf, 8, 32);           # headersize
+    _put32(buf, 12, flags);
+    _put32(buf, 16, count);
+    _put32(buf, 20, height);      # charsize = height
+    _put32(buf, 24, height);
+    _put32(buf, 28, width);
+    return 32 + count * height;
+}
+
+fn test_psf1_parse() {
+    test_group("psf1 parse");
+    var buf = alloc(4 + 256 * 8);
+    var len = _mk_psf1(buf, 0, 8);   # mode 0 (256 glyphs), height 8
+    var hdr[48];
+    assert_eq(kashi_psf_parse(buf, len, &hdr), KASHI_OK, "psf1 ok");
+    assert_eq(load64(&hdr + KASHI_PH_KIND), KASHI_PSF_KIND_PSF1, "psf1 kind");
+    assert_eq(load64(&hdr + KASHI_PH_WIDTH), 8, "psf1 width 8");
+    assert_eq(load64(&hdr + KASHI_PH_HEIGHT), 8, "psf1 height 8");
+    assert_eq(load64(&hdr + KASHI_PH_COUNT), 256, "psf1 count 256");
+    assert_eq(load64(&hdr + KASHI_PH_CHARSIZE), 8, "psf1 charsize 8");
+    assert_eq(load64(&hdr + KASHI_PH_DATAOFF), 4, "psf1 dataoff 4");
+
+    var buf2 = alloc(4 + 512 * 8);
+    var len2 = _mk_psf1(buf2, 1, 8);   # mode bit0 = 512-glyph bank
+    assert_eq(kashi_psf_parse(buf2, len2, &hdr), KASHI_OK, "psf1-512 ok");
+    assert_eq(load64(&hdr + KASHI_PH_COUNT), 512, "psf1-512 count 512");
+    return 0;
+}
+
+fn test_psf2_parse() {
+    test_group("psf2 parse");
+    var buf = alloc(32 + 2 * 16);
+    var len = _mk_psf2(buf, 2, 16, 8, 0);   # 2 glyphs, 8x16
+    var hdr[48];
+    assert_eq(kashi_psf_parse(buf, len, &hdr), KASHI_OK, "psf2 ok");
+    assert_eq(load64(&hdr + KASHI_PH_KIND), KASHI_PSF_KIND_PSF2, "psf2 kind");
+    assert_eq(load64(&hdr + KASHI_PH_WIDTH), 8, "psf2 width 8");
+    assert_eq(load64(&hdr + KASHI_PH_HEIGHT), 16, "psf2 height 16");
+    assert_eq(load64(&hdr + KASHI_PH_COUNT), 2, "psf2 count 2");
+    assert_eq(load64(&hdr + KASHI_PH_CHARSIZE), 16, "psf2 charsize 16");
+    assert_eq(load64(&hdr + KASHI_PH_DATAOFF), 32, "psf2 dataoff 32");
+    return 0;
+}
+
+# Validation-first: every malformed/unsupported/truncated input is rejected
+# with a sentinel, never a wild read.
+fn test_psf_errors() {
+    test_group("psf parse errors");
+    var hdr[48];
+    assert_eq(kashi_psf_parse(0, 10, &hdr), KASHI_EINVAL, "null buf einval");
+    var b = alloc(64);
+    assert_eq(kashi_psf_parse(b, 0 - 1, &hdr), KASHI_EINVAL, "neg len einval");
+    var i = 0;
+    while (i < 64) { store8(b + i, 0); i = i + 1; }
+    assert_eq(kashi_psf_parse(b, 64, &hdr), KASHI_EFORMAT, "bad magic eformat");
+
+    # PSF1 magic but far too short for 256*8 glyph bytes.
+    var t = alloc(64);
+    store8(t + 0, 0x36); store8(t + 1, 0x04); store8(t + 2, 0); store8(t + 3, 8);
+    assert_eq(kashi_psf_parse(t, 64, &hdr), KASHI_EFORMAT, "psf1 truncated eformat");
+
+    # PSF2 width 9 (> 8) — unsupported in M1.
+    var w = alloc(32 + 2 * 16);
+    var wlen = _mk_psf2(w, 2, 16, 9, 0);
+    assert_eq(kashi_psf_parse(w, wlen, &hdr), KASHI_EFORMAT, "psf2 wide eformat");
+
+    # PSF2 version != 0.
+    var v = alloc(32 + 2 * 16);
+    var vlen = _mk_psf2(v, 2, 16, 8, 0);
+    _put32(v, 4, 1);
+    assert_eq(kashi_psf_parse(v, vlen, &hdr), KASHI_EFORMAT, "psf2 bad version eformat");
+
+    # PSF2 charsize disagrees with height.
+    var c = alloc(32 + 2 * 16);
+    var clen = _mk_psf2(c, 2, 16, 8, 0);
+    _put32(c, 20, 99);
+    assert_eq(kashi_psf_parse(c, clen, &hdr), KASHI_EFORMAT, "psf2 bad charsize eformat");
+    return 0;
+}
+
+# --- M1: runtime font registry + unified dispatch (src/lib.cyr) ---
+
+fn test_rt_fonts() {
+    test_group("runtime fonts");
+    var before = kashi_font_total();
+
+    # Register a tiny 8x4 font: glyph 0 rows = 1,2,3,4; glyph 1 = 0x80..0x10.
+    var data = alloc(2 * 4);
+    store8(data + 0, 1); store8(data + 1, 2); store8(data + 2, 3); store8(data + 3, 4);
+    store8(data + 4, 0x80); store8(data + 5, 0x40); store8(data + 6, 0x20); store8(data + 7, 0x10);
+    var id = kashi_register_font(8, 4, data, 2);
+    assert_gte(id, KASHI_RT_FONT_BASE, "register returns id >= 2");
+    assert_eq(kashi_font_total(), before + 1, "total grew by 1");
+    assert_eq(kashi_rt_font_width(id), 8, "rt width 8");
+    assert_eq(kashi_rt_font_height(id), 4, "rt height 4");
+    assert_eq(kashi_rt_font_count(id), 2, "rt count 2");
+
+    # Unified dispatcher reads runtime rows by glyph index.
+    assert_eq(kashi_font_row(id, 0, 0), 1, "rt g0 r0");
+    assert_eq(kashi_font_row(id, 0, 3), 4, "rt g0 r3");
+    assert_eq(kashi_font_row(id, 1, 0), 0x80, "rt g1 r0");
+    # Out-of-range glyph index / row -> 0; ptr -> null.
+    assert_eq(kashi_font_row(id, 2, 0), 0, "rt oob glyph -> 0");
+    assert_eq(kashi_font_row(id, 0, 4), 0, "rt oob row -> 0");
+    assert_eq(kashi_font_ptr(id, 5), 0, "rt oob glyph ptr null");
+    # register() owns a COPY — mutating the source must not change the font.
+    store8(data + 0, 0xFF);
+    assert_eq(kashi_font_row(id, 0, 0), 1, "rt font owns its copy");
+
+    # Unified dispatcher routes built-in ids to the freestanding core.
+    assert_eq(kashi_font_row(KASHI_FONT_VGA_8X16, 0x41, 7),
+    kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), "dispatch builtin == core");
+    assert_eq(kashi_font_row(KASHI_FONT_VGA_8X16, 0x41, 7), 0xFE, "dispatch builtin A row7");
+    assert_eq(kashi_font_ptr(KASHI_FONT_CGA_8X8, 0x41),
+    kashi_glyph_ptr(KASHI_FONT_CGA_8X8, 0x41), "dispatch builtin ptr == core");
+
+    # Load a PSF1 (256 glyphs, height 2); plant glyph 0x41 rows = 0xAB,0xCD.
+    var pbuf = alloc(4 + 256 * 2);
+    var plen = _mk_psf1(pbuf, 0, 2);
+    store8(pbuf + 4 + 0x41 * 2 + 0, 0xAB);
+    store8(pbuf + 4 + 0x41 * 2 + 1, 0xCD);
+    var pid = kashi_load_psf(pbuf, plen);
+    assert_gte(pid, KASHI_RT_FONT_BASE, "psf load returns id >= 2");
+    assert_eq(kashi_rt_font_count(pid), 256, "psf font count 256");
+    assert_eq(kashi_font_row(pid, 0x41, 0), 0xAB, "psf glyph 0x41 r0");
+    assert_eq(kashi_font_row(pid, 0x41, 1), 0xCD, "psf glyph 0x41 r1");
+    # Malformed loads return a negative error.
+    assert_eq(kashi_load_psf(0, 10), 0 - KASHI_EINVAL, "psf load null -> -einval");
+    assert_lt(kashi_load_psf(pbuf, 3), 0, "psf load truncated -> negative");
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -251,6 +414,10 @@ fn main() {
     test_font_ready();
     test_fset_guard();
     test_extreme_inputs();
+    test_psf1_parse();
+    test_psf2_parse();
+    test_psf_errors();
+    test_rt_fonts();
 
     return assert_summary();
 }

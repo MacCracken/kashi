@@ -1,8 +1,9 @@
 # kashi — Current State
 
 > **Last refresh**: 2026-05-27 (0.1.0 baseline + post-0.1.0 P(-1) hardening
-> pass — see `docs/audit/2026-05-27-audit.md`) | **Refresh cadence**: bumped
-> every release (ideally by the release post-hook).
+> + **M1 PSF import**, unreleased — see `docs/adr/0002` and
+> `docs/audit/2026-05-27-audit.md`) | **Refresh cadence**: bumped every
+> release (ideally by the release post-hook).
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
@@ -16,7 +17,7 @@ console. No git tag yet (user handles all git operations).
 
 - **Cyrius pin**: `6.0.3` (in `cyrius.cyml [package].cyrius`).
 
-## What's implemented (0.1.0)
+## What's implemented
 
 - **Freestanding font-data core** — `src/font_data.cyr` (~410 lines). NO
   stdlib (`cyrius vet` → "no dependencies"). Two built-in fonts:
@@ -26,15 +27,23 @@ console. No git tag yet (user handles all git operations).
     `kashi_glyph_ptr`, `kashi_font_{width,height,first,count}`,
     `kashi_glyph_encoded`. All bounds-safe for the full `i64` input domain
     (audited 2026-05-27).
-- **Library face** — `src/lib.cyr` (~83 lines). Re-exports the core; books
-  `kashi_load_psf`, `kashi_register_font`, `kashi_font_total` + result codes
-  (return `KASHI_ENOSYS` until implemented).
-- **Demo** — `src/main.cyr` (~54 lines), renders 'A' in both fonts.
+- **PSF parser** — `src/font_psf.cyr` (self-contained, heapless).
+  `kashi_psf_parse` validates PSF1/PSF2 headers (validation-first, fuzzed).
+- **Library face** — `src/lib.cyr`. Runtime font registry + the M1 import
+  path (see `docs/adr/0002`):
+  - `kashi_load_psf` / `kashi_load_psf_file` / `kashi_register_font` →
+    `font_id ≥ 2` or negative `0 - <KashiResult>`.
+  - Unified `kashi_font_row` / `kashi_font_ptr` (dispatch built-in vs
+    runtime), `kashi_rt_font_{width,height,count}`, `kashi_font_total`.
+  - Scope: width ≤ 8; glyphs addressed by index; Unicode table validated,
+    not yet mapped.
+- **Demo** — `src/main.cyr`, renders 'A' in both built-in fonts.
 
 ## What's booked (not built — future)
 
-- PSF1/PSF2 import (M1, 0.2.0) — needs stdlib `io`/`fs` + heap.
-- Runtime font registry + additional fonts (M2, 0.3.0).
+- Wide glyphs (> 8 px / multi-byte rows) + Unicode→glyph mapping for runtime
+  fonts (deferred from M1 — see `docs/adr/0002`).
+- Runtime font registry niceties + additional built-in fonts (M2, 0.3.0).
 - agnos consumption contract hardening + agnos-side integration (M3 / agnos
   **1.38.0**).
 
@@ -48,17 +57,19 @@ See [`roadmap.md`](roadmap.md).
 
 ## Tests
 
-- `src/test.cyr` — 86 assertions (metadata, encoded gate, **exact-byte
+- `src/test.cyr` — 128 assertions (metadata, encoded gate, **exact-byte
   fidelity vs agnos source**, accessor bounds, full 96-glyph coverage,
-  library skeleton, + post-0.1.0 audit: ready flag, `fset` guard,
-  full-`i64`-range input safety). `cyrius test` → **0 failed**.
-- `tests/kashi.tcyr` — 10 assertions (byte-bounded rows, space-vs-visible
-  ink, pointer monotonicity, reinit idempotency). **0 failed**.
-- **96 assertions total, 0 failed.**
-- `tests/kashi.fcyr` — fuzz harness over the accessor bounds contract
-  (byte-range inputs; the `i64` extremes are covered by `src/test.cyr`).
-- `tests/kashi.bcyr` — `glyph_row` ~17 ns, `glyph_ptr` ~7 ns,
-  `scan_vga_8x16` ~27 µs (x86_64). CSV trail now in
+  library surface, audit: ready flag / `fset` guard / full-`i64`-range
+  safety, **PSF1+PSF2 parse (valid + malformed), runtime register/load,
+  unified dispatch**). `cyrius test` → **0 failed**.
+- `tests/kashi.tcyr` — 18 assertions (byte-bounded rows, space-vs-visible
+  ink, pointer monotonicity, reinit idempotency, **PSF file round-trip**).
+- **146 assertions total, 0 failed.**
+- `tests/kashi.fcyr` — fuzz over the accessor bounds contract **and the PSF
+  parser** (4000 random/truncated/mutated buffers; no crash, bounds-safe).
+- `tests/kashi.bcyr` — `glyph_row` ~18 ns, `glyph_ptr` ~7 ns,
+  `scan_vga_8x16` ~27 µs; unified dispatch `font_row_builtin` ~20 ns,
+  `font_row_runtime` ~28 ns (x86_64). CSV trail in
   [`benchmarks.md`](../benchmarks.md) / `docs/benchmarks/history.csv`.
 
 ## Cleanliness (P(-1) gates)
@@ -67,7 +78,8 @@ See [`roadmap.md`](roadmap.md).
 - `cyrius fmt <file> --check` — clean on all src + test files.
 - `cyrius lint` — 0 warnings on all src files.
 - `cyaudit vet src/font_data.cyr` — "no dependencies" (freestanding boundary
-  proven); `cyaudit vet src/lib.cyr` — 2 deps (core + self), 0 untrusted.
+  proven); `cyaudit vet src/font_psf.cyr` — "no dependencies" (pure parser);
+  `cyaudit vet src/lib.cyr` — 3 deps (lib + core + psf), 0 untrusted.
   **NB**: invoke `cyaudit` directly — the released 6.0.3 `cyrius vet`
   dispatches to a `cybs` that emits an ELF instead of auditing (a cyrius
   packaging bug; CI works around it the same way).
@@ -87,9 +99,12 @@ commit (`75914e9^`, before "self rolled glyph to font").
 ## Dependencies
 
 Direct (declared in `cyrius.cyml [deps].stdlib`):
-`string`, `fmt`, `io`, `vec`, `alloc`, `syscalls`, `assert`, `bench` — for
-the **library face + test/bench harnesses only**. The freestanding core
-needs none.
+`string`, `fmt`, `io`, `vec`, `alloc`, `syscalls`, `assert`, `bench`. The
+**library face** now actively uses `alloc`/`vec` (runtime registry +
+glyph-store copies), `string` (`memcpy`), and `io` (`file_read_all` for
+`kashi_load_psf_file`) — no manifest change was needed for M1. The
+freestanding core (`src/font_data.cyr`) and the PSF parser
+(`src/font_psf.cyr`) need none.
 
 ## Consumers
 

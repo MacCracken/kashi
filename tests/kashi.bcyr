@@ -66,6 +66,31 @@ fn main(): i64 {
     bench_batch_stop(b3, 10000);
     bench_report(b3);
 
+    # Unified-dispatcher overhead vs the direct core accessor (b1): routing a
+    # built-in id (0,1) through kashi_font_row adds one compare + branch.
+    var b4 = bench_new("font_row_builtin");
+    bench_batch_start(b4);
+    i = 0;
+    while (i < 1000000) {
+        sink = sink + kashi_font_row(KASHI_FONT_VGA_8X16, 0x41, 5);
+        i = i + 1;
+    }
+    bench_batch_stop(b4, 1000000);
+    bench_report(b4);
+
+    # Runtime-font path: register a small font, then time a glyph-index row
+    # fetch (registry lookup + bounds + load8).
+    var rt = kashi_register_font(8, 8, &kashi_font8, 8);
+    var b5 = bench_new("font_row_runtime");
+    bench_batch_start(b5);
+    i = 0;
+    while (i < 1000000) {
+        sink = sink + kashi_font_row(rt, 0, 5);
+        i = i + 1;
+    }
+    bench_batch_stop(b5, 1000000);
+    bench_report(b5);
+
     return 0;
 }
 
