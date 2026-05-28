@@ -1,6 +1,6 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-05-27
+> **Last Updated**: 2026-05-28
 >
 > Milestone plan through v1.0. Live status lives in [`state.md`](state.md);
 > this file is the sequencing — what ships, in what order, against what
@@ -18,8 +18,11 @@
 - [ ] Test coverage adequate for the surface area; accessor bounds fuzzed.
 - [ ] Benchmarks captured in `docs/benchmarks.md` with version-over-version
       comparison.
-- [ ] **Downstream consumer green** — agnos's framebuffer console rendering
-      the freestanding core (booked at agnos **1.38.0**).
+- [x] **Downstream consumer green** — agnos's framebuffer console
+      rendering the freestanding core. *(M3, 2026-05-28 — agnos 1.38.0
+      consumed `src/font_data.cyr` end-to-end via the booked
+      `[deps.kashi] modules=["src/font_data.cyr"]` contract; the
+      freestanding boundary held without kashi-side fixes.)*
 - [ ] CHANGELOG complete from 0.1.0 onward.
 - [ ] Security audit pass (`docs/audit/YYYY-MM-DD-audit.md`).
 
@@ -89,29 +92,30 @@
   cleanup). See `docs/audit/2026-05-28-audit.md`.
 - **0.6.1, 0.6.2, …**: reserved for issue-resolution patches surfaced
   during the agnos integration arc (M3) or by downstream consumers.
+  No 0.6.x patch was actually needed — agnos integrated cleanly.
 
-### M3 — Consumption contract hardening + agnos integration
+### M3 — Consumption contract hardening + agnos integration — ✅ done 2026-05-28
 
-- Lock the `kashi`↔agnos contract: confirm `[deps.kashi] modules=
-  ["src/font_data.cyr"]` drops into agnos's `fb_console.cyr` cleanly and the
-  rendered output is identical (golden-image / per-glyph diff in CI).
-- agnos consumes the freestanding core at its **1.38.0** (booked; agnos-side
-  work, not kashi's).
-- Glyph-set queries useful to consumers (`iam`, BBS/MUD art): codepoint
-  coverage, fallback policy for unencoded chars.
+- agnos **1.38.0** consumed `src/font_data.cyr` end-to-end via the
+  booked `[deps.kashi] modules=["src/font_data.cyr"]` contract.
+- The freestanding boundary (`cyaudit vet` → "no dependencies") held
+  through the integration; no kashi-side fixes were required.
+- Glyph-set queries (codepoint coverage, fallback policy) — deferred;
+  the existing accessors (`kashi_glyph_encoded`, `kashi_font_total`)
+  cover the agnos console's needs. Revisit if a future consumer asks.
 
 ### 0.7.x — Additional bitmap import formats (post-agnos-integration)
 
-Reserved for after the initial agnos integration lands. Each format is a
-self-contained library-face addition (the freestanding core stays bitmap-
-data only); landing them post-integration de-risks contract churn during
-the agnos hookup.
+Booked for after the agnos integration. Each format is a self-contained
+library-face addition (the freestanding core stays bitmap-data only);
+landing them post-integration de-risks contract churn during the agnos
+hookup.
 
-- **0.7.0 — BDF import** (Bitmap Distribution Format; X11 source format).
-  Text-based: per-glyph `STARTCHAR`/`ENCODING`/`BBX`/`BITMAP` records.
-  Variable-width per glyph (`DWIDTH`); needs a small text-line parser in
-  addition to the existing binary parser. New file `src/font_bdf.cyr` (or
-  fold into `src/font_psf.cyr` as a sibling decoder).
+- ✅ **0.7.0 — BDF import**, 2026-05-28 (ADR 0008). Heapless text
+  parser in `src/font_bdf.cyr`; library face gains `kashi_load_bdf` /
+  `kashi_load_bdf_file`. Strict-BBX policy (every glyph's BBX matches
+  `FONTBOUNDINGBOX`), `ENCODING -1` glyphs dropped, 4 MiB file cap.
+  Fuzzed (2000 rounds).
 - **0.7.1 — PCF import** (Portable Compiled Format; X11's compiled
   binary). Multi-table (`PCF_PROPERTIES`, `PCF_METRICS`, `PCF_BITMAPS`,
   `PCF_BDF_ENCODINGS`, …) with per-table endianness + padding format

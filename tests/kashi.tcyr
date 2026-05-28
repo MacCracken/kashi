@@ -169,6 +169,63 @@ fn test_psf_unicode_file() {
     return 0;
 }
 
+# BDF file round-trip: build a small BDF source, write it to a file, load it
+# back via kashi_load_bdf_file, and read glyphs through the unified
+# codepoint-addressed dispatcher. Exercises kashi_bdf_parse_header,
+# kashi_bdf_next_glyph, the io.file_read_all path, and the cp-map build.
+fn test_bdf_file_roundtrip() {
+    test_group("bdf file round-trip");
+    var buf = alloc(2048);
+    var p = 0;
+    p = _ti_str(buf, p, "STARTFONT 2.1\n");
+    p = _ti_str(buf, p, "FONTBOUNDINGBOX 8 8 0 0\n");
+    p = _ti_str(buf, p, "CHARS 2\n");
+    p = _ti_str(buf, p, "STARTCHAR Q\n");
+    p = _ti_str(buf, p, "ENCODING 81\n");
+    p = _ti_str(buf, p, "BBX 8 8 0 0\n");
+    p = _ti_str(buf, p, "BITMAP\nAA\nBB\nCC\nDD\nEE\nFF\n11\n22\nENDCHAR\n");
+    p = _ti_str(buf, p, "STARTCHAR R\n");
+    p = _ti_str(buf, p, "ENCODING 82\n");
+    p = _ti_str(buf, p, "BBX 8 8 0 0\n");
+    p = _ti_str(buf, p, "BITMAP\n01\n02\n03\n04\n05\n06\n07\n08\nENDCHAR\n");
+    p = _ti_str(buf, p, "ENDFONT\n");
+
+    var path = "/tmp/kashi_test_bdf.bdf";
+    file_write_all(path, buf, p);
+    var id = kashi_load_bdf_file(path);
+    assert_gte(id, KASHI_RT_FONT_BASE, "bdf file load id >= rt base");
+    assert_eq(kashi_rt_font_width(id), 8, "bdf file width 8");
+    assert_eq(kashi_rt_font_height(id), 8, "bdf file height 8");
+    assert_eq(kashi_rt_font_count(id), 2, "bdf file count 2");
+    # 'Q' (0x51) rows.
+    assert_eq(kashi_font_row(id, 0x51, 0), 0xAA, "bdf 'Q' r0");
+    assert_eq(kashi_font_row(id, 0x51, 5), 0xFF, "bdf 'Q' r5");
+    assert_eq(kashi_font_row(id, 0x51, 7), 0x22, "bdf 'Q' r7");
+    # 'R' (0x52) rows.
+    assert_eq(kashi_font_row(id, 0x52, 0), 0x01, "bdf 'R' r0");
+    assert_eq(kashi_font_row(id, 0x52, 7), 0x08, "bdf 'R' r7");
+    # Missing file -> negative.
+    assert_lt(kashi_load_bdf_file("/tmp/kashi_no_such_bdf_zzq.bdf"), 0, "missing bdf negative");
+
+    syscall(SYS_UNLINK, path);
+    return 0;
+}
+
+# Tiny inline string-copy helper (mirrors src/test.cyr's _bdf_str).
+fn _ti_str(buf, p, s) {
+    var i = 0;
+    var done = 0;
+    while (done == 0) {
+        var c = load8(s + i);
+        if (c == 0) { done = 1; }
+        if (done == 0) {
+            store8(buf + p + i, c);
+            i = i + 1;
+        }
+    }
+    return p + i;
+}
+
 fn main() {
     alloc_init();
     kashi_font_init();
@@ -179,6 +236,7 @@ fn main() {
     test_reinit_idempotent();
     test_psf_file_roundtrip();
     test_psf_unicode_file();
+    test_bdf_file_roundtrip();
 
     return assert_summary();
 }

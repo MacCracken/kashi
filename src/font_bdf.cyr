@@ -1,0 +1,776 @@
+# === kashi — BDF (Bitmap Distribution Format) parser ===
+#
+# Self-contained, heapless BDF parser. Same posture as src/font_psf.cyr:
+# load8 + arithmetic only — no stdlib, no heap, no allocations. So
+# `cyaudit vet src/font_bdf.cyr` must report "no dependencies", and the
+# parser fuzzes in isolation (tests/kashi.fcyr).
+#
+# BDF is X11's text source format for bitmap fonts (Terminus, Spleen,
+# Tamzen, Cozette, Unifont — all ship as BDF first). See ADR 0008 for
+# the 0.7.0 design rationale (strict BBX, ENCODING -1 skipped, 4 MiB
+# file cap, properties block walked past without parse).
+#
+# This file is part of the stdlib-using library face. It must NEVER be
+# `include`d by the freestanding core (src/font_data.cyr); the dependency
+# only ever flows lib.cyr -> font_bdf.cyr, never the reverse.
+#
+# --- API (consumed by src/lib.cyr) ---
+#
+#   kashi_bdf_parse_header(buf, len, hdr, ctx)
+#     Validates STARTFONT / FONTBOUNDINGBOX / CHARS, skips
+#     STARTPROPERTIES..ENDPROPERTIES blocks, and locates the first
+#     STARTCHAR. Fills:
+#       hdr (56 bytes):  KIND=3 (BDF), WIDTH, HEIGHT, COUNT, CHARSIZE,
+#                        DATAOFF (= offset of first STARTCHAR), UNIOFF=0
+#       ctx (32 bytes):  FONTBOUNDINGBOX width/height/xoff/yoff (for
+#                        per-glyph BBX validation by next_glyph)
+#     Returns KASHI_BDF_OK / KASHI_BDF_EINVAL / KASHI_BDF_EFORMAT.
+#
+#   kashi_bdf_next_glyph(buf, pos, end, ctx, dest, dest_size, gout)
+#     Cursor: from byte offset `pos`, scans to the next STARTCHAR, reads
+#     ENCODING + BBX (validated against `ctx`) + BITMAP, decodes the hex
+#     rows directly into `dest` (must be >= ceil(width/8)*height bytes),
+#     advances past ENDCHAR. Writes the result kind, codepoint, and
+#     next-position into the 24-byte `gout`:
+#       BG_KIND=0 (OK)   — bitmap written to dest; CP holds the codepoint
+#       BG_KIND=1 (SKIP) — ENCODING was -1; dest is undefined, advance NEXT
+#       BG_KIND=2 (END)  — reached ENDFONT or buffer end; NEXT holds pos
+#     Returns KASHI_BDF_OK on a clean parse (incl. SKIP/END) or
+#     KASHI_BDF_EINVAL / KASHI_BDF_EFORMAT on bad args / malformed BDF.
+
+# --- BDF-specific result codes ---
+#
+# font_psf.cyr defines KashiResult (KASHI_OK/EINVAL/EFORMAT) — but we
+# don't include it here (would break "no dependencies" for vet). So the
+# BDF parser uses its own non-clashing enum; src/lib.cyr translates
+# KASHI_BDF_E* back to the public KASHI_E* values on the load path.
+enum KashiBdfRc {
+    KASHI_BDF_OK = 0;
+    KASHI_BDF_EINVAL = 1;     # null/negative arg
+    KASHI_BDF_EFORMAT = 2;    # malformed / unsupported BDF
+}
+
+# Constants. KIND=3 extends the PSF parsed-header kind namespace (PSF1=1,
+# PSF2=2 in font_psf.cyr). MAX_* mirror the PSF parser's caps (ADR 0005).
+# FILE_CAP is the in-memory bound for kashi_load_bdf_file (ADR 0008).
+enum KashiBdfConst {
+    KASHI_BDF_KIND = 3;
+    KASHI_BDF_MAX_WIDTH = 32;
+    KASHI_BDF_MAX_HEIGHT = 32;
+    KASHI_BDF_MAX_COUNT = 65536;
+    KASHI_BDF_FILE_CAP = 4194304;     # 4 MiB
+    KASHI_BDF_INT_MAX_DIGITS = 10;    # overflow guard on _kashi_bdf_int
+}
+
+# Parsed-header out struct (56 bytes; same shape PSF uses). Defined here
+# so font_bdf.cyr stays self-contained — values match font_psf.cyr's
+# KashiPsfHdr by design (any future divergence would be a bug).
+enum KashiBdfHdr {
+    BDF_PH_KIND = 0;
+    BDF_PH_WIDTH = 8;
+    BDF_PH_HEIGHT = 16;
+    BDF_PH_COUNT = 24;
+    BDF_PH_CHARSIZE = 32;
+    BDF_PH_DATAOFF = 40;
+    BDF_PH_UNIOFF = 48;
+}
+
+# BDF context (32 bytes). Holds FONTBOUNDINGBOX so next_glyph can validate
+# each BBX strictly against the font-wide cell. xoff/yoff are i64 (signed).
+enum KashiBdfCtx {
+    BDF_CTX_W = 0;
+    BDF_CTX_H = 8;
+    BDF_CTX_X = 16;
+    BDF_CTX_Y = 24;
+}
+
+# Glyph out struct from next_glyph (24 bytes).
+enum KashiBdfGOut {
+    BG_KIND = 0;      # 0=OK, 1=SKIP, 2=END
+    BG_CP = 8;        # codepoint (valid only when KIND=0)
+    BG_NEXT = 16;     # byte offset to resume scanning
+    BG_KIND_OK = 0;
+    BG_KIND_SKIP = 1;
+    BG_KIND_END = 2;
+}
+
+# --- Low-level text scanning primitives ---
+
+# Skip ASCII spaces and tabs. Returns the offset of the first non-WS byte
+# at or after `pos` (or `end`). Pure: only load8 + arithmetic.
+fn _kashi_bdf_ws(buf, pos, end) {
+    var done = 0;
+    while (done == 0) {
+        if (pos >= end) { done = 1; }
+        if (done == 0) {
+            var c = load8(buf + pos);
+            if (c == 0x20) { pos = pos + 1; }
+            if (c == 0x09) { pos = pos + 1; }
+            if (c != 0x20) {
+                if (c != 0x09) { done = 1; }
+            }
+        }
+    }
+    return pos;
+}
+
+# Offset of the next newline (\n) at or after `pos`. Returns `end` if no
+# newline before the end of the buffer.
+fn _kashi_bdf_eol(buf, pos, end) {
+    var done = 0;
+    while (done == 0) {
+        if (pos >= end) { done = 1; }
+        if (done == 0) {
+            if (load8(buf + pos) == 0x0A) { done = 1; }
+            if (done == 0) { pos = pos + 1; }
+        }
+    }
+    return pos;
+}
+
+# Advance past the next newline. Returns the offset of the byte immediately
+# after the \n (or `end` if no newline before end).
+fn _kashi_bdf_next_line(buf, pos, end) {
+    var e = _kashi_bdf_eol(buf, pos, end);
+    if (e < end) { return e + 1; }
+    return end;
+}
+
+# Word-boundary check: after a keyword match at `pos+klen`, the next byte
+# (if any) must be whitespace or end-of-line. Avoids matching prefixes
+# (e.g., STARTFONT vs. STARTFONTGIBBERISH).
+fn _kashi_bdf_after_kw(buf, pos, end) {
+    if (pos >= end) { return 1; }
+    var c = load8(buf + pos);
+    if (c == 0x20) { return 1; }
+    if (c == 0x09) { return 1; }
+    if (c == 0x0A) { return 1; }
+    if (c == 0x0D) { return 1; }
+    return 0;
+}
+
+# Parse a signed decimal integer at `pos`. Writes the value to `out + 0`
+# (i64) and the post-integer position to `out + 8`. Returns 1 on success,
+# 0 on no-digits-found. Caps consumed digits at KASHI_BDF_INT_MAX_DIGITS
+# to keep adversarial inputs from overflowing i64 in the accumulator.
+fn _kashi_bdf_int(buf, pos, end, out) {
+    store64(out + 0, 0);
+    store64(out + 8, pos);
+    if (pos >= end) { return 0; }
+    var sign = 1;
+    var c0 = load8(buf + pos);
+    if (c0 == 0x2D) { sign = 0 - 1; pos = pos + 1; }
+    if (c0 == 0x2B) { pos = pos + 1; }
+    var start = pos;
+    var n = 0;
+    var digits = 0;
+    var done = 0;
+    while (done == 0) {
+        if (pos >= end) { done = 1; }
+        if (done == 0) {
+            if (digits >= KASHI_BDF_INT_MAX_DIGITS) { done = 1; }
+            if (done == 0) {
+                var d = load8(buf + pos);
+                if (d < 0x30) { done = 1; }
+                if (d > 0x39) { done = 1; }
+                if (done == 0) {
+                    n = n * 10 + (d - 0x30);
+                    pos = pos + 1;
+                    digits = digits + 1;
+                }
+            }
+        }
+    }
+    if (pos == start) { return 0; }
+    store64(out + 0, n * sign);
+    store64(out + 8, pos);
+    return 1;
+}
+
+# Parse one hex nybble. Returns 0..15 on success, 0 - 1 on non-hex.
+fn _kashi_bdf_nyb(c) {
+    if (c >= 0x30) {
+        if (c <= 0x39) { return c - 0x30; }
+    }
+    if (c >= 0x41) {
+        if (c <= 0x46) { return c - 0x41 + 10; }
+    }
+    if (c >= 0x61) {
+        if (c <= 0x66) { return c - 0x61 + 10; }
+    }
+    return 0 - 1;
+}
+
+# Parse one hex byte (two hex characters) at `pos`. Returns 0..255 on
+# success, 0 - 1 on non-hex / truncated.
+fn _kashi_bdf_hex(buf, pos, end) {
+    if (pos + 2 > end) { return 0 - 1; }
+    var h = _kashi_bdf_nyb(load8(buf + pos));
+    var l = _kashi_bdf_nyb(load8(buf + pos + 1));
+    if (h < 0) { return 0 - 1; }
+    if (l < 0) { return 0 - 1; }
+    return (h << 4) | l;
+}
+
+# --- Keyword recognizers (line-start, word-bounded) ---
+#
+# Each returns 1 if buf[pos..] starts with the named keyword followed by a
+# word boundary (whitespace or end-of-line/buffer), else 0. Verbose
+# per-keyword expansion keeps the parser pure (no module-scope keyword
+# tables, no init function, no string-literal dependency). Order is the
+# order of first appearance in a well-formed BDF.
+
+fn _kashi_bdf_is_startfont(buf, pos, end) {
+    if (pos + 9 > end) { return 0; }
+    if (load8(buf + pos + 0) != 0x53) { return 0; }   # S
+    if (load8(buf + pos + 1) != 0x54) { return 0; }   # T
+    if (load8(buf + pos + 2) != 0x41) { return 0; }   # A
+    if (load8(buf + pos + 3) != 0x52) { return 0; }   # R
+    if (load8(buf + pos + 4) != 0x54) { return 0; }   # T
+    if (load8(buf + pos + 5) != 0x46) { return 0; }   # F
+    if (load8(buf + pos + 6) != 0x4F) { return 0; }   # O
+    if (load8(buf + pos + 7) != 0x4E) { return 0; }   # N
+    if (load8(buf + pos + 8) != 0x54) { return 0; }   # T
+    return _kashi_bdf_after_kw(buf, pos + 9, end);
+}
+
+fn _kashi_bdf_is_fontboundingbox(buf, pos, end) {
+    if (pos + 15 > end) { return 0; }
+    if (load8(buf + pos + 0) != 0x46) { return 0; }   # F
+    if (load8(buf + pos + 1) != 0x4F) { return 0; }   # O
+    if (load8(buf + pos + 2) != 0x4E) { return 0; }   # N
+    if (load8(buf + pos + 3) != 0x54) { return 0; }   # T
+    if (load8(buf + pos + 4) != 0x42) { return 0; }   # B
+    if (load8(buf + pos + 5) != 0x4F) { return 0; }   # O
+    if (load8(buf + pos + 6) != 0x55) { return 0; }   # U
+    if (load8(buf + pos + 7) != 0x4E) { return 0; }   # N
+    if (load8(buf + pos + 8) != 0x44) { return 0; }   # D
+    if (load8(buf + pos + 9) != 0x49) { return 0; }   # I
+    if (load8(buf + pos + 10) != 0x4E) { return 0; }  # N
+    if (load8(buf + pos + 11) != 0x47) { return 0; }  # G
+    if (load8(buf + pos + 12) != 0x42) { return 0; }  # B
+    if (load8(buf + pos + 13) != 0x4F) { return 0; }  # O
+    if (load8(buf + pos + 14) != 0x58) { return 0; }  # X
+    return _kashi_bdf_after_kw(buf, pos + 15, end);
+}
+
+fn _kashi_bdf_is_chars(buf, pos, end) {
+    if (pos + 5 > end) { return 0; }
+    if (load8(buf + pos + 0) != 0x43) { return 0; }   # C
+    if (load8(buf + pos + 1) != 0x48) { return 0; }   # H
+    if (load8(buf + pos + 2) != 0x41) { return 0; }   # A
+    if (load8(buf + pos + 3) != 0x52) { return 0; }   # R
+    if (load8(buf + pos + 4) != 0x53) { return 0; }   # S
+    return _kashi_bdf_after_kw(buf, pos + 5, end);
+}
+
+fn _kashi_bdf_is_startchar(buf, pos, end) {
+    if (pos + 9 > end) { return 0; }
+    if (load8(buf + pos + 0) != 0x53) { return 0; }   # S
+    if (load8(buf + pos + 1) != 0x54) { return 0; }   # T
+    if (load8(buf + pos + 2) != 0x41) { return 0; }   # A
+    if (load8(buf + pos + 3) != 0x52) { return 0; }   # R
+    if (load8(buf + pos + 4) != 0x54) { return 0; }   # T
+    if (load8(buf + pos + 5) != 0x43) { return 0; }   # C
+    if (load8(buf + pos + 6) != 0x48) { return 0; }   # H
+    if (load8(buf + pos + 7) != 0x41) { return 0; }   # A
+    if (load8(buf + pos + 8) != 0x52) { return 0; }   # R
+    return _kashi_bdf_after_kw(buf, pos + 9, end);
+}
+
+fn _kashi_bdf_is_encoding(buf, pos, end) {
+    if (pos + 8 > end) { return 0; }
+    if (load8(buf + pos + 0) != 0x45) { return 0; }   # E
+    if (load8(buf + pos + 1) != 0x4E) { return 0; }   # N
+    if (load8(buf + pos + 2) != 0x43) { return 0; }   # C
+    if (load8(buf + pos + 3) != 0x4F) { return 0; }   # O
+    if (load8(buf + pos + 4) != 0x44) { return 0; }   # D
+    if (load8(buf + pos + 5) != 0x49) { return 0; }   # I
+    if (load8(buf + pos + 6) != 0x4E) { return 0; }   # N
+    if (load8(buf + pos + 7) != 0x47) { return 0; }   # G
+    return _kashi_bdf_after_kw(buf, pos + 8, end);
+}
+
+fn _kashi_bdf_is_bbx(buf, pos, end) {
+    if (pos + 3 > end) { return 0; }
+    if (load8(buf + pos + 0) != 0x42) { return 0; }   # B
+    if (load8(buf + pos + 1) != 0x42) { return 0; }   # B
+    if (load8(buf + pos + 2) != 0x58) { return 0; }   # X
+    return _kashi_bdf_after_kw(buf, pos + 3, end);
+}
+
+fn _kashi_bdf_is_bitmap(buf, pos, end) {
+    if (pos + 6 > end) { return 0; }
+    if (load8(buf + pos + 0) != 0x42) { return 0; }   # B
+    if (load8(buf + pos + 1) != 0x49) { return 0; }   # I
+    if (load8(buf + pos + 2) != 0x54) { return 0; }   # T
+    if (load8(buf + pos + 3) != 0x4D) { return 0; }   # M
+    if (load8(buf + pos + 4) != 0x41) { return 0; }   # A
+    if (load8(buf + pos + 5) != 0x50) { return 0; }   # P
+    return _kashi_bdf_after_kw(buf, pos + 6, end);
+}
+
+fn _kashi_bdf_is_endchar(buf, pos, end) {
+    if (pos + 7 > end) { return 0; }
+    if (load8(buf + pos + 0) != 0x45) { return 0; }   # E
+    if (load8(buf + pos + 1) != 0x4E) { return 0; }   # N
+    if (load8(buf + pos + 2) != 0x44) { return 0; }   # D
+    if (load8(buf + pos + 3) != 0x43) { return 0; }   # C
+    if (load8(buf + pos + 4) != 0x48) { return 0; }   # H
+    if (load8(buf + pos + 5) != 0x41) { return 0; }   # A
+    if (load8(buf + pos + 6) != 0x52) { return 0; }   # R
+    return _kashi_bdf_after_kw(buf, pos + 7, end);
+}
+
+fn _kashi_bdf_is_endfont(buf, pos, end) {
+    if (pos + 7 > end) { return 0; }
+    if (load8(buf + pos + 0) != 0x45) { return 0; }   # E
+    if (load8(buf + pos + 1) != 0x4E) { return 0; }   # N
+    if (load8(buf + pos + 2) != 0x44) { return 0; }   # D
+    if (load8(buf + pos + 3) != 0x46) { return 0; }   # F
+    if (load8(buf + pos + 4) != 0x4F) { return 0; }   # O
+    if (load8(buf + pos + 5) != 0x4E) { return 0; }   # N
+    if (load8(buf + pos + 6) != 0x54) { return 0; }   # T
+    return _kashi_bdf_after_kw(buf, pos + 7, end);
+}
+
+fn _kashi_bdf_is_startprops(buf, pos, end) {
+    if (pos + 15 > end) { return 0; }
+    if (load8(buf + pos + 0) != 0x53) { return 0; }   # S
+    if (load8(buf + pos + 1) != 0x54) { return 0; }   # T
+    if (load8(buf + pos + 2) != 0x41) { return 0; }   # A
+    if (load8(buf + pos + 3) != 0x52) { return 0; }   # R
+    if (load8(buf + pos + 4) != 0x54) { return 0; }   # T
+    if (load8(buf + pos + 5) != 0x50) { return 0; }   # P
+    if (load8(buf + pos + 6) != 0x52) { return 0; }   # R
+    if (load8(buf + pos + 7) != 0x4F) { return 0; }   # O
+    if (load8(buf + pos + 8) != 0x50) { return 0; }   # P
+    if (load8(buf + pos + 9) != 0x45) { return 0; }   # E
+    if (load8(buf + pos + 10) != 0x52) { return 0; }  # R
+    if (load8(buf + pos + 11) != 0x54) { return 0; }  # T
+    if (load8(buf + pos + 12) != 0x49) { return 0; }  # I
+    if (load8(buf + pos + 13) != 0x45) { return 0; }  # E
+    if (load8(buf + pos + 14) != 0x53) { return 0; }  # S
+    return _kashi_bdf_after_kw(buf, pos + 15, end);
+}
+
+fn _kashi_bdf_is_endprops(buf, pos, end) {
+    if (pos + 13 > end) { return 0; }
+    if (load8(buf + pos + 0) != 0x45) { return 0; }   # E
+    if (load8(buf + pos + 1) != 0x4E) { return 0; }   # N
+    if (load8(buf + pos + 2) != 0x44) { return 0; }   # D
+    if (load8(buf + pos + 3) != 0x50) { return 0; }   # P
+    if (load8(buf + pos + 4) != 0x52) { return 0; }   # R
+    if (load8(buf + pos + 5) != 0x4F) { return 0; }   # O
+    if (load8(buf + pos + 6) != 0x50) { return 0; }   # P
+    if (load8(buf + pos + 7) != 0x45) { return 0; }   # E
+    if (load8(buf + pos + 8) != 0x52) { return 0; }   # R
+    if (load8(buf + pos + 9) != 0x54) { return 0; }   # T
+    if (load8(buf + pos + 10) != 0x49) { return 0; }  # I
+    if (load8(buf + pos + 11) != 0x45) { return 0; }  # E
+    if (load8(buf + pos + 12) != 0x53) { return 0; }  # S
+    return _kashi_bdf_after_kw(buf, pos + 13, end);
+}
+
+# --- Header parsing ---
+
+# Skip a STARTPROPERTIES..ENDPROPERTIES block starting at `pos` (the line
+# containing STARTPROPERTIES). Returns the offset of the first byte of the
+# line AFTER ENDPROPERTIES on success, or 0 - 1 (i.e., negative) on
+# malformed (no ENDPROPERTIES before buffer end). Internal.
+fn _kashi_bdf_skip_props(buf, pos, end) {
+    var p = _kashi_bdf_next_line(buf, pos, end);
+    var done = 0;
+    while (done == 0) {
+        if (p >= end) { return 0 - 1; }
+        var ls = _kashi_bdf_ws(buf, p, end);
+        if (_kashi_bdf_is_endprops(buf, ls, end) == 1) {
+            return _kashi_bdf_next_line(buf, ls, end);
+        }
+        p = _kashi_bdf_next_line(buf, p, end);
+    }
+    return 0 - 1;
+}
+
+# Validate header + locate first STARTCHAR. See API doc at file top.
+fn kashi_bdf_parse_header(buf, len, hdr, ctx) {
+    if (buf == 0) { return KASHI_BDF_EINVAL; }
+    if (hdr == 0) { return KASHI_BDF_EINVAL; }
+    if (ctx == 0) { return KASHI_BDF_EINVAL; }
+    if (len < 0) { return KASHI_BDF_EINVAL; }
+
+    # Zero outputs.
+    store64(hdr + BDF_PH_KIND, 0);
+    store64(hdr + BDF_PH_WIDTH, 0);
+    store64(hdr + BDF_PH_HEIGHT, 0);
+    store64(hdr + BDF_PH_COUNT, 0);
+    store64(hdr + BDF_PH_CHARSIZE, 0);
+    store64(hdr + BDF_PH_DATAOFF, 0);
+    store64(hdr + BDF_PH_UNIOFF, 0);
+    store64(ctx + BDF_CTX_W, 0);
+    store64(ctx + BDF_CTX_H, 0);
+    store64(ctx + BDF_CTX_X, 0);
+    store64(ctx + BDF_CTX_Y, 0);
+
+    # Track what we have seen.
+    var saw_startfont = 0;
+    var saw_fbb = 0;
+    var saw_chars = 0;
+    var width = 0;
+    var height = 0;
+    var fbb_x = 0;
+    var fbb_y = 0;
+    var count = 0;
+    var dataoff = 0;
+
+    # Walk lines until first STARTCHAR (or end / error).
+    var p = 0;
+    var done = 0;
+    var rc = KASHI_BDF_EFORMAT;
+    var nint[16];
+
+    while (done == 0) {
+        if (p >= len) { done = 1; }
+        if (done == 0) {
+            var ls = _kashi_bdf_ws(buf, p, len);
+            if (ls >= len) { done = 1; }
+            if (done == 0) {
+                var c0 = load8(buf + ls);
+                var advanced = 0;
+                # Blank lines (LF or CR at the first non-WS position).
+                if (c0 == 0x0A) {
+                    p = _kashi_bdf_next_line(buf, ls, len);
+                    advanced = 1;
+                }
+                if (c0 == 0x0D) {
+                    p = _kashi_bdf_next_line(buf, ls, len);
+                    advanced = 1;
+                }
+                # Classify the line. Each matcher both sets `advanced` and
+                # updates `p`; the bottom fallthrough only fires if NO matcher
+                # matched (handles leading-whitespace lines correctly — a
+                # bare `p == ls` check would not advance for those).
+                if (advanced == 0) {
+                    if (_kashi_bdf_is_startfont(buf, ls, len) == 1) {
+                        saw_startfont = 1;
+                        p = _kashi_bdf_next_line(buf, ls, len);
+                        advanced = 1;
+                    }
+                }
+                if (saw_startfont == 0) {
+                    if (advanced == 0) {
+                        # First non-blank line must be STARTFONT.
+                        done = 1;
+                    }
+                }
+                if (done == 0) {
+                    if (advanced == 0) {
+                        if (_kashi_bdf_is_fontboundingbox(buf, ls, len) == 1) {
+                            advanced = 1;
+                            var q = _kashi_bdf_ws(buf, ls + 15, len);
+                            if (_kashi_bdf_int(buf, q, len, &nint) == 0) { done = 1; }
+                            if (done == 0) {
+                                width = load64(&nint + 0);
+                                q = _kashi_bdf_ws(buf, load64(&nint + 8), len);
+                                if (_kashi_bdf_int(buf, q, len, &nint) == 0) { done = 1; }
+                            }
+                            if (done == 0) {
+                                height = load64(&nint + 0);
+                                q = _kashi_bdf_ws(buf, load64(&nint + 8), len);
+                                if (_kashi_bdf_int(buf, q, len, &nint) == 0) { done = 1; }
+                            }
+                            if (done == 0) {
+                                fbb_x = load64(&nint + 0);
+                                q = _kashi_bdf_ws(buf, load64(&nint + 8), len);
+                                if (_kashi_bdf_int(buf, q, len, &nint) == 0) { done = 1; }
+                            }
+                            if (done == 0) {
+                                fbb_y = load64(&nint + 0);
+                                if (width < 1) { done = 1; }
+                                if (width > KASHI_BDF_MAX_WIDTH) { done = 1; }
+                                if (height < 1) { done = 1; }
+                                if (height > KASHI_BDF_MAX_HEIGHT) { done = 1; }
+                            }
+                            if (done == 0) {
+                                saw_fbb = 1;
+                                p = _kashi_bdf_next_line(buf, ls, len);
+                            }
+                        }
+                    }
+                    if (advanced == 0) {
+                        if (_kashi_bdf_is_startprops(buf, ls, len) == 1) {
+                            advanced = 1;
+                            var np = _kashi_bdf_skip_props(buf, ls, len);
+                            if (np < 0) { done = 1; }
+                            if (done == 0) { p = np; }
+                        }
+                    }
+                    if (advanced == 0) {
+                        if (_kashi_bdf_is_chars(buf, ls, len) == 1) {
+                            advanced = 1;
+                            if (saw_fbb == 0) { done = 1; }
+                            if (done == 0) {
+                                var q = _kashi_bdf_ws(buf, ls + 5, len);
+                                if (_kashi_bdf_int(buf, q, len, &nint) == 0) { done = 1; }
+                                if (done == 0) {
+                                    count = load64(&nint + 0);
+                                    if (count < 1) { done = 1; }
+                                    if (count > KASHI_BDF_MAX_COUNT) { done = 1; }
+                                }
+                            }
+                            if (done == 0) {
+                                saw_chars = 1;
+                                p = _kashi_bdf_next_line(buf, ls, len);
+                            }
+                        }
+                    }
+                    if (advanced == 0) {
+                        if (_kashi_bdf_is_startchar(buf, ls, len) == 1) {
+                            advanced = 1;
+                            if (saw_fbb == 0) { done = 1; }
+                            if (saw_chars == 0) { done = 1; }
+                            if (done == 0) {
+                                dataoff = ls;
+                                rc = KASHI_BDF_OK;
+                                done = 1;
+                            }
+                        }
+                    }
+                    if (done == 0) {
+                        if (advanced == 0) {
+                            # Unrecognized line (FONT, SIZE, COMMENT, etc.).
+                            p = _kashi_bdf_next_line(buf, ls, len);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (rc != KASHI_BDF_OK) { return rc; }
+
+    var stride = (width + 7) / 8;
+    var charsize = height * stride;
+    store64(hdr + BDF_PH_KIND, KASHI_BDF_KIND);
+    store64(hdr + BDF_PH_WIDTH, width);
+    store64(hdr + BDF_PH_HEIGHT, height);
+    store64(hdr + BDF_PH_COUNT, count);
+    store64(hdr + BDF_PH_CHARSIZE, charsize);
+    store64(hdr + BDF_PH_DATAOFF, dataoff);
+    store64(hdr + BDF_PH_UNIOFF, 0);
+    store64(ctx + BDF_CTX_W, width);
+    store64(ctx + BDF_CTX_H, height);
+    store64(ctx + BDF_CTX_X, fbb_x);
+    store64(ctx + BDF_CTX_Y, fbb_y);
+    return KASHI_BDF_OK;
+}
+
+# --- Glyph parsing ---
+
+# Decode one BITMAP row of `stride` hex bytes (= `stride * 2` hex chars on
+# one logical line) at `pos` into `dest`. Returns the offset past the
+# row's newline on success, or 0 - 1 on malformed (non-hex / truncated /
+# missing terminator).
+fn _kashi_bdf_decode_row(buf, pos, end, stride, dest) {
+    var p = _kashi_bdf_ws(buf, pos, end);
+    var i = 0;
+    var done = 0;
+    while (done == 0) {
+        if (i >= stride) { done = 1; }
+        if (done == 0) {
+            var b = _kashi_bdf_hex(buf, p, end);
+            if (b < 0) { return 0 - 1; }
+            store8(dest + i, b);
+            p = p + 2;
+            i = i + 1;
+        }
+    }
+    # After the last hex pair, expect optional WS then newline or EOF.
+    p = _kashi_bdf_ws(buf, p, end);
+    if (p >= end) { return p; }
+    var c = load8(buf + p);
+    if (c == 0x0A) { return p + 1; }
+    if (c == 0x0D) { return _kashi_bdf_next_line(buf, p, end); }
+    return 0 - 1;
+}
+
+# See API doc at file top.
+fn kashi_bdf_next_glyph(buf, pos, end, ctx, dest, dest_size, gout) {
+    if (buf == 0) { return KASHI_BDF_EINVAL; }
+    if (ctx == 0) { return KASHI_BDF_EINVAL; }
+    if (gout == 0) { return KASHI_BDF_EINVAL; }
+    if (pos < 0) { return KASHI_BDF_EINVAL; }
+    if (end < pos) { return KASHI_BDF_EINVAL; }
+
+    store64(gout + BG_KIND, BG_KIND_END);
+    store64(gout + BG_CP, 0);
+    store64(gout + BG_NEXT, pos);
+
+    var fbb_w = load64(ctx + BDF_CTX_W);
+    var fbb_h = load64(ctx + BDF_CTX_H);
+    var fbb_x = load64(ctx + BDF_CTX_X);
+    var fbb_y = load64(ctx + BDF_CTX_Y);
+    var stride = (fbb_w + 7) / 8;
+    var need = fbb_h * stride;
+    if (dest_size < need) {
+        if (dest != 0) { return KASHI_BDF_EINVAL; }
+        # dest == 0 is allowed only if we're going to SKIP — but we don't
+        # know that yet. Conservative: require a buffer large enough.
+        return KASHI_BDF_EINVAL;
+    }
+    if (dest == 0) { return KASHI_BDF_EINVAL; }
+
+    # Scan forward for STARTCHAR or ENDFONT.
+    var p = pos;
+    var found = 0;
+    var nint[16];
+    var done_scan = 0;
+    while (done_scan == 0) {
+        if (p >= end) { done_scan = 1; }
+        if (done_scan == 0) {
+            var ls = _kashi_bdf_ws(buf, p, end);
+            if (ls >= end) { done_scan = 1; }
+            if (done_scan == 0) {
+                if (_kashi_bdf_is_startchar(buf, ls, end) == 1) {
+                    p = _kashi_bdf_next_line(buf, ls, end);
+                    found = 1;
+                    done_scan = 1;
+                }
+                if (done_scan == 0) {
+                    if (_kashi_bdf_is_endfont(buf, ls, end) == 1) {
+                        # No more glyphs.
+                        store64(gout + BG_KIND, BG_KIND_END);
+                        store64(gout + BG_NEXT, _kashi_bdf_next_line(buf, ls, end));
+                        return KASHI_BDF_OK;
+                    }
+                    p = _kashi_bdf_next_line(buf, ls, end);
+                }
+            }
+        }
+    }
+    if (found == 0) {
+        # Reached end without STARTCHAR or ENDFONT — that's OK (callers
+        # may pass partial buffers); report END at end.
+        store64(gout + BG_KIND, BG_KIND_END);
+        store64(gout + BG_NEXT, end);
+        return KASHI_BDF_OK;
+    }
+
+    # Inside a STARTCHAR..ENDCHAR block. Need ENCODING, BBX, BITMAP rows,
+    # ENDCHAR.
+    var cp = 0;
+    var saw_encoding = 0;
+    var saw_bbx = 0;
+    var saw_bitmap = 0;
+    var saw_endchar = 0;
+    var skip = 0;
+    var blockend = 0;
+    var inblock = 1;
+    while (inblock == 1) {
+        if (p >= end) { return KASHI_BDF_EFORMAT; }
+        var ls = _kashi_bdf_ws(buf, p, end);
+        if (ls >= end) { return KASHI_BDF_EFORMAT; }
+        var c0 = load8(buf + ls);
+        var advanced = 0;
+        # Blank-line paths.
+        if (c0 == 0x0A) {
+            p = _kashi_bdf_next_line(buf, ls, end);
+            advanced = 1;
+        }
+        if (c0 == 0x0D) {
+            p = _kashi_bdf_next_line(buf, ls, end);
+            advanced = 1;
+        }
+        if (advanced == 0) {
+            if (_kashi_bdf_is_endchar(buf, ls, end) == 1) {
+                saw_endchar = 1;
+                blockend = _kashi_bdf_next_line(buf, ls, end);
+                inblock = 0;
+                advanced = 1;
+            }
+        }
+        if (inblock == 1) {
+            if (advanced == 0) {
+                if (_kashi_bdf_is_encoding(buf, ls, end) == 1) {
+                    advanced = 1;
+                    if (saw_encoding == 1) { return KASHI_BDF_EFORMAT; }
+                    var q = _kashi_bdf_ws(buf, ls + 8, end);
+                    if (_kashi_bdf_int(buf, q, end, &nint) == 0) { return KASHI_BDF_EFORMAT; }
+                    cp = load64(&nint + 0);
+                    saw_encoding = 1;
+                    if (cp < 0) { skip = 1; }
+                    if (cp > 0x10FFFF) { skip = 1; }
+                    p = _kashi_bdf_next_line(buf, ls, end);
+                }
+            }
+            if (advanced == 0) {
+                if (_kashi_bdf_is_bbx(buf, ls, end) == 1) {
+                    advanced = 1;
+                    if (saw_bbx == 1) { return KASHI_BDF_EFORMAT; }
+                    var q2 = _kashi_bdf_ws(buf, ls + 3, end);
+                    if (_kashi_bdf_int(buf, q2, end, &nint) == 0) { return KASHI_BDF_EFORMAT; }
+                    var bw = load64(&nint + 0);
+                    q2 = _kashi_bdf_ws(buf, load64(&nint + 8), end);
+                    if (_kashi_bdf_int(buf, q2, end, &nint) == 0) { return KASHI_BDF_EFORMAT; }
+                    var bh = load64(&nint + 0);
+                    q2 = _kashi_bdf_ws(buf, load64(&nint + 8), end);
+                    if (_kashi_bdf_int(buf, q2, end, &nint) == 0) { return KASHI_BDF_EFORMAT; }
+                    var bx = load64(&nint + 0);
+                    q2 = _kashi_bdf_ws(buf, load64(&nint + 8), end);
+                    if (_kashi_bdf_int(buf, q2, end, &nint) == 0) { return KASHI_BDF_EFORMAT; }
+                    var by = load64(&nint + 0);
+                    # Strict BBX policy (ADR 0008): all 4 fields match.
+                    if (bw != fbb_w) { return KASHI_BDF_EFORMAT; }
+                    if (bh != fbb_h) { return KASHI_BDF_EFORMAT; }
+                    if (bx != fbb_x) { return KASHI_BDF_EFORMAT; }
+                    if (by != fbb_y) { return KASHI_BDF_EFORMAT; }
+                    saw_bbx = 1;
+                    p = _kashi_bdf_next_line(buf, ls, end);
+                }
+            }
+            if (advanced == 0) {
+                if (_kashi_bdf_is_bitmap(buf, ls, end) == 1) {
+                    advanced = 1;
+                    if (saw_bbx == 0) { return KASHI_BDF_EFORMAT; }
+                    if (saw_bitmap == 1) { return KASHI_BDF_EFORMAT; }
+                    var rowp = _kashi_bdf_next_line(buf, ls, end);
+                    var r = 0;
+                    while (r < fbb_h) {
+                        # When skipping, still consume rows to advance the
+                        # cursor. dest_size >= need was checked up front so
+                        # the write is in-bounds even though we discard the
+                        # bytes for KIND=SKIP.
+                        var next = _kashi_bdf_decode_row(buf, rowp, end, stride, dest + r * stride);
+                        if (next < 0) { return KASHI_BDF_EFORMAT; }
+                        rowp = next;
+                        r = r + 1;
+                    }
+                    saw_bitmap = 1;
+                    p = rowp;
+                }
+            }
+            if (advanced == 0) {
+                # Unrecognized line within the glyph block (SWIDTH, DWIDTH,
+                # COMMENT, SWIDTH1, VVECTOR, etc.). Skip it. Using a flag
+                # (not `p == ls`) correctly handles leading-WS lines.
+                p = _kashi_bdf_next_line(buf, ls, end);
+            }
+        }
+    }
+
+    if (saw_endchar == 0) { return KASHI_BDF_EFORMAT; }
+    if (saw_encoding == 0) { return KASHI_BDF_EFORMAT; }
+    if (saw_bbx == 0) { return KASHI_BDF_EFORMAT; }
+    if (saw_bitmap == 0) { return KASHI_BDF_EFORMAT; }
+
+    if (skip == 1) {
+        store64(gout + BG_KIND, BG_KIND_SKIP);
+        store64(gout + BG_CP, cp);
+        store64(gout + BG_NEXT, blockend);
+        return KASHI_BDF_OK;
+    }
+    store64(gout + BG_KIND, BG_KIND_OK);
+    store64(gout + BG_CP, cp);
+    store64(gout + BG_NEXT, blockend);
+    return KASHI_BDF_OK;
+}

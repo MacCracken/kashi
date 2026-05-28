@@ -23,6 +23,7 @@
 
 include "src/font_data.cyr"
 include "src/font_psf.cyr"
+include "src/font_bdf.cyr"
 
 # ---------------------------------------------------------------------------
 # Runtime font surface (M1). The PSF byte parser + result codes (KashiResult)
@@ -419,6 +420,129 @@ fn kashi_load_psf_file(path) {
     if (n < 0) { return 0 - KASHI_EINVAL; }      # open/read error
     if (n == 0) { return 0 - KASHI_EFORMAT; }    # empty / not found
     return kashi_load_psf(buf, n);
+}
+
+# --- BDF import (0.7.0; ADR 0008) ---
+#
+# Load an X11 BDF (Bitmap Distribution Format) font from an in-memory
+# buffer into a runtime slot. The pure parser lives in src/font_bdf.cyr;
+# this routine drives it glyph-by-glyph, copying each glyph's bitmap into
+# an owned glyph store and collecting (codepoint, glyph) pairs for the
+# codepoint→glyph map. ENCODING -1 glyphs are skipped (ADR 0008).
+# Returns font_id (>= KASHI_RT_FONT_BASE) or `0 - <KashiResult>`.
+
+# Translate a BDF-parser result code into the public KashiResult negative-form.
+fn _kashi_bdf_to_result(rc) {
+    if (rc == KASHI_BDF_OK) { return KASHI_OK; }
+    if (rc == KASHI_BDF_EINVAL) { return KASHI_EINVAL; }
+    return KASHI_EFORMAT;
+}
+
+fn kashi_load_bdf(buf, len) {
+    if (buf == 0) { return 0 - KASHI_EINVAL; }
+    if (len < 0) { return 0 - KASHI_EINVAL; }
+
+    var hdr[56];
+    var ctx[32];
+    var rc = kashi_bdf_parse_header(buf, len, &hdr, &ctx);
+    if (rc != KASHI_BDF_OK) { return 0 - _kashi_bdf_to_result(rc); }
+
+    var width = load64(&hdr + BDF_PH_WIDTH);
+    var height = load64(&hdr + BDF_PH_HEIGHT);
+    var count = load64(&hdr + BDF_PH_COUNT);
+    var charsize = load64(&hdr + BDF_PH_CHARSIZE);
+    var dataoff = load64(&hdr + BDF_PH_DATAOFF);
+
+    # Single-pass over-allocate to the declared count (the upper bound) and
+    # write each OK glyph into its slot; SKIP glyphs land in a scratch slot
+    # and are discarded. Trailing unused space stays in the owned buffer —
+    # harmless waste bounded by KASHI_BDF_MAX_COUNT * 128.
+    var owned = alloc(count * charsize);
+    if (owned == 0) { return 0 - KASHI_EFORMAT; }
+    var umap = alloc(count * 16);
+    if (umap == 0) { return 0 - KASHI_EFORMAT; }
+
+    # Stack scratch for SKIP rows and for the "CHARS was a lie (too low)"
+    # detection path. 128 bytes = max charsize (32*4) per ADR 0005.
+    var scratch[128];
+
+    var gout[24];
+    var pos = dataoff;
+    var w = 0;
+    var loop_done = 0;
+    var err = 0;
+    while (loop_done == 0) {
+        var slot = &scratch;
+        if (w < count) { slot = owned + w * charsize; }
+        var grc = kashi_bdf_next_glyph(buf, pos, len, &ctx, slot, charsize, &gout);
+        if (grc != KASHI_BDF_OK) { err = 1; loop_done = 1; }
+        if (loop_done == 0) {
+            var kind = load64(&gout + BG_KIND);
+            if (kind == BG_KIND_END) { loop_done = 1; }
+            if (loop_done == 0) {
+                pos = load64(&gout + BG_NEXT);
+                if (kind == BG_KIND_OK) {
+                    if (w >= count) { err = 1; loop_done = 1; }
+                    if (loop_done == 0) {
+                        var cp = load64(&gout + BG_CP);
+                        store64(umap + w * 16 + 0, cp);
+                        store64(umap + w * 16 + 8, w);
+                        w = w + 1;
+                    }
+                }
+            }
+        }
+    }
+    if (err == 1) { return 0 - KASHI_EFORMAT; }
+    if (w == 0) { return 0 - KASHI_EFORMAT; }
+
+    # Insertion-sort the codepoint→glyph map (same shape as PSF — kept here
+    # rather than factored because the PSF version walks the parser
+    # directly; sharing is fiddly without a third helper).
+    var i = 1;
+    while (i < w) {
+        var kc = load64(umap + i * 16 + 0);
+        var kg = load64(umap + i * 16 + 8);
+        var j = i;
+        var sdone = 0;
+        while (sdone == 0) {
+            if (j == 0) { sdone = 1; }
+            if (sdone == 0) {
+                var cprev = load64(umap + (j - 1) * 16 + 0);
+                if (cprev <= kc) { sdone = 1; }
+                if (sdone == 0) {
+                    store64(umap + j * 16 + 0, cprev);
+                    store64(umap + j * 16 + 8, load64(umap + (j - 1) * 16 + 8));
+                    j = j - 1;
+                }
+            }
+        }
+        store64(umap + j * 16 + 0, kc);
+        store64(umap + j * 16 + 8, kg);
+        i = i + 1;
+    }
+
+    var id = _kashi_rt_register(width, height, w, charsize, owned);
+    if (id < 0) { return id; }
+    var rec = _kashi_rt_get(id);
+    if (rec != 0) {
+        store64(rec + RT_UMAP, umap);
+        store64(rec + RT_UCOUNT, w);
+    }
+    return id;
+}
+
+# Load a BDF font from a file path. Reads the file into a capped buffer
+# (KASHI_BDF_FILE_CAP = 4 MiB — ADR 0008) and hands it to kashi_load_bdf.
+# Returns font_id (>= KASHI_RT_FONT_BASE) or `0 - <KashiResult>`.
+fn kashi_load_bdf_file(path) {
+    var cap = KASHI_BDF_FILE_CAP;
+    var buf = alloc(cap);
+    if (buf == 0) { return 0 - KASHI_EINVAL; }
+    var n = file_read_all(path, buf, cap);
+    if (n < 0) { return 0 - KASHI_EINVAL; }
+    if (n == 0) { return 0 - KASHI_EFORMAT; }
+    return kashi_load_bdf(buf, n);
 }
 
 # --- Raw glyph-INDEX accessors (runtime fonts only) ---

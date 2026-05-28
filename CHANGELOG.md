@@ -5,6 +5,84 @@ This project adheres to [SemVer](https://semver.org/) (pre-1.0: surface still mo
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-05-28
+
+BDF (Bitmap Distribution Format) import — the next runtime-loadable
+format alongside PSF1/PSF2. New self-contained, heapless text parser
+in `src/font_bdf.cyr` (`cyaudit vet` → "no dependencies"); the library
+face gains `kashi_load_bdf` / `kashi_load_bdf_file`. The agnos
+integration is in (M3 done from kashi's side) — 0.7.x is the
+post-integration cut booked for additional bitmap import formats. See
+[ADR 0008](docs/adr/0008-bdf-import.md).
+
+### Added
+
+- **BDF import** (`src/font_bdf.cyr`, ADR 0008):
+  - `kashi_bdf_parse_header(buf, len, hdr, ctx)` — validation-first
+    text parser. Recognises `STARTFONT`, `FONTBOUNDINGBOX`, `CHARS`,
+    walks past `STARTPROPERTIES..ENDPROPERTIES`, locates the first
+    `STARTCHAR`. Fills the 56-byte parsed-header struct (KIND=3 for
+    BDF; the PSF parser uses KIND=1 / KIND=2) plus a 32-byte
+    BDF-context struct holding the parsed `FONTBOUNDINGBOX` for
+    per-glyph validation.
+  - `kashi_bdf_next_glyph(buf, pos, end, ctx, dest, dest_size, gout)`
+    — cursor that finds the next `STARTCHAR`, reads `ENCODING` + `BBX`
+    (strict-match validation against `ctx`) + `BITMAP` hex rows,
+    decodes into the caller's `dest`, advances past `ENDCHAR`. Returns
+    OK / SKIP (ENCODING -1) / END kinds.
+  - `kashi_load_bdf(buf, len)` and `kashi_load_bdf_file(path)` —
+    library entry points. Drive the parser glyph-by-glyph, copy each
+    OK glyph into an owned store, build the codepoint→glyph map (same
+    shape PSF uses), register via the existing runtime registry.
+    `kashi_load_bdf_file` reads at most `KASHI_BDF_FILE_CAP = 4 MiB`
+    (vs. PSF's 256 KiB — BDF is ~10× more verbose).
+- **Documentation**: [ADR 0008](docs/adr/0008-bdf-import.md) (design
+  rationale + alternatives considered), [guide for loading BDF
+  fonts](docs/guides/loading-bdf-fonts.md) (subset accepted, strict
+  BBX, file-size cap, PSF-vs-BDF picker).
+
+### Scope (0.7.0)
+
+- **Strict BBX**: every glyph's `BBX w h xoff yoff` must match the
+  font's `FONTBOUNDINGBOX w h xoff yoff` exactly (covers the console
+  bitmap corpus). Per-glyph geometry variation — italic overhangs,
+  descender outlines — is out of scope and rejected with
+  `KASHI_EFORMAT`.
+- **`ENCODING -1`** glyphs (named but unencoded) are dropped entirely
+  — not in the glyph store, not in the codepoint map.
+- **Width 1–32, height 1–32**, matching the PSF parser's existing
+  caps. Glyph count ≤ 65,536 (declared via `CHARS`).
+- Reuses the existing 56-byte parsed-header struct shape, the runtime
+  registry, the codepoint→glyph map insertion-sort, and the unified
+  `kashi_font_row` / `kashi_font_ptr` accessors. No new public
+  result codes; no API changes outside the new BDF functions.
+
+### Tests
+
+- Suite now **346 assertions, 0 failed** (312 unit + 34 integration;
+  was 305 at 0.6.0). New: BDF header parse (valid + 5 malformed
+  cases), BDF load round-trip (codepoint addressing, `ENCODING -1`
+  skip verification, mismatched-BBX rejection, CHARS-too-low
+  rejection), BDF file round-trip (write a BDF to /tmp,
+  `kashi_load_bdf_file`, verify glyph bytes by codepoint).
+- `tests/kashi.fcyr` extended with `fuzz_bdf` — 2000 rounds across
+  four pick paths (random / valid template / mutated template /
+  truncated template). The text-based parser is a larger
+  untrusted-input surface than PSF; the fuzz exposed and the cut
+  fixed a leading-whitespace infinite-loop in the glyph-block scanner
+  (the `p == ls` catcher missed leading-WS lines; replaced with an
+  explicit `advanced` flag in both `kashi_bdf_parse_header` and
+  `kashi_bdf_next_glyph`).
+
+### Notes
+
+- **agnos integration done** (M3 closed from kashi's side). The
+  `[deps.kashi] modules=["src/font_data.cyr"]` contract held; agnos
+  consumes the freestanding core unchanged.
+- **0.7.x reserved** for the remaining import-format work: 0.7.1 PCF
+  (X11 compiled binary) and 0.7.2 PSF u-variant sidecar tables (per
+  `docs/development/roadmap.md`).
+
 ## [0.6.0] — 2026-05-28
 
 P(-1) hardening pass before opening the 0.6.x patch arc + the M3
@@ -361,7 +439,8 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/0.6.0...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/0.7.0...HEAD
+[0.7.0]: https://github.com/MacCracken/kashi/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/MacCracken/kashi/compare/0.5.2...0.6.0
 [0.5.2]: https://github.com/MacCracken/kashi/compare/0.5.1...0.5.2
 [0.5.1]: https://github.com/MacCracken/kashi/compare/0.5.0...0.5.1

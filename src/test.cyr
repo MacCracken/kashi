@@ -912,6 +912,201 @@ fn test_vga_9x16_derived() {
     return 0;
 }
 
+# --- 0.7.0: BDF parser + load path (src/font_bdf.cyr, src/lib.cyr) ---
+
+# Copy a null-terminated string `s` into `buf + p`, returning new position.
+# Used by the BDF builders below — string literals keep the BDF source
+# readable inline, vs. emitting hundreds of one-byte store8 calls.
+fn _bdf_str(buf, p, s) {
+    var i = 0;
+    var done = 0;
+    while (done == 0) {
+        var c = load8(s + i);
+        if (c == 0) { done = 1; }
+        if (done == 0) {
+            store8(buf + p + i, c);
+            i = i + 1;
+        }
+    }
+    return p + i;
+}
+
+# Build a minimal valid 8x8 BDF source into `buf` with three glyphs:
+#   'A' (0x41) — a small triangle pattern
+#   '!' (0x21) — exclamation mark
+#   ENCODING -1 — an unencoded glyph (must be skipped on load)
+# Returns the total byte length. Designed for both parse-header and
+# round-trip assertions below.
+fn _mk_bdf(buf) {
+    var p = 0;
+    p = _bdf_str(buf, p, "STARTFONT 2.1\n");
+    p = _bdf_str(buf, p, "FONT -test-test\n");
+    p = _bdf_str(buf, p, "SIZE 8 75 75\n");
+    p = _bdf_str(buf, p, "FONTBOUNDINGBOX 8 8 0 0\n");
+    p = _bdf_str(buf, p, "STARTPROPERTIES 2\n");
+    p = _bdf_str(buf, p, "FOUNDRY \"test\"\n");
+    p = _bdf_str(buf, p, "WEIGHT_NAME \"Medium\"\n");
+    p = _bdf_str(buf, p, "ENDPROPERTIES\n");
+    p = _bdf_str(buf, p, "CHARS 3\n");
+    # Glyph 'A' = 0x18 0x24 0x42 0x7E 0x42 0x42 0x42 0x00
+    p = _bdf_str(buf, p, "STARTCHAR A\n");
+    p = _bdf_str(buf, p, "ENCODING 65\n");
+    p = _bdf_str(buf, p, "SWIDTH 500 0\n");
+    p = _bdf_str(buf, p, "DWIDTH 8 0\n");
+    p = _bdf_str(buf, p, "BBX 8 8 0 0\n");
+    p = _bdf_str(buf, p, "BITMAP\n18\n24\n42\n7E\n42\n42\n42\n00\nENDCHAR\n");
+    # Glyph '!' = 0x18 0x18 0x18 0x18 0x18 0x00 0x18 0x00
+    p = _bdf_str(buf, p, "STARTCHAR exclam\n");
+    p = _bdf_str(buf, p, "ENCODING 33\n");
+    p = _bdf_str(buf, p, "BBX 8 8 0 0\n");
+    p = _bdf_str(buf, p, "BITMAP\n18\n18\n18\n18\n18\n00\n18\n00\nENDCHAR\n");
+    # Unencoded glyph — must be skipped on load.
+    p = _bdf_str(buf, p, "STARTCHAR unencoded\n");
+    p = _bdf_str(buf, p, "ENCODING -1\n");
+    p = _bdf_str(buf, p, "BBX 8 8 0 0\n");
+    p = _bdf_str(buf, p, "BITMAP\nFF\nFF\nFF\nFF\nFF\nFF\nFF\nFF\nENDCHAR\n");
+    p = _bdf_str(buf, p, "ENDFONT\n");
+    return p;
+}
+
+fn test_bdf_parse() {
+    test_group("bdf parse");
+    var buf = alloc(2048);
+    var len = _mk_bdf(buf);
+    var hdr[56];
+    var ctx[32];
+    assert_eq(kashi_bdf_parse_header(buf, len, &hdr, &ctx), KASHI_BDF_OK, "bdf parse ok");
+    assert_eq(load64(&hdr + BDF_PH_KIND), KASHI_BDF_KIND, "bdf kind 3");
+    assert_eq(load64(&hdr + BDF_PH_WIDTH), 8, "bdf width 8");
+    assert_eq(load64(&hdr + BDF_PH_HEIGHT), 8, "bdf height 8");
+    assert_eq(load64(&hdr + BDF_PH_COUNT), 3, "bdf count 3 (declared)");
+    assert_eq(load64(&hdr + BDF_PH_CHARSIZE), 8, "bdf charsize 8 (8*1)");
+    assert_eq(load64(&hdr + BDF_PH_UNIOFF), 0, "bdf no unicode table");
+    assert_eq(load64(&ctx + BDF_CTX_W), 8, "bdf ctx w 8");
+    assert_eq(load64(&ctx + BDF_CTX_H), 8, "bdf ctx h 8");
+    return 0;
+}
+
+fn test_bdf_parse_errors() {
+    test_group("bdf parse errors");
+    var hdr[56];
+    var ctx[32];
+    # Null buf / bad len.
+    assert_eq(kashi_bdf_parse_header(0, 100, &hdr, &ctx), KASHI_BDF_EINVAL, "null buf einval");
+    var b = alloc(256);
+    assert_eq(kashi_bdf_parse_header(b, 0 - 1, &hdr, &ctx), KASHI_BDF_EINVAL, "neg len einval");
+    # No STARTFONT — non-empty buffer of garbage.
+    var p = _bdf_str(b, 0, "GARBAGE\n");
+    assert_eq(kashi_bdf_parse_header(b, p, &hdr, &ctx), KASHI_BDF_EFORMAT, "no startfont eformat");
+    # STARTFONT but no FONTBOUNDINGBOX before CHARS.
+    var b2 = alloc(256);
+    var p2 = 0;
+    p2 = _bdf_str(b2, p2, "STARTFONT 2.1\n");
+    p2 = _bdf_str(b2, p2, "CHARS 1\n");
+    p2 = _bdf_str(b2, p2, "STARTCHAR A\n");
+    p2 = _bdf_str(b2, p2, "ENCODING 65\n");
+    p2 = _bdf_str(b2, p2, "BBX 8 8 0 0\n");
+    p2 = _bdf_str(b2, p2, "BITMAP\n00\nENDCHAR\n");
+    assert_eq(kashi_bdf_parse_header(b2, p2, &hdr, &ctx), KASHI_BDF_EFORMAT, "chars before fbb eformat");
+    # FONTBOUNDINGBOX with width > KASHI_BDF_MAX_WIDTH.
+    var b3 = alloc(256);
+    var p3 = 0;
+    p3 = _bdf_str(b3, p3, "STARTFONT 2.1\n");
+    p3 = _bdf_str(b3, p3, "FONTBOUNDINGBOX 33 8 0 0\n");
+    p3 = _bdf_str(b3, p3, "CHARS 1\n");
+    p3 = _bdf_str(b3, p3, "STARTCHAR A\n");
+    assert_eq(kashi_bdf_parse_header(b3, p3, &hdr, &ctx), KASHI_BDF_EFORMAT, "fbb too wide eformat");
+    # FONTBOUNDINGBOX with height < 1.
+    var b4 = alloc(256);
+    var p4 = 0;
+    p4 = _bdf_str(b4, p4, "STARTFONT 2.1\n");
+    p4 = _bdf_str(b4, p4, "FONTBOUNDINGBOX 8 0 0 0\n");
+    p4 = _bdf_str(b4, p4, "CHARS 1\n");
+    p4 = _bdf_str(b4, p4, "STARTCHAR A\n");
+    assert_eq(kashi_bdf_parse_header(b4, p4, &hdr, &ctx), KASHI_BDF_EFORMAT, "fbb height 0 eformat");
+    # Properties block missing ENDPROPERTIES.
+    var b5 = alloc(256);
+    var p5 = 0;
+    p5 = _bdf_str(b5, p5, "STARTFONT 2.1\n");
+    p5 = _bdf_str(b5, p5, "FONTBOUNDINGBOX 8 8 0 0\n");
+    p5 = _bdf_str(b5, p5, "STARTPROPERTIES 1\n");
+    p5 = _bdf_str(b5, p5, "FOUNDRY \"x\"\n");
+    assert_eq(kashi_bdf_parse_header(b5, p5, &hdr, &ctx), KASHI_BDF_EFORMAT, "unterminated props eformat");
+    return 0;
+}
+
+fn test_bdf_load() {
+    test_group("bdf load");
+    var buf = alloc(2048);
+    var len = _mk_bdf(buf);
+    var id = kashi_load_bdf(buf, len);
+    assert_gte(id, KASHI_RT_FONT_BASE, "bdf load returns rt id");
+    # 3 declared glyphs but one is ENCODING -1 — actual count = 2.
+    assert_eq(kashi_rt_font_count(id), 2, "bdf actual count 2 (one -1 skipped)");
+    assert_eq(kashi_rt_font_width(id), 8, "bdf rt width 8");
+    assert_eq(kashi_rt_font_height(id), 8, "bdf rt height 8");
+    # Codepoint addressing: 'A' (0x41) glyph rows.
+    assert_eq(kashi_font_row(id, 0x41, 0), 0x18, "bdf 'A' r0 = 0x18");
+    assert_eq(kashi_font_row(id, 0x41, 3), 0x7E, "bdf 'A' r3 = 0x7E");
+    assert_eq(kashi_font_row(id, 0x41, 7), 0x00, "bdf 'A' r7 = 0x00");
+    # '!' (0x21).
+    assert_eq(kashi_font_row(id, 0x21, 0), 0x18, "bdf '!' r0 = 0x18");
+    assert_eq(kashi_font_row(id, 0x21, 5), 0x00, "bdf '!' r5 = 0x00");
+    # Unmapped codepoint (the unencoded glyph is NOT in the map).
+    assert_eq(kashi_font_row(id, 0xFFFF, 0), 0, "bdf unmapped cp -> 0");
+    # The unencoded glyph's FF rows must NOT appear via any in-range codepoint:
+    # no codepoint should yield 0xFF for every row.
+    var found_ff = 0;
+    var cp = 0;
+    while (cp <= 0xFF) {
+        if (kashi_font_row(id, cp, 0) == 0xFF) {
+            if (kashi_font_row(id, cp, 7) == 0xFF) { found_ff = 1; }
+        }
+        cp = cp + 1;
+    }
+    assert_eq(found_ff, 0, "unencoded glyph not addressable by any cp");
+    return 0;
+}
+
+fn test_bdf_load_errors() {
+    test_group("bdf load errors");
+    # Null buffer.
+    assert_lt(kashi_load_bdf(0, 100), 0, "null buf negative");
+    # Bad header.
+    var b = alloc(64);
+    var p = _bdf_str(b, 0, "NOT BDF\n");
+    assert_lt(kashi_load_bdf(b, p), 0, "bad header negative");
+    # BBX mismatch (different width per glyph).
+    var b2 = alloc(512);
+    var p2 = 0;
+    p2 = _bdf_str(b2, p2, "STARTFONT 2.1\n");
+    p2 = _bdf_str(b2, p2, "FONTBOUNDINGBOX 8 8 0 0\n");
+    p2 = _bdf_str(b2, p2, "CHARS 1\n");
+    p2 = _bdf_str(b2, p2, "STARTCHAR X\n");
+    p2 = _bdf_str(b2, p2, "ENCODING 88\n");
+    p2 = _bdf_str(b2, p2, "BBX 4 8 0 0\n");
+    p2 = _bdf_str(b2, p2, "BITMAP\n00\n00\n00\n00\n00\n00\n00\n00\nENDCHAR\n");
+    p2 = _bdf_str(b2, p2, "ENDFONT\n");
+    assert_lt(kashi_load_bdf(b2, p2), 0, "bbx mismatch negative");
+    # Too many actual STARTCHARs vs declared CHARS.
+    var b3 = alloc(1024);
+    var p3 = 0;
+    p3 = _bdf_str(b3, p3, "STARTFONT 2.1\n");
+    p3 = _bdf_str(b3, p3, "FONTBOUNDINGBOX 8 8 0 0\n");
+    p3 = _bdf_str(b3, p3, "CHARS 1\n");
+    p3 = _bdf_str(b3, p3, "STARTCHAR A\n");
+    p3 = _bdf_str(b3, p3, "ENCODING 65\n");
+    p3 = _bdf_str(b3, p3, "BBX 8 8 0 0\n");
+    p3 = _bdf_str(b3, p3, "BITMAP\n00\n00\n00\n00\n00\n00\n00\n00\nENDCHAR\n");
+    p3 = _bdf_str(b3, p3, "STARTCHAR B\n");
+    p3 = _bdf_str(b3, p3, "ENCODING 66\n");
+    p3 = _bdf_str(b3, p3, "BBX 8 8 0 0\n");
+    p3 = _bdf_str(b3, p3, "BITMAP\n00\n00\n00\n00\n00\n00\n00\n00\nENDCHAR\n");
+    p3 = _bdf_str(b3, p3, "ENDFONT\n");
+    assert_lt(kashi_load_bdf(b3, p3), 0, "chars too-low negative");
+    return 0;
+}
+
 fn main() {
     alloc_init();
 
@@ -944,6 +1139,10 @@ fn main() {
     test_psf_wide_load();
     test_seq_glyph();
     test_vga_9x16_derived();
+    test_bdf_parse();
+    test_bdf_parse_errors();
+    test_bdf_load();
+    test_bdf_load_errors();
 
     return assert_summary();
 }
