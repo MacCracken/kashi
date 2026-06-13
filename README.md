@@ -126,12 +126,8 @@ cyrius run   src/main.cyr                  # demo: render 'A' in both 8-wide bui
 cyrius test  src/test.cyr                  # unit tests
 cyrius test  tests/kashi.tcyr              # integration tests
 cyrius bench tests/kashi.bcyr              # accessor benchmarks
-cyaudit vet  src/font_data.cyr             # proves freestanding core has zero deps
+cyrius vet   src/font_data.cyr             # proves freestanding core has zero deps
 ```
-
-Note: the released cyrius 6.0.3 has a packaging bug where
-`cyrius vet` dispatches to a wrong dispatcher; call `cyaudit vet`
-directly. See `CLAUDE.md` for the working-around note.
 
 ## Documentation
 

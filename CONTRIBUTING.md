@@ -22,8 +22,8 @@ kashi has a **hard, file-level boundary** (see
   syscalls, NO sakshi — only `store8`/`load8` intrinsics + arithmetic. The
   agnos kernel `include`s this file directly. **Never add an `include` or a
   stdlib call here.** `cyaudit vet src/font_data.cyr` must report "no
-  dependencies" (call `cyaudit vet` directly — the released cyrius 6.0.3
-  has a packaging bug where `cyrius vet` dispatches incorrectly).
+  dependencies" (cyrius 6.2.2 fixed the 6.0.3 packaging bug, so
+  `cyrius vet` now dispatches correctly).
 - **`src/lib.cyr`** plus the parser modules (`src/font_psf.cyr`,
   `src/font_bdf.cyr`, `src/font_pcf.cyr`) — the library face. The parser
   modules are *also* dependency-free (heapless, load8 + arithmetic only);

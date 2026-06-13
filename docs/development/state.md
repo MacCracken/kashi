@@ -1,12 +1,19 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-05-28 (**1.0.0** — stable release) |
+> **Last refresh**: 2026-06-13 (**1.0.1** — toolchain bump) |
 > **Refresh cadence**: bumped every release.
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
+
+**1.0.1** — Toolchain bump. Pins cyrius `6.2.2` (was `6.0.3`); no
+source changes, public API still frozen. Rebuilt + re-tested clean
+on 6.2.2 (393 unit + 49 integration, 0 failed; `cyrius vet` → "no
+dependencies" for all four freestanding files). 6.2.2 fixes the
+6.0.3 `cyrius vet` packaging bug, so the `cyaudit vet` workaround is
+retired across `README.md`, `CONTRIBUTING.md`, and CI.
 
 **1.0.0** — Stable release. The full surface (freestanding core,
 runtime loading for PSF / BDF / PCF, sidecar Unicode-table attach,
@@ -28,7 +35,7 @@ out-of-scope; none are booked.
 
 ## Toolchain
 
-- **Cyrius pin**: `6.0.3` (in `cyrius.cyml [package].cyrius`).
+- **Cyrius pin**: `6.2.2` (in `cyrius.cyml [package].cyrius`).
 
 ## What's implemented
 

@@ -5,7 +5,7 @@ description = "kashi — AGNOS console-font subsystem: freestanding bitmap glyph
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/kashi"
 language = "cyrius"
-cyrius = "6.0.3"
+cyrius = "6.2.2"
 
 [build]
 entry = "src/lib.cyr"

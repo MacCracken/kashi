@@ -7,6 +7,28 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-06-13
+
+**Toolchain bump.** Pins cyrius `6.2.2` (was `6.0.3`) in
+`cyrius.cyml [package].cyrius`. No source changes; the public API
+remains frozen per the 1.0.0 stability promise. Rebuilt and
+re-tested clean on 6.2.2: 393 unit + 49 integration assertions, 0
+failed; `cyrius vet` reports "no dependencies" for all four
+freestanding files.
+
+### Changed
+
+- **`cyrius.cyml`**: `cyrius` pin `6.0.3` → `6.2.2`.
+
+### Fixed
+
+- **`cyrius vet` workaround retired.** 6.2.2 fixes the 6.0.3
+  packaging bug where `cyrius vet` dispatched to a `cybs` that
+  emitted an ELF instead of auditing; `cyrius vet src/font_data.cyr`
+  now reports "no dependencies" directly. The `cyaudit vet`
+  workaround language in `README.md`, `CONTRIBUTING.md`, and the
+  CI vet steps is updated accordingly.
+
 ## [1.0.0] — 2026-05-28
 
 **Stable release.** kashi's full surface — freestanding core, runtime
