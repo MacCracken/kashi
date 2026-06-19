@@ -7,6 +7,19 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-06-18
+
+**Toolchain bump.** Pins cyrius `6.2.22` (was `6.2.2`) in
+`cyrius.cyml [package].cyrius`. No source changes; the public API
+remains frozen per the 1.0.0 stability promise. Rebuilt and
+re-tested clean on 6.2.22: 393 unit + 49 integration assertions, 0
+failed; `cyrius vet` reports "no dependencies" for all four
+freestanding files.
+
+### Changed
+
+- **`cyrius.cyml`**: `cyrius` pin `6.2.2` → `6.2.22`.
+
 ## [1.0.1] — 2026-06-13
 
 **Toolchain bump.** Pins cyrius `6.2.2` (was `6.0.3`) in
@@ -839,7 +852,9 @@ subsystem, split out of the agnos kernel's framebuffer console.
 - The full library face (PSF import, runtime loading, additional fonts) is
   built out along the roadmap — see `docs/development/roadmap.md`.
 
-[Unreleased]: https://github.com/MacCracken/kashi/compare/1.0.0...HEAD
+[Unreleased]: https://github.com/MacCracken/kashi/compare/1.0.2...HEAD
+[1.0.2]: https://github.com/MacCracken/kashi/compare/1.0.1...1.0.2
+[1.0.1]: https://github.com/MacCracken/kashi/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/MacCracken/kashi/compare/0.9.0...1.0.0
 [0.9.0]: https://github.com/MacCracken/kashi/compare/0.8.0...0.9.0
 [0.8.0]: https://github.com/MacCracken/kashi/compare/0.7.2...0.8.0

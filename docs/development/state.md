@@ -1,12 +1,17 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-06-13 (**1.0.1** — toolchain bump) |
+> **Last refresh**: 2026-06-18 (**1.0.2** — toolchain bump) |
 > **Refresh cadence**: bumped every release.
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
+
+**1.0.2** — Toolchain bump. Pins cyrius `6.2.22` (was `6.2.2`); no
+source changes, public API still frozen. Rebuilt + re-tested clean
+on 6.2.22 (393 unit + 49 integration, 0 failed; `cyrius vet` → "no
+dependencies" for all four freestanding files).
 
 **1.0.1** — Toolchain bump. Pins cyrius `6.2.2` (was `6.0.3`); no
 source changes, public API still frozen. Rebuilt + re-tested clean
@@ -35,7 +40,7 @@ out-of-scope; none are booked.
 
 ## Toolchain
 
-- **Cyrius pin**: `6.2.2` (in `cyrius.cyml [package].cyrius`).
+- **Cyrius pin**: `6.2.22` (in `cyrius.cyml [package].cyrius`).
 
 ## What's implemented
 
