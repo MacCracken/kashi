@@ -7,6 +7,19 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-07-13
+
+**Toolchain bump.** Pins cyrius `6.4.62` (was `6.2.22`) in
+`cyrius.cyml [package].cyrius`. No source changes; the public API
+remains frozen per the 1.0.0 stability promise. Rebuilt and
+re-tested clean on 6.4.62: 393 unit + 49 integration assertions, 0
+failed; `cyrius vet` reports "no dependencies" for all four
+freestanding files.
+
+### Changed
+
+- **`cyrius.cyml`**: `cyrius` pin `6.2.22` → `6.4.62`.
+
 ## [1.0.2] — 2026-06-18
 
 **Toolchain bump.** Pins cyrius `6.2.22` (was `6.2.2`) in
