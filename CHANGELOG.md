@@ -7,6 +7,26 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-08-17 — toolchain pin to 6.5.27
+
+### Changed — `cyrius = "6.5.5"` -> **6.5.27**
+
+Stack-wide sweep so every repo in the desktop stack declares one toolchain. Pins had drifted across
+three lines (6.5.5 / 6.5.20 / 6.5.21) while the installed wrapper was 6.5.27, so every build ran with
+a drift warning and the declared graph did not describe what was actually compiled.
+
+⚠ **THE ARTIFACT CHANGED, so this is not a cosmetic edit.** The build went `243424 -> 251840` bytes and the binary differs. The pin is not a comment: it selects the stdlib snapshot under `~/.cyrius/versions/<pin>/lib`, so moving it swaps the library code this repo compiles against.
+
+⛔ **THIS CORRECTS A HALF-TRUTH IN THE 1.0.4 ENTRY**, which reads *"the pin was documentation, not
+enforcement — `cyrius build` compiles with the INSTALLED `cycc`"*. That is true **of the compiler** and
+it is not the whole mechanism, and believing it was cost a wrong prediction during this sweep: the
+bump was expected to be byte-neutral and was not. `cycc` is indeed the installed binary either way —
+but the **stdlib** resolves from `~/.cyrius/versions/<pin>/lib`, so the pin decides which library
+sources get compiled in. Measured before any other change: the pin bump ALONE moved these bytes.
+
+⚠ The vendored `lib/` was then re-synced to the 6.5.27 bundled set, clearing the
+`./lib/ shadows version-pinned` warning. Tests re-run green after both changes.
+
 ## [1.0.4] - 2026-08-02
 
 ### Changed — cyrius pin 6.4.62 -> 6.5.5
