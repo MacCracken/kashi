@@ -96,3 +96,28 @@ face (PSF import etc.) — that's roadmap M1+ and a separate concern.
   over-engineering: one repo with a file-level boundary is enough, and the
   monolithic-by-design AGNOS principle says coupling lives at the contract
   (the `modules = [...]` list), not at the repo split.
+
+## Amendment — 2026-08-17 (kashi 1.0.6): the library face was unconsumable
+
+⛔ **The Decision above described a two-face split that only ever had one usable face.** "Full library
+face — `src/lib.cyr` … This is what stdlib-linked consumers `include`" could not be done by anyone:
+`src/lib.cyr` begins `include "src/font_data.cyr"`, a path relative to kashi's own root. Vendored into
+a consumer's `lib/`, that include does not resolve and the build fails with
+`cannot open include file: src/font_data.cyr`.
+
+⇒ Every stdlib-linked consumer in the desktop stack — dhancha, crab, puka, aethersafha — took the
+**freestanding kernel core** instead. That reads like four projects ignoring this ADR; they were not.
+It was the only surface that linked.
+
+**Resolution (1.0.6)**: kashi gains `[lib]` + `cyrius distlib` → `dist/kashi.cyr`, the pattern every
+other library in this stack already used. Stdlib consumers that want the runtime surface now declare
+`modules = ["dist/kashi.cyr"]` and it works.
+
+⚠ **This does NOT change what the desktop-stack consumers should take.** Measured on dhancha:
+freestanding core 364,640 bytes vs full face 548,000 bytes — **+183,360 (+50%)** for PSF/BDF/PCF
+import and a runtime registry none of them call, and `CYRIUS_DCE=1` reclaims none of it. They use
+`kashi_font_init` and `kashi_glyph_row`, both in the core. Taking the core is now a *measured choice*
+rather than a forced one, which is the part that was missing.
+
+⚠ The freestanding contract is unchanged: `src/font_data.cyr` stays stdlib-free and `cyrius vet` still
+reports `no dependencies` for it.

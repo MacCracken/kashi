@@ -19,5 +19,32 @@ output = "kashi"
 # bench harnesses only. Keep this list minimal; do not add stdlib to the
 # freestanding core. (PSF import / runtime loading will add `io` / `fs`
 # here when those modules land.)
+# `[lib]` feeds `cyrius distlib` -> dist/kashi.cyr, the PUBLISHED library face.
+#
+# ⛔⛔ WHY THIS EXISTS, AND WHAT WAS BROKEN WITHOUT IT. ADR 0001 says stdlib-linked consumers should
+# take the **library face** (`src/lib.cyr`) and only a freestanding kernel should take the raw core.
+# Every stdlib consumer in the desktop stack — dhancha, crab, puka, aethersafha — took the raw core
+# anyway. Not by preference: `src/lib.cyr` opens with `include "src/font_data.cyr"`, a path relative
+# to THIS repo's root, so the moment it is vendored into a consumer's `lib/` that include cannot
+# resolve and the build dies with `cannot open include file: src/font_data.cyr`. The library face was
+# **literally unconsumable downstream**, so the kernel's escape hatch was the only surface that
+# worked, and the ADR's own recommendation could not be followed by anyone.
+#
+# ⚠ THE FOLD LISTS THE LEAF MODULES, NOT `src/lib.cyr`. distlib concatenates what is listed; feeding
+# it the aggregator would carry its four `include` lines into the bundle and reproduce the exact
+# failure this fixes. Order is the include chain: font_data first (everything reads its tables).
+#
+# ⛔ `src/font_data.cyr` STAYS the freestanding entry point and is NOT replaced by this. agnos has
+# `[deps] stdlib = []` and physically cannot link the stdlib the other three modules use — ADR 0001
+# is unchanged, this adds the missing second half of it.
+[lib]
+modules = [
+    "src/font_data.cyr",
+    "src/font_psf.cyr",
+    "src/font_bdf.cyr",
+    "src/font_pcf.cyr",
+    "src/lib.cyr",
+]
+
 [deps]
 stdlib = ["string", "fmt", "io", "vec", "alloc", "syscalls", "assert", "bench"]

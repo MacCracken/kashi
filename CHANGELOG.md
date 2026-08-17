@@ -7,6 +7,48 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-08-17 — kashi publishes a library face that can actually be consumed
+
+### Fixed — ⛔ `src/lib.cyr` WAS UNCONSUMABLE BY ANY DOWNSTREAM PROJECT
+
+ADR 0001 splits kashi into a freestanding core for the kernel and a stdlib-using **library face**,
+and says plainly that the library face "is what stdlib-linked consumers `include`". No stdlib-linked
+consumer has ever managed it. `src/lib.cyr` opens with `include "src/font_data.cyr"` — a path relative
+to THIS repo's root — so the moment it is vendored into a consumer's `lib/` the include cannot
+resolve:
+
+```
+error: cannot open include file: src/font_data.cyr
+```
+
+⇒ Every consumer in the desktop stack (dhancha, crab, puka, aethersafha) takes the **freestanding
+kernel core** instead. Not by preference — it was the only surface that linked. The ADR's own
+recommendation was impossible to follow, and nothing said so.
+
+### Added — `[lib]` + `dist/kashi.cyr`, the published bundle every other stack lib already had
+
+kashi was the ONLY library in the desktop stack with no `[lib]` section and no `dist/`, which is why
+consumers reached into `src/` at all. `cyrius distlib` now folds the four leaf modules into
+`dist/kashi.cyr` (3,742 lines) with `dist/kashi.deps` beside it.
+
+⚠ **The fold lists the LEAF modules, not `src/lib.cyr`'s includes.** distlib strips include lines, and
+`kashi_font_init` appears exactly once in the bundle — verified, because a fold that duplicated the
+glyph tables would be worse than the bug it replaces.
+
+### Unchanged — the freestanding core, deliberately
+
+⛔ `src/font_data.cyr` remains the entry point for `[deps] stdlib = []` consumers and is NOT
+deprecated. agnos physically cannot link the stdlib the other three modules need. `cyrius vet` still
+reports `no dependencies` for it — ADR 0001's invariant is intact.
+
+⚠ **And the desktop-stack consumers should KEEP taking the core, now as a measured choice rather than
+the only option.** Switching dhancha to the full face was built and measured: **364,640 → 548,000
+bytes, +183,360 (+50%)** for PSF/BDF/PCF import and a runtime font registry it never calls.
+`CYRIUS_DCE=1` reclaims **none** of it. They call `kashi_font_init` and `kashi_glyph_row`, both in the
+core.
+
+⇒ The bundle exists for consumers that want the runtime surface. Wanting glyph bytes is not that.
+
 ## [1.0.5] - 2026-08-17 — toolchain pin to 6.5.27
 
 ### Changed — `cyrius = "6.5.5"` -> **6.5.27**
