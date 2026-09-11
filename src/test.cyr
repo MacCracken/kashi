@@ -47,10 +47,10 @@ fn test_glyph_row_byte() {
     test_group("glyph row byte");
     # byte_idx 0 matches kashi_glyph_row for both built-ins, every row.
     assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0x41, 7, 0),
-    kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), "vga A r7 b0 == glyph_row");
+      kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), "vga A r7 b0 == glyph_row");
     assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0xDB, 0, 0), 0xFF, "vga 0xDB r0 b0");
     assert_eq(kashi_glyph_row_byte(KASHI_FONT_CGA_8X8, 0x41, 4, 0),
-    kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x41, 4), "cga A r4 b0 == glyph_row");
+      kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x41, 4), "cga A r4 b0 == glyph_row");
     # byte_idx > 0 always 0 for stride-1 fonts.
     assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0x41, 7, 1), 0, "vga b1 -> 0");
     assert_eq(kashi_glyph_row_byte(KASHI_FONT_CGA_8X8, 0x41, 4, 2), 0, "cga b2 -> 0");
@@ -502,10 +502,10 @@ fn test_rt_fonts() {
 
     # Unified dispatcher routes built-in ids to the freestanding core.
     assert_eq(kashi_font_row(KASHI_FONT_VGA_8X16, 0x41, 7),
-    kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), "dispatch builtin == core");
+      kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), "dispatch builtin == core");
     assert_eq(kashi_font_row(KASHI_FONT_VGA_8X16, 0x41, 7), 0xFE, "dispatch builtin A row7");
     assert_eq(kashi_font_ptr(KASHI_FONT_CGA_8X8, 0x41),
-    kashi_glyph_ptr(KASHI_FONT_CGA_8X8, 0x41), "dispatch builtin ptr == core");
+      kashi_glyph_ptr(KASHI_FONT_CGA_8X8, 0x41), "dispatch builtin ptr == core");
 
     # Load a PSF1 (256 glyphs, height 2); plant glyph 0x41 rows = 0xAB,0xCD.
     var pbuf = alloc(4 + 256 * 2);
@@ -669,10 +669,10 @@ fn test_register_huge_count() {
     var data = alloc(8);
     # Just over the max: rejected.
     assert_eq(kashi_register_font(8, 8, data, KASHI_PSF_MAX_COUNT + 1),
-    0 - KASHI_EINVAL, "register count > MAX -> -einval");
+      0 - KASHI_EINVAL, "register count > MAX -> -einval");
     # Pathological large: also rejected (no overflow).
     assert_eq(kashi_register_font(8, 8, data, 0x7FFFFFFF),
-    0 - KASHI_EINVAL, "register huge count -> -einval");
+      0 - KASHI_EINVAL, "register huge count -> -einval");
     # At the cap is still accepted (sanity — alloc size 65536*8 = 512KB).
     var data_big = alloc(KASHI_PSF_MAX_COUNT * 8);
     var id = kashi_register_font(8, 8, data_big, KASHI_PSF_MAX_COUNT);
@@ -691,29 +691,29 @@ fn test_uni_token_strict_utf8() {
     store8(b + 2, 0x80); store8(b + 3, 0x80);
     kashi_psf_uni_token(b, 0, 4, KASHI_PSF_KIND_PSF2, &tok);
     assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
-    "psf2 cp > U+10FFFF -> END");
+      "psf2 cp > U+10FFFF -> END");
     # U+D800 = surrogate: 0xED 0xA0 0x80.
     store8(b + 0, 0xED); store8(b + 1, 0xA0); store8(b + 2, 0x80);
     kashi_psf_uni_token(b, 0, 3, KASHI_PSF_KIND_PSF2, &tok);
     assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
-    "psf2 surrogate U+D800 -> END");
+      "psf2 surrogate U+D800 -> END");
     # U+DFFF = surrogate high end: 0xED 0xBF 0xBF.
     store8(b + 0, 0xED); store8(b + 1, 0xBF); store8(b + 2, 0xBF);
     kashi_psf_uni_token(b, 0, 3, KASHI_PSF_KIND_PSF2, &tok);
     assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
-    "psf2 surrogate U+DFFF -> END");
+      "psf2 surrogate U+DFFF -> END");
     # Just below surrogate range (U+D7FF) is still valid: 0xED 0x9F 0xBF.
     store8(b + 0, 0xED); store8(b + 1, 0x9F); store8(b + 2, 0xBF);
     kashi_psf_uni_token(b, 0, 3, KASHI_PSF_KIND_PSF2, &tok);
     assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_CP,
-    "psf2 U+D7FF (just below surrogates) -> CP");
+      "psf2 U+D7FF (just below surrogates) -> CP");
     assert_eq(load64(&tok + KASHI_UT_CP), 0xD7FF, "psf2 U+D7FF cp value");
     # U+10FFFF (max valid): 0xF4 0x8F 0xBF 0xBF.
     store8(b + 0, 0xF4); store8(b + 1, 0x8F);
     store8(b + 2, 0xBF); store8(b + 3, 0xBF);
     kashi_psf_uni_token(b, 0, 4, KASHI_PSF_KIND_PSF2, &tok);
     assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_CP,
-    "psf2 U+10FFFF (max) -> CP");
+      "psf2 U+10FFFF (max) -> CP");
     assert_eq(load64(&tok + KASHI_UT_CP), 0x10FFFF, "psf2 U+10FFFF cp value");
     return 0;
 }
@@ -755,7 +755,7 @@ fn test_rt_wide() {
     assert_eq(kashi_font_row_byte(id, 0, 0, 1), 0x34, "font_row_byte cp 0 b1");
     # Built-in passthrough still works.
     assert_eq(kashi_font_row_byte(KASHI_FONT_VGA_8X16, 0x41, 7, 0),
-    kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), "dispatch builtin row_byte b0");
+      kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), "dispatch builtin row_byte b0");
     assert_eq(kashi_font_row_byte(KASHI_FONT_VGA_8X16, 0x41, 7, 1), 0, "builtin b1 -> 0");
     return 0;
 }
@@ -908,7 +908,7 @@ fn test_vga_9x16_derived() {
 
     # Library-face codepoint dispatcher must route the new built-in id 2 to core.
     assert_eq(kashi_font_row_byte(KASHI_FONT_VGA_9X16, 0xDB, 0, 1), 0x80,
-    "library font_row_byte dispatches vga9");
+      "library font_row_byte dispatches vga9");
     return 0;
 }
 
@@ -1398,34 +1398,34 @@ fn test_psf_overlong_utf8() {
     store8(b + 0, 0xC0); store8(b + 1, 0x80);
     kashi_psf_uni_token(b, 0, 2, KASHI_PSF_KIND_PSF2, &tok);
     assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
-    "overlong 2-byte U+0000 -> END");
+      "overlong 2-byte U+0000 -> END");
     # 2-byte overlong of U+0041 ('A'): 0xC1 0x81
     store8(b + 0, 0xC1); store8(b + 1, 0x81);
     kashi_psf_uni_token(b, 0, 2, KASHI_PSF_KIND_PSF2, &tok);
     assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
-    "overlong 2-byte U+0041 -> END");
+      "overlong 2-byte U+0041 -> END");
     # 3-byte overlong of U+0000: 0xE0 0x80 0x80
     store8(b + 0, 0xE0); store8(b + 1, 0x80); store8(b + 2, 0x80);
     kashi_psf_uni_token(b, 0, 3, KASHI_PSF_KIND_PSF2, &tok);
     assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
-    "overlong 3-byte U+0000 -> END");
+      "overlong 3-byte U+0000 -> END");
     # 3-byte overlong of U+0080: 0xE0 0x82 0x80
     store8(b + 0, 0xE0); store8(b + 1, 0x82); store8(b + 2, 0x80);
     kashi_psf_uni_token(b, 0, 3, KASHI_PSF_KIND_PSF2, &tok);
     assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
-    "overlong 3-byte U+0080 -> END");
+      "overlong 3-byte U+0080 -> END");
     # 4-byte overlong of U+0000: 0xF0 0x80 0x80 0x80
     store8(b + 0, 0xF0); store8(b + 1, 0x80);
     store8(b + 2, 0x80); store8(b + 3, 0x80);
     kashi_psf_uni_token(b, 0, 4, KASHI_PSF_KIND_PSF2, &tok);
     assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
-    "overlong 4-byte U+0000 -> END");
+      "overlong 4-byte U+0000 -> END");
     # 4-byte overlong of U+FFFF: 0xF0 0x8F 0xBF 0xBF
     store8(b + 0, 0xF0); store8(b + 1, 0x8F);
     store8(b + 2, 0xBF); store8(b + 3, 0xBF);
     kashi_psf_uni_token(b, 0, 4, KASHI_PSF_KIND_PSF2, &tok);
     assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END,
-    "overlong 4-byte U+FFFF -> END");
+      "overlong 4-byte U+FFFF -> END");
 
     # Just above the boundaries — should still parse.
     # Smallest valid 2-byte: U+0080 = 0xC2 0x80
@@ -1498,7 +1498,7 @@ fn test_attach_binary() {
     }
 
     assert_eq(kashi_attach_unicode_table(id, tab, pos, KASHI_PSF_KIND_PSF1),
-    KASHI_OK, "attach binary ok");
+      KASHI_OK, "attach binary ok");
     # Post-attach: U+E000 resolves to glyph 0x41 (rows 0x11/0x22/0x33).
     assert_eq(kashi_font_row(id, 0xE000, 0), 0x11, "binary attach -> U+E000 r0");
     assert_eq(kashi_font_row(id, 0xE000, 1), 0x22, "binary attach -> U+E000 r1");
@@ -1548,27 +1548,27 @@ fn test_attach_errors() {
     store8(tab + 2, 0xFF); store8(tab + 3, 0xFF);
     # Built-in id rejected.
     assert_lt(kashi_attach_unicode_table(KASHI_FONT_VGA_8X16, tab, 4, KASHI_PSF_KIND_PSF1),
-    0, "attach to builtin -> negative");
+      0, "attach to builtin -> negative");
     assert_lt(kashi_attach_unicode_text(KASHI_FONT_CGA_8X8, tab, 4), 0,
-    "attach text to builtin -> negative");
+      "attach text to builtin -> negative");
     # Null buf rejected.
     assert_lt(kashi_attach_unicode_table(id, 0, 4, KASHI_PSF_KIND_PSF1), 0,
-    "attach null buf -> negative");
+      "attach null buf -> negative");
     # Bad kind rejected.
     assert_lt(kashi_attach_unicode_table(id, tab, 4, 99), 0,
-    "attach bad kind -> negative");
+      "attach bad kind -> negative");
     # Text parser: malformed line (no 0x prefix).
     var bad = alloc(64);
     var bp = 0;
     bp = _bdf_str(bad, bp, "garbage line\n");
     assert_lt(kashi_attach_unicode_text(id, bad, bp), 0,
-    "attach text malformed -> negative");
+      "attach text malformed -> negative");
     # Text parser: 0x prefix but missing U+ codepoints (no valid pairs).
     var empty = alloc(64);
     var ep = 0;
     ep = _bdf_str(empty, ep, "# just a comment\n");
     assert_lt(kashi_attach_unicode_text(id, empty, ep), 0,
-    "attach text no pairs -> negative");
+      "attach text no pairs -> negative");
     return 0;
 }
 
@@ -1585,7 +1585,7 @@ fn test_audit_f1_psf1_unknown_mode() {
     store8(b + 2, 0x10);    # mode bit 4 set (unknown)
     store8(b + 3, 8);
     assert_eq(kashi_psf_parse(b, 4 + 256 * 8, &hdr), KASHI_EFORMAT,
-    "psf1 mode 0x10 -> EFORMAT");
+      "psf1 mode 0x10 -> EFORMAT");
     # Mode 0x07 (all defined bits) is still accepted.
     store8(b + 2, 0x07);
     # Need bigger buffer for 512-glyph bank.
@@ -1595,7 +1595,7 @@ fn test_audit_f1_psf1_unknown_mode() {
     store8(b2 + 0, 0x36); store8(b2 + 1, 0x04);
     store8(b2 + 2, 0x07); store8(b2 + 3, 8);
     assert_eq(kashi_psf_parse(b2, 4 + 512 * 8, &hdr), KASHI_OK,
-    "psf1 mode 0x07 (all defined) -> OK");
+      "psf1 mode 0x07 (all defined) -> OK");
     return 0;
 }
 
@@ -1608,11 +1608,11 @@ fn test_audit_f2_psf2_unknown_flags() {
     # Set flags = 0x02 (bit 1, undefined). Bit 0 = HAS_UNICODE is the only valid flag.
     _put32(b, 12, 0x02);
     assert_eq(kashi_psf_parse(b, len, &hdr), KASHI_EFORMAT,
-    "psf2 flags 0x02 -> EFORMAT");
+      "psf2 flags 0x02 -> EFORMAT");
     # flags 0x01 (HAS_UNICODE) still accepted.
     _put32(b, 12, 0x01);
     assert_eq(kashi_psf_parse(b, len, &hdr), KASHI_OK,
-    "psf2 flags 0x01 (HAS_UNICODE) -> OK");
+      "psf2 flags 0x01 (HAS_UNICODE) -> OK");
     return 0;
 }
 
@@ -1629,7 +1629,7 @@ fn test_audit_f3_bdf_int_overflow() {
     var hdr[56];
     var ctx[32];
     assert_eq(kashi_bdf_parse_header(b, p, &hdr, &ctx), KASHI_BDF_EFORMAT,
-    "bdf CHARS with 11 digits -> EFORMAT");
+      "bdf CHARS with 11 digits -> EFORMAT");
     return 0;
 }
 
@@ -1649,7 +1649,7 @@ fn test_audit_f5_pcf_metrics_unknown_bits() {
     var orig2 = load8(buf + 56 + 1);
     store8(buf + 56 + 1, orig2 | 0x02);
     assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT,
-    "pcf METRICS bit 9 set -> EFORMAT");
+      "pcf METRICS bit 9 set -> EFORMAT");
     return 0;
 }
 
@@ -1668,7 +1668,7 @@ fn test_audit_f6_pcf_bitmaps_unknown_bits() {
     # BITMAPS body starts at offset 56 + 21 = 77.
     store8(buf + 77 + 1, load8(buf + 77 + 1) | 0x01);
     assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT,
-    "pcf BITMAPS COMPRESSED bit -> EFORMAT");
+      "pcf BITMAPS COMPRESSED bit -> EFORMAT");
     return 0;
 }
 
@@ -1684,7 +1684,7 @@ fn test_audit_f7_pcf_encodings_unknown_bits() {
     store8(buf + 44 + 1, load8(buf + 44 + 1) | 0x01);   # bit 8
     store8(buf + 137 + 1, load8(buf + 137 + 1) | 0x01);
     assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT,
-    "pcf BDF_ENCODINGS COMPRESSED bit -> EFORMAT");
+      "pcf BDF_ENCODINGS COMPRESSED bit -> EFORMAT");
     return 0;
 }
 
@@ -1699,7 +1699,7 @@ fn test_audit_f8_pcf_duplicate_toc() {
     # ENCODINGS TOC at offset 40; type field at +0 → buf+40.
     _put32(buf, 40, 0x04);   # change from PCF_TYPE_BDF_ENCODINGS (0x20) to PCF_TYPE_METRICS (0x04)
     assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT,
-    "pcf duplicate METRICS TOC entry -> EFORMAT");
+      "pcf duplicate METRICS TOC entry -> EFORMAT");
     return 0;
 }
 

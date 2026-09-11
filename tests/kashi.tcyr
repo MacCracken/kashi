@@ -367,14 +367,14 @@ fn test_psf_tab_file_roundtrip() {
     var id = kashi_load_psf_file(psf_path);
     assert_gte(id, KASHI_RT_FONT_BASE, "tableless psf file load");
     assert_eq(kashi_attach_unicode_text_file(id, tab_path), KASHI_OK,
-    "attach tab file ok");
+      "attach tab file ok");
     # Both attached codepoints resolve to glyph 0x21.
     assert_eq(kashi_font_row(id, 0x2603, 0), 0xAA, "U+2603 r0");
     assert_eq(kashi_font_row(id, 0x2603, 2), 0xCC, "U+2603 r2");
     assert_eq(kashi_font_row(id, 0xFE0F, 0), 0xAA, "U+FE0F r0");
     # Missing .tab file -> negative (file_read_all error path).
     assert_lt(kashi_attach_unicode_text_file(id, "/tmp/kashi_no_such_tab_zzq.tab"), 0,
-    "missing tab file -> negative");
+      "missing tab file -> negative");
 
     syscall(SYS_UNLINK, psf_path);
     syscall(SYS_UNLINK, tab_path);
