@@ -7,6 +7,15 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-09-11
+
+### Changed
+
+- **Toolchain `6.5.27` → `6.6.2`.** No source change. The `Result` value form
+  introduced at 6.6.0 does not touch this repo — zero compiler rejections, zero
+  fail-open sites, zero arity collisions, and neither of the two `callptr` sites
+  reaches a pair-returning target. **49 assertions** pass unchanged.
+
 ## [1.0.6] - 2026-08-17 — kashi publishes a library face that can actually be consumed
 
 ### Fixed — ⛔ `src/lib.cyr` WAS UNCONSUMABLE BY ANY DOWNSTREAM PROJECT
