@@ -7,6 +7,17 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-09-14
+
+### Changed
+
+- **Toolchain `6.6.2` → `6.6.4`**, moving with agnos 1.57.4 (which folds `src/font_data.cyr` into its
+  kernel and pins `KASHI_REF` to a tag). No source change; `cyrius test` **49 + 1 passed, 0 failed**;
+  `cyrius vet src/font_data.cyr` still reports the freestanding face as dependency-free. ⚠ The
+  ignored `lib/` snapshot on the dev box carried ten files no installed toolchain ships (leftovers of
+  older pins); `cyrius lib sync --full` refreshes the 110 that 6.6.4 has — a build-box hygiene note,
+  nothing the repo tracks.
+
 ## [1.0.7] - 2026-09-11
 
 ### Changed

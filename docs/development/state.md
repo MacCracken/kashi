@@ -8,6 +8,11 @@
 
 ## Version
 
+**1.0.8** — Toolchain bump. Pins cyrius `6.6.4` (was `6.6.2`); no
+source changes, public API still frozen. Re-tested clean on 6.6.4
+(49 integration + 1 unit, 0 failed; `cyrius vet src/font_data.cyr` →
+dependency-free). Moves with agnos 1.57.4.
+
 **1.0.3** — Toolchain bump. Pins cyrius `6.4.62` (was `6.2.22`); no
 source changes, public API still frozen. Rebuilt + re-tested clean
 on 6.4.62 (393 unit + 49 integration, 0 failed; `cyrius vet` → "no
