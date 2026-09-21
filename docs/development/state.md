@@ -1,12 +1,22 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-07-13 (**1.0.3** — toolchain bump) |
+> **Last refresh**: 2026-09-21 (**1.0.9** — toolchain bump) |
 > **Refresh cadence**: bumped every release.
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
+
+**1.0.9** — Toolchain bump. Pins cyrius `6.6.6` (was `6.6.4`); no
+source changes, public API still frozen. Re-verified on 6.6.6 per the
+roadmap recipe: 393 unit + 49 integration assertions, 0 failed;
+`cyrius vet src/font_data.cyr` → dependency-free; fuzz clean; bench
+flat within noise. The full glyph-sheet render (3 fonts × 224 glyphs,
+every row byte) is **byte-identical** between the 6.6.4 and 6.6.6
+builds, and `dist/kashi.cyr` differs only in its version stamp.
+Library 256,592 B; DCE'd demo 137,936 B. Ignored `lib/` re-vendored to
+the 6.6.6 snapshot (6.6.5 moved the aarch64 syscall peer).
 
 **1.0.8** — Toolchain bump. Pins cyrius `6.6.4` (was `6.6.2`); no
 source changes, public API still frozen. Re-tested clean on 6.6.4
@@ -50,7 +60,7 @@ out-of-scope; none are booked.
 
 ## Toolchain
 
-- **Cyrius pin**: `6.4.62` (in `cyrius.cyml [package].cyrius`).
+- **Cyrius pin**: `6.6.6` (in `cyrius.cyml [package].cyrius`).
 
 ## What's implemented
 

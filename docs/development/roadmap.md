@@ -73,7 +73,8 @@ out-of-scope feature creep.
 
 ## Moving the cyrius pin to 6.6.6
 
-**Current pin: `cyrius = "6.6.4"`.** Nothing must change first — pin bump and rebuild.
+**Done — 1.0.9 (2026-09-21) pins `cyrius = "6.6.6"`** (was `6.6.4`). Nothing had to change
+first — pin bump and rebuild, as the check below predicted.
 
 **What was checked** (7 `.cyr` under `src/`; vendored `lib/` excluded):
 
@@ -108,6 +109,12 @@ corrected ENTRY stack bases, plus 6.6.6's nine new refusals.
 `dist/kashi.cyr`**, then render a glyph sheet and compare it byte-for-byte against the
 pre-bump render. kashi emits fixed data; a pixel difference after a toolchain bump means
 codegen changed what the font says, which is worth stopping for rather than tagging through.
+
+**Result (1.0.9):** every step ran as written. The glyph sheet — 3 fonts × 224 glyphs, every row
+byte via `kashi_glyph_row_byte`, cross-checked against `kashi_glyph_row` — is **byte-identical**
+between the 6.6.4 and 6.6.6 builds (sha256 `b68ca4d9…`); `dist/kashi.cyr` differs only in its
+version stamp; 393 + 49 assertions pass; `cyrius vet` still dependency-free; bench flat within
+noise. Full numbers in `CHANGELOG.md` *1.0.9*.
 
 ⚠ **`src/font_data.cyr` is the freestanding entry point included directly by the agnos
 kernel** (`cyrius.cyml` records why it stays that way). The agnos kernel compiles it with

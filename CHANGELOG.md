@@ -7,6 +7,36 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-09-21
+
+### Changed
+
+- **Toolchain `6.6.4` → `6.6.6`.** No source change; the public API stays frozen. Ran the
+  roadmap's *Moving the cyrius pin to 6.6.6* recipe end to end — `cyrius deps` → build → test →
+  `cyrius distlib` — then rendered the full glyph sheet (3 built-in fonts × 224 glyphs, every row
+  byte via `kashi_glyph_row_byte`, cross-checked against `kashi_glyph_row`) on **both** toolchains
+  and compared: **byte-identical** (sha256 `b68ca4d9…`), so 6.6.6 codegen did not change what the
+  font says. `dist/kashi.cyr` regenerated; only its version stamp moved.
+  - Neither 6.6.5's tightenings (struct-typed locals under a binary operator, the moved aarch64
+    syscall peer) nor 6.6.6's (top-level block `var` scope, one-definition globals, the nine new
+    refusals) touch this tree — zero rejections; `cyrlint` still **0 warnings / 0 untracked
+    deferrals** across all seven `src/*.cyr`; `cyrius fmt --check` clean. The Windows
+    `O_APPEND`/`O_TRUNC` fix is not a kashi exposure (kashi never opens a file for writing — see
+    the roadmap section for the full check).
+  - **393 unit + 49 integration assertions, 0 failed**; `cyrius vet src/font_data.cyr` → "no
+    dependencies"; fuzz harness clean at the 30 s budget.
+  - Bench flat within noise (6.6.4 → 6.6.6): `glyph_row` 16 → 16 ns, `glyph_ptr` 6 → 7 ns,
+    `scan_vga_8x16` 57.8 → 56.2 µs, `font_row_builtin` 19 → 19 ns, `font_row_runtime`
+    43 → 43 ns, `font_row_runtime_cp` 57 → 58 ns.
+  - Binaries grow with the 6.6.6 stdlib, not with kashi: library `251,888 → 256,592 B` (+4,704),
+    DCE'd demo `137,328 → 137,936 B` (+608).
+  - 6.6.5 requires re-vendoring at the bump (its aarch64 peer moved `SYS_UNLINKAT` 35 → 263):
+    `cyrius deps` brought the 18-file declared `[deps].stdlib` closure to 6.6.6 and `cyrius lib
+    sync --full` the whole snapshot. The ten orphan modules the 1.0.8 note flagged (`agnosys`,
+    `base64`, `bigint`, `csv`, `cyml`, `json`, `linalg`, `matrix`, `toml`, `u128` — shipped by no
+    installed 6.6.x) are gone from the dev box; the ignored `lib/` is now byte-identical to the
+    6.6.6 snapshot. Nothing the repo tracks.
+
 ## [1.0.8] - 2026-09-14
 
 ### Changed
