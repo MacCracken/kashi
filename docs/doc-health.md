@@ -46,8 +46,8 @@ interiors lag their bumped headers.
 
 | Bucket | Count | What it means |
 |---|---|---|
-| ✅ **Fresh** | 30 | CHANGELOG, VERSION, SECURITY; all 12 `adr/` files (0008–0010 new since last sweep); `roadmap.md`; the 3 loading guides; the 3 audits (0.8.0 new); all 7 `api/` files (new — frozen surface, all 43 public symbols verified documented); this ledger. |
-| 🟡 **Stale** | 10 | `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `cyrius.cyml`, `architecture/README.md` + `001`, `development/state.md` (interior), `guides/getting-started.md`, `benchmarks.md`, `benchmarks/history.csv`. Two root causes: **(a)** 1.0.1's `cyaudit vet` → `cyrius vet` retirement and 1.0.6's `dist/kashi.cyr` bundle never propagated past CHANGELOG / ADR 0001; **(b)** 0.1.0-era numbers (buffer sizes, "booked" language) were never refreshed. |
+| ✅ **Fresh** | 31 | CHANGELOG, VERSION, SECURITY; all 12 `adr/` files (0008–0010 new since last sweep); `roadmap.md`; the 3 loading guides; the 3 audits (0.8.0 new); all 7 `api/` files (new — frozen surface, all 43 public symbols verified documented); this ledger. |
+| 🟡 **Stale** | 9 | `README.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `cyrius.cyml`, `architecture/README.md` + `001`, `development/state.md` (interior), `benchmarks.md`, `benchmarks/history.csv` (`guides/getting-started.md` rewritten 2026-09-21). Two root causes: **(a)** 1.0.1's `cyaudit vet` → `cyrius vet` retirement and 1.0.6's `dist/kashi.cyr` bundle never propagated past CHANGELOG / ADR 0001; **(b)** 0.1.0-era numbers (buffer sizes, "booked" language) were never refreshed. |
 | 🟠 **Read-through outstanding** | 0 | — |
 | 🔵 **Probably evergreen** | 2 | `CODE_OF_CONDUCT.md`, `LICENSE` — standard; re-read annually. |
 | 📦 **Archive** | 0 | — |
@@ -104,7 +104,7 @@ interiors lag their bumped headers.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `guides/getting-started.md` | 2026-05-27 | 🟡 Stale | **Unrevised since the 0.1.0 scaffold** — the widest gap in the tree. Says `src/lib.cyr` "books the runtime surface" and "Consumers who can link the stdlib include this" (superseded by 1.0.6 `dist/kashi.cyr`); "Runtime font loading … see the roadmap M1" (M1 shipped 0.2.0; three loading guides exist); Layout omits the parser modules and `docs/api/`; "Adding a font" checklist omits `kashi_font_stride` (0.5.0) and the ≥64 KB-literal toolchain caveat the roadmap's 6.6.6 section asks for. Build block itself is still correct. |
+| `guides/getting-started.md` | 2026-09-21 | ✅ Fresh | Rewritten for the 1.0 surface: pin/shim prerequisites, the full CI command set, layout table, pick-a-face guidance with the +50 % measurement, core consumption (`lib/kashi_font_data.cyr`) + render loop + wide-glyph/stride note, library-face consumption via `dist/kashi.cyr` (with the ⚠ that the bundle is not yet tracked, so `git`+`tag` cannot resolve it), 8-step add-a-font checklist (RT base bump, fset guard, fuzz known-font list, ≥64 KB caveat, distlib), add-a-format, pin-bump pointer. |
 | `guides/loading-psf-fonts.md` | 2026-05-28 | ✅ Fresh | 0.7.2: load, font ids (0/1/2 built-in, ≥3 runtime), codepoint vs raw-index, wide-glyph rows, ligature lookup, sidecar tables (binary + text), limits incl. UTF-8 strictness. One stale code comment: `# always 8 in M1` on `kashi_rt_font_width` (wide fonts since 0.5.0). |
 | `guides/loading-bdf-fonts.md` | 2026-05-28 | ✅ Fresh | *New since last sweep.* 0.7.0: load, read, accepted subset (strict BBX, `ENCODING -1`, 4 MiB cap), minimal example BDF, posture, PSF-vs-BDF. `cyaudit vet` name only. |
 | `guides/loading-pcf-fonts.md` | 2026-05-28 | ✅ Fresh | *New since last sweep.* 0.7.1: load, read, accepted subset (strict metrics, both layouts, four byte×bit combos, geometry + 4 MiB caps), posture, PSF/BDF/PCF choice. `cyaudit vet` name only. |
@@ -151,13 +151,15 @@ Resolved since the 0.6.0 sweep:
 
 Open at 1.0.9, roughly by value:
 
-- **`guides/getting-started.md`** — rewrite for the 1.0 surface (parser
-  modules, `docs/api/`, `dist/kashi.cyr` consumption, three loading
-  guides, `kashi_font_stride` + the ≥64 KB-literal caveat in "Adding a
-  font"). The only doc still describing 0.1.0 as the present.
+- ~~**`guides/getting-started.md`** — rewrite for the 1.0 surface.~~ ✅
+  rewritten 2026-09-21.
 - **1.0.6 `dist/kashi.cyr` propagation** — the vendorable library-face
   bundle is documented only in CHANGELOG, the `cyrius.cyml` comment, and
-  the ADR 0001 amendment. Surface it in README (userland quick start),
+  the ADR 0001 amendment — and all three call it "published" while
+  `dist/` is gitignored and unattached to releases, so the `git` + `tag`
+  form of `modules = ["dist/kashi.cyr"]` cannot resolve (checked
+  2026-09-21 against the cached 1.0.6–1.0.8 clones: no `dist/`). Tracking
+  it is the roadmap item; the three docs need a currency fix once it lands. Surface it in README (userland quick start),
   CONTRIBUTING (regenerate after touching `[lib]` modules), CLAUDE.md
   Quick Start / Work Loop, `api/README.md` two-faces, `state.md`.
 - **1.0.1 `cyrius vet` naming** — living docs still say `cyaudit vet`:
