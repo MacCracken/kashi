@@ -1,6 +1,6 @@
 # 0002 — Runtime font registry and unified accessor dispatch
 
-**Status**: Accepted (glyph-index addressing refined by [ADR 0003](0003-codepoint-addressing-runtime-fonts.md))
+**Status**: Accepted (glyph-index addressing refined by [ADR 0003](0003-codepoint-addressing-runtime-fonts.md); `KASHI_RT_FONT_BASE` moved 2 → 3 when [ADR 0006](0006-vga-9x16-derived-builtin.md) added the third built-in — the text below records the value as decided)
 **Date**: 2026-05-27
 
 ## Context

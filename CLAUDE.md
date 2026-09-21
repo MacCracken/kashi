@@ -50,9 +50,11 @@ stdlib-using library face — kept coherent by hand. A new built-in font
 lands in the freestanding core (so the kernel sees it); runtime loading /
 PSF import lands in the library face. The discipline that matters is
 one-directional: library-face work must **never** leak an `include` or
-stdlib call into `src/font_data.cyr` (verify with `cyrius vet`). The 0.1.0
-baseline shipped the freestanding core + a booked library skeleton; the
-library face is built out along the roadmap.
+stdlib call into `src/font_data.cyr` (verify with `cyrius vet`). Both faces
+are complete and frozen since 1.0.0. Outside this repo the library face is
+the `cyrius distlib` bundle `dist/kashi.cyr` (+ `dist/kashi.deps`),
+tracked in git since 1.0.10 — regenerate it after touching any `[lib]`
+module; CI fails on drift.
 
 ## Current State
 
@@ -72,9 +74,10 @@ structure** — use the tools. If a tool is missing something, fix the tool.
 cyrius deps                              # resolve stdlib deps
 cyrius build src/lib.cyr build/kashi     # build the library
 cyrius run   src/main.cyr                # demo (renders 'A' in both fonts)
-cyrius test  src/test.cyr                # unit tests
-cyrius test  tests/kashi.tcyr            # integration tests
+cyrius test                              # unit (src/test.cyr) + integration (tests/kashi.tcyr)
+cyrius fuzz  tests/kashi.fcyr            # parser fuzz + accessor bounds contract
 cyrius vet   src/font_data.cyr           # confirm freestanding core has 0 deps
+cyrius distlib                           # regenerate the tracked dist/kashi.cyr bundle
 ```
 
 ## Key Principles
@@ -83,7 +86,10 @@ cyrius vet   src/font_data.cyr           # confirm freestanding core has 0 deps
 - **The freestanding boundary is sacred** — `src/font_data.cyr` never gains
   a dependency. Verify with `cyrius vet`.
 - **Glyph bytes are load-bearing** — the built-in tables stay byte-for-byte
-  identical to what agnos renders; fidelity is asserted in `src/test.cyr`.
+  identical to what agnos renders; fidelity is asserted in `src/test.cyr`
+  and the whole-table sha256 pin `docs/examples/glyph_sheet.sha256` (CI
+  compares the rendered sheet against it). A glyph change updates the pin
+  deliberately, in the same change, with the reason in CHANGELOG.
 - Test after every change, not after the feature is "done".
 - ONE change at a time — never bundle unrelated changes.
 - Bound every accessor: out-of-range `(font_id, ch, row)` returns safe
@@ -127,7 +133,8 @@ cyrius vet   src/font_data.cyr           # confirm freestanding core has 0 deps
 ### Work Loop (continuous)
 
 1. **Work phase** — features, roadmap items, bug fixes.
-2. **Build check** — `cyrius build` + `cyrius vet src/font_data.cyr`.
+2. **Build check** — `cyrius build` + `cyrius vet src/font_data.cyr` +
+   `cyrius distlib` (the tracked bundle must not drift).
 3. **Test + benchmark additions** for new code.
 4. **Internal review** — performance, memory, correctness, edge cases.
 5. **Documentation** — CHANGELOG, `docs/development/state.md`, any ADR earned.

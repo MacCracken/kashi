@@ -144,7 +144,7 @@ kashi_font_row(id, 0x42, 0)   # -> 0 (unmapped — 'B' isn't in this font)
 - **Validation-first**: header keywords, geometry, glyph count, and
   each glyph's BBX are checked before the BITMAP hex is read. The
   parser (`src/font_bdf.cyr`) is heapless and dependency-free
-  (`cyaudit vet` reports "no dependencies"), and is fuzzed in
+  (`cyrius vet` reports "no dependencies"), and is fuzzed in
   `tests/kashi.fcyr` (2000 rounds of random / templated /
   mutated-template / truncated-template inputs).
 - Loaded fonts own a copy of their glyph bytes — the source buffer is

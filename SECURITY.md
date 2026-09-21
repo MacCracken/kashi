@@ -32,7 +32,7 @@ Security-relevant areas:
 - **Font-file parsing** — PSF1/PSF2 (`src/font_psf.cyr`), BDF
   (`src/font_bdf.cyr`), and PCF (`src/font_pcf.cyr`) all parse
   untrusted file bytes. Each parser is **heapless and
-  dependency-free** (`cyaudit vet` reports "no dependencies"),
+  dependency-free** (`cyrius vet` reports "no dependencies"),
   validation-first (magic, header, geometry, glyph count, total
   length all checked before any indexed read past the fixed header),
   and fuzzed in `tests/kashi.fcyr` (~7,500 rounds across the four

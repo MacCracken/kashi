@@ -49,7 +49,7 @@ Use the **unified accessors** — they work for built-in *and* runtime ids:
 
 ```cyrius
 var rows = kashi_rt_font_height(id);     # glyph height (runtime fonts)
-var w    = kashi_rt_font_width(id);      # always 8 in M1
+var w    = kashi_rt_font_width(id);      # 1..32 since 0.5.0 (ADR 0005); stride = ceil(w / 8)
 var n    = kashi_rt_font_count(id);      # number of glyphs
 
 var row = 0;

@@ -7,6 +7,88 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-09-21
+
+No public-API change. Three gaps found by the 2026-09-21 roadmap review, each closed and proven,
+plus the documentation-currency backlog the refreshed `docs/doc-health.md` ledger listed.
+
+### Fixed
+
+- **`dist/kashi.cyr` was never actually published.** 1.0.6 added the `[lib]` fold and called
+  `dist/kashi.cyr` "the PUBLISHED library face", but `dist/` was gitignored and no release attached
+  it — so a consumer's `cyrius deps` resolving `git` + `tag` + `modules = ["dist/kashi.cyr"]` found
+  **no `dist/` at all** (checked against the cached 1.0.6 / 1.0.7 / 1.0.8 clones). The bundle worked
+  only through a sibling `path` checkout after a local `cyrius distlib`; four consumers carry a note
+  to "switch to `dist/kashi.cyr` the day you need runtime loading" and that day would have failed.
+  Now: `dist/kashi.cyr` + `dist/kashi.deps` are **tracked** (`.gitignore` re-includes, the sankoch
+  pattern every other bundle-publishing library in the stack uses), **attached to releases** as
+  `kashi-<tag>-lib.cyr` / `-lib.deps` with checksums, and **gated** — CI regenerates the bundle and
+  fails if either file is untracked or differs; the release refuses a bundle whose `# Version:` is
+  not the tag. Proven end to end with a scratch consumer resolving `git` + `tag` against a tagged
+  clone: `lib/kashi.cyr` vendored, the sidecar's eight stdlib leaves pulled, linked, and answering
+  through both the built-in accessor and a `kashi_register_font` round-trip. The gate was also shown
+  to fail on a one-line drift. ADR 0001 carries the addendum.
+- **The fuzz harness false-failed on the 9×16 built-in, and never fuzzed the core accessors.**
+  `tests/kashi.fcyr`'s known-font list predated `KASHI_FONT_VGA_9X16` (0.5.1), so
+  `fuzz_main(2, 'A', 5)` returned FAIL — latent only because `main()` fed the bounds contract two
+  canned seeds and nothing random (the random loops covered the parsers; `cyrius fuzz` just runs
+  `main()`). The README's "fuzzed over the full integer range of each argument" was aspirational
+  for the accessors. Now: id 2 listed; the contract split into `fuzz_core(font, ch, row)` taking
+  full-width integers with **eight distinct failure codes** (row not a byte / unencoded char /
+  unknown font / null ptr for a valid glyph / out-of-range row not sentinel / leading byte ≠
+  `load8(p + row * stride)` / `row_byte` ≠ the row's bytes / `byte_idx` ≥ stride or negative not
+  sentinel) — stride-aware, so the 9×16's two-byte rows are checked, not just the 8-wide fonts'; a
+  third canned seed for id 2; and a **200,000-triple random driver** over three shapes (byte-sized,
+  full-width i64 incl. negatives, near-edge around `0x20` / `0x7F` / `0xFF` and the cell heights).
+  **Mutation-tested**: removing the id (with the seed off) → code 3 from the random loop; a
+  non-stride contract → caught; and three injected *library* bugs — `kashi_glyph_row` dropping its
+  row upper bound → 5, `kashi_glyph_row_byte` accepting `byte_idx == stride` → caught,
+  `kashi_glyph_ptr` losing the unknown-font null → 3. Runtime cost of the driver: ~40 ms.
+
+### Added
+
+- **`docs/examples/glyph_sheet.cyr` + `docs/examples/glyph_sheet.sha256` — the glyph-sheet pin.**
+  A runnable freestanding-core example (resolves the empty `docs/examples/` open since 0.1.0) that
+  dumps all **672** built-in glyphs (3 fonts × 224) as hex, every row byte via
+  `kashi_glyph_row_byte` cross-checked against `kashi_glyph_row`. CI builds it, runs it, and
+  compares the output's sha256 with the pin (`b68ca4d9…`, the value the 1.0.9 bump measured on
+  both toolchains). This is the roadmap's "compare the sheet byte-for-byte" step run on every push:
+  a glyph-table edit, a toolchain whose codegen changes what the font says, and a format change in
+  the example all move it, and all three must be deliberate. Shown to catch a single flipped bit.
+  The example is in the fmt / lint gates too.
+- **`tests/kashi.tcyr` — `vga 9x16 structural` group** (+8 assertions, **57** total): stride 2 /
+  width 9 / height 16 / count 224; pointers 32 apart; leading byte == the 8×16 row it derives from
+  (via both accessors); the VGA col-9 rule holds across `0x20..0xFF` (box-drawing `0xC0..0xDF`
+  copies col 8, everything else 0); `byte_idx 2` is the sentinel. The 9×16 had 22 unit assertions
+  and none here.
+- **Roadmap: a durable "Moving the cyrius pin" procedure** (seven steps, with the 6.6.6 analysis
+  kept as precedent) and two new reopen triggers — the pin moving under a bump, and the bundle's
+  first real consumer.
+
+### Changed
+
+- **Docs currency** (the `docs/doc-health.md` backlog, now cleared):
+  `docs/guides/getting-started.md` rewritten for the frozen 1.0 surface (it had described the
+  0.1.0 scaffold since 2026-05-27); `cyaudit vet` → `cyrius vet` across README, CONTRIBUTING,
+  SECURITY, `state.md` and the BDF / PCF guides; `architecture/001` + index refreshed to the real
+  buffer sizes (`3584` / `1792` / `7168`, 224 glyphs, the 2-byte-stride `kashi_font9_16`);
+  `state.md` interior reconciled (sizes 256,592 B / 137,936 B, deps, the six consumers with their
+  pins, test counts, the bundle and example); `docs/benchmarks.md` "Current" at 1.0.10 with 1.0.9 /
+  1.0.10 rows appended to `history.csv` — and a new structural-shift note: `scan_vga_8x16`
+  64 → 56 µs and `font_row_runtime_cp` 66 → 58 ns since 1.0.0 are **toolchain** (6.0.3 → 6.6.6),
+  not source, the sheet pin being the proof; `cyrius.cyml` description names all three built-ins
+  and the `[deps]` comment stops future-tensing `io`; the function count is **43 public** everywhere
+  (README said 45, `api/README.md` 44 — 45 declared minus the two internal `fset` packers; the
+  `accessors.md` row said 13 for 14 functions); ADR 0002 / 0004 carry forward pointers to 0006 /
+  0007; `api/README.md` and ADR 0001's index entry name the bundle; CLAUDE.md's "booked library
+  skeleton" sentence and Quick Start / Work Loop updated for `cyrius distlib` and the pin.
+- CI: `docs/examples/*.cyr` added to the fmt and lint loops; new "Glyph sheet pin" step (build job)
+  and "Verify dist bundle is in sync with src/" step (lint job). Release: "Verify the published
+  bundle" step; `-lib.cyr` / `-lib.deps` assets.
+- Bench (1.0.10, cyrius 6.6.6, source unchanged): `glyph_row` 17 ns, `glyph_ptr` 7 ns,
+  `scan_vga_8x16` 55.9 µs, `font_row_builtin` 19 ns, `font_row_runtime` 43 ns,
+  `font_row_runtime_cp` 58 ns — flat against 1.0.9. Library 256,592 B; DCE'd demo 137,936 B.
+
 ## [1.0.9] - 2026-09-21
 
 ### Changed

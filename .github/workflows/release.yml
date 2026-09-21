@@ -66,15 +66,29 @@ jobs:
           CYRIUS_DCE=1 cyrius build src/main.cyr build/kashi
           echo "kashi demo: $(wc -c < build/kashi) bytes"
 
+      - name: Verify the published bundle
+        # dist/kashi.cyr is the library face a consumer vendors at this tag
+        # (`modules = ["dist/kashi.cyr"]`). Regenerate and refuse to release
+        # if the committed bundle lags src/ — the CI gate already checks this
+        # on every push; re-asserting here keeps the release self-contained.
+        run: |
+          cyrius distlib
+          git diff --quiet dist/kashi.cyr dist/kashi.deps || { echo "FAIL: dist/ is stale at the tag"; git --no-pager diff dist/ | head -40; exit 1; }
+          grep -q "^# Version: ${GITHUB_REF_NAME}$" dist/kashi.cyr || { echo "FAIL: dist/kashi.cyr version stamp != tag"; exit 1; }
+
       - name: Archive
         run: |
           TAG="${GITHUB_REF_NAME}"
-          rm -f kashi-*.tar.gz kashi-*-font_data.cyr
+          rm -f kashi-*.tar.gz kashi-*-font_data.cyr kashi-*-lib.cyr kashi-*-lib.deps
           git archive --format=tar.gz --prefix="kashi-${TAG}/" -o "kashi-${TAG}-src.tar.gz" HEAD
           # Ship the freestanding core as a standalone, version-stamped
           # asset — kernels `include` this file directly (ADR 0001).
           cp src/font_data.cyr "kashi-${TAG}-font_data.cyr"
-          sha256sum kashi-*.tar.gz kashi-*-font_data.cyr build/kashi > SHA256SUMS
+          # And the library face as a standalone, version-stamped asset — the
+          # same bytes git carries at the tag, for consumers not using git-deps.
+          cp dist/kashi.cyr "kashi-${TAG}-lib.cyr"
+          cp dist/kashi.deps "kashi-${TAG}-lib.deps"
+          sha256sum kashi-*.tar.gz kashi-*-font_data.cyr kashi-*-lib.cyr kashi-*-lib.deps build/kashi > SHA256SUMS
 
       - name: Extract changelog
         run: |
@@ -88,5 +102,7 @@ jobs:
           files: |
             kashi-*-src.tar.gz
             kashi-*-font_data.cyr
+            kashi-*-lib.cyr
+            kashi-*-lib.deps
             build/kashi
             SHA256SUMS

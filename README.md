@@ -8,8 +8,10 @@ fonts at runtime. Written in
 [Cyrius](https://github.com/MacCracken/cyrius). Part of the
 [AGNOS](https://github.com/MacCracken/agnosticos) ecosystem.
 
-**Status**: 1.0.0 — public API frozen. The full surface is
-documented in [`docs/api/`](docs/api/); stability promise is in
+**Status**: 1.x — public API frozen since 1.0.0 (the current
+version is in [`VERSION`](VERSION); 1.0.x releases are toolchain
+bumps, test, packaging and docs work). The full surface is documented
+in [`docs/api/`](docs/api/); stability promise is in
 [`docs/api/README.md`](docs/api/README.md).
 
 ## The two faces
@@ -28,8 +30,13 @@ cannot link the Cyrius stdlib, so kashi gives it a pure, single-file
 consumes only that file, at agnos 1.38.0 (integrated 2026-05).
 
 Each parser module (`src/font_psf.cyr`, `src/font_bdf.cyr`,
-`src/font_pcf.cyr`) is *also* dependency-free — `cyaudit vet` reports
+`src/font_pcf.cyr`) is *also* dependency-free — `cyrius vet` reports
 "no dependencies" for each. The boundary covers them too.
+
+Outside this repo the library face is consumed as one file,
+`dist/kashi.cyr` — the `cyrius distlib` bundle of the `[lib]` modules,
+tracked in git and attached to every release (1.0.10). `src/lib.cyr`
+itself only resolves inside this repo.
 
 ## Built-in fonts
 
@@ -87,8 +94,21 @@ full integer range of each argument.
 
 ## Quick start (userland — load a PSF font)
 
+Declare the bundle as a dep and `cyrius deps` vendors it as
+`lib/kashi.cyr`, pulling the eight stdlib leaves its sidecar names:
+
+```toml
+[deps.kashi]
+git     = "https://github.com/MacCracken/kashi.git"
+tag     = "1.0.10"
+modules = ["dist/kashi.cyr"]
+```
+
 ```cyrius
-include "src/lib.cyr"
+include "lib/kashi.cyr"       # "src/lib.cyr" inside this repo
+
+alloc_init();                 # the library face allocates glyph stores
+kashi_font_init();
 
 var id = kashi_load_psf_file("/usr/share/kbd/consolefonts/default8x16.psf");
 if (id < 0) { return 1; }   # 0 - KASHI_EFORMAT / 0 - KASHI_EINVAL
@@ -123,16 +143,22 @@ uses `kashi_glyph_ptr` + `load8`.
 cyrius deps                                # resolve stdlib deps
 cyrius build src/lib.cyr build/kashi       # build the library
 cyrius run   src/main.cyr                  # demo: render 'A' in both 8-wide built-ins
-cyrius test  src/test.cyr                  # unit tests
-cyrius test  tests/kashi.tcyr              # integration tests
+cyrius test                                # unit (src/test.cyr) + integration (tests/kashi.tcyr)
+cyrius fuzz  tests/kashi.fcyr              # parser fuzz + the accessor bounds contract
 cyrius bench tests/kashi.bcyr              # accessor benchmarks
 cyrius vet   src/font_data.cyr             # proves freestanding core has zero deps
+cyrius distlib                             # regenerate dist/kashi.cyr (tracked; CI fails on drift)
 ```
+
+`docs/examples/glyph_sheet.cyr` renders every built-in glyph as hex; CI
+pins its output's sha256 (`docs/examples/glyph_sheet.sha256`), so a glyph
+change — or a toolchain whose codegen changes what the font says — cannot
+land unnoticed. See [`docs/guides/getting-started.md`](docs/guides/getting-started.md).
 
 ## Documentation
 
 - **[`docs/api/`](docs/api/)** — public API reference (frozen 1.0).
-  6 files covering all 45 functions and 20 enum groups, with
+  6 files covering all 43 public functions and 20 enum groups, with
   signature, params, return convention, code example, stability
   note per symbol.
 - [`docs/guides/`](docs/guides/) — task-oriented how-tos: getting
@@ -144,8 +170,11 @@ cyrius vet   src/font_data.cyr             # proves freestanding core has zero d
   wide-glyph rows, BDF / PCF / PSF u-variant scope).
 - [`docs/architecture/`](docs/architecture/) — non-obvious invariants
   (the u64-unit BSS byte-addressing quirk).
-- [`docs/benchmarks.md`](docs/benchmarks.md) — hot-path numbers, 0.x
-  trend table.
+- [`docs/examples/`](docs/examples/) — runnable examples against the
+  freestanding core (`glyph_sheet.cyr`, also the toolchain-bump
+  verification tool).
+- [`docs/benchmarks.md`](docs/benchmarks.md) — hot-path numbers and
+  the version-over-version trend.
 - [`docs/audit/`](docs/audit/) — three security audits
   (2026-05-27, 2026-05-28 P(-1), 2026-05-28-audit-0.8.0 — the 0.8.0
   CVE-research-driven pass).

@@ -98,6 +98,53 @@ fn test_reinit_idempotent() {
 # back via kashi_load_psf_file, and read glyph rows through the unified
 # dispatcher — the way a userland consumer would. Exercises the parser,
 # the io.file_read_all path, the glyph-store copy, and the registry.
+# --- VGA 9x16 (id 2, 0.5.1, ADR 0006) — the 2-byte-stride built-in. Until
+# 1.0.10 this suite exercised only the two 8-wide fonts. The 9x16 is DERIVED
+# at init from the 8x16 plus the VGA col-9 rule, so its structure is fully
+# checkable against font 0: leading byte == the 8x16 row, second byte ==
+# col 9 (bit 7), which is a copy of col 8 for the box-drawing range
+# 0xC0..0xDF and 0 everywhere else.
+fn test_vga_9x16_structural() {
+    test_group("vga 9x16 structural");
+    assert_eq(kashi_font_stride(KASHI_FONT_VGA_9X16), 2, "9x16 stride 2");
+    assert_eq(kashi_font_width(KASHI_FONT_VGA_9X16), 9, "9x16 width 9");
+    assert_eq(kashi_font_height(KASHI_FONT_VGA_9X16), 16, "9x16 height 16");
+    assert_eq(kashi_font_count(KASHI_FONT_VGA_9X16), 224, "9x16 count 224");
+
+    var ok_ptr = 1;
+    var ok_lead = 1;
+    var ok_col9 = 1;
+    var ok_past = 1;
+    var ch = 0x20;
+    while (ch <= 0xFF) {
+        if (ch > 0x20) {
+            var prev = kashi_glyph_ptr(KASHI_FONT_VGA_9X16, ch - 1);
+            var cur = kashi_glyph_ptr(KASHI_FONT_VGA_9X16, ch);
+            if (cur - prev != 32) { ok_ptr = 0; }
+        }
+        var row = 0;
+        while (row < 16) {
+            var b0 = kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, ch, row, 0);
+            var b1 = kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, ch, row, 1);
+            if (b0 != kashi_glyph_row(KASHI_FONT_VGA_8X16, ch, row)) { ok_lead = 0; }
+            if (b0 != kashi_glyph_row(KASHI_FONT_VGA_9X16, ch, row)) { ok_lead = 0; }
+            var want1 = 0;
+            if (ch >= 0xC0) {
+                if (ch <= 0xDF) { want1 = (b0 & 1) << 7; }
+            }
+            if (b1 != want1) { ok_col9 = 0; }
+            if (kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, ch, row, 2) != 0) { ok_past = 0; }
+            row = row + 1;
+        }
+        ch = ch + 1;
+    }
+    assert_eq(ok_ptr, 1, "9x16 ptrs 32 apart");
+    assert_eq(ok_lead, 1, "9x16 leading byte == 8x16 row, via row and row_byte");
+    assert_eq(ok_col9, 1, "9x16 col-9 rule holds across 0x20..0xFF");
+    assert_eq(ok_past, 1, "9x16 byte_idx 2 is the sentinel");
+    return 0;
+}
+
 fn test_psf_file_roundtrip() {
     test_group("psf file round-trip");
     # 256 glyphs, height 3. Plant glyph 'B' (index 0x42) rows = 0x11,0x22,0x33.
@@ -389,6 +436,7 @@ fn main() {
     test_space_vs_visible();
     test_pointer_monotone();
     test_reinit_idempotent();
+    test_vga_9x16_structural();
     test_psf_file_roundtrip();
     test_psf_unicode_file();
     test_bdf_file_roundtrip();

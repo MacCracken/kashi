@@ -4,6 +4,9 @@
 **Date**: 2026-05-27
 **Refines**: [ADR 0001](0001-freestanding-font-data-core.md) (widens the
 freestanding addressing range)
+**Superseded in part by**: [ADR 0007](0007-cga-high-half-from-linux-pd.md)
+(0.5.2) — the CGA 8×8 high half this ADR leaves blank was filled from the
+Linux PD `font_8x8.c`; the text below records the decision as made.
 
 ## Context
 

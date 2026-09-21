@@ -5,8 +5,10 @@
 > release and beyond. Breaking changes after 1.0.0 require a major
 > version bump.
 
-This is the full reference for kashi's public surface — 44 functions
-and 20 enum groups across two faces (freestanding + library). For
+This is the full reference for kashi's public surface — 43 public
+functions and 20 enum groups across two faces (freestanding + library).
+(`src/` declares 45 `fn kashi_*`; the other two are the init-time
+`kashi_fset8` / `kashi_fset16` packers, internal — see below.) For
 narrative how-tos see [`docs/guides/`](../guides/); for the *why*
 behind design choices see [`docs/adr/`](../adr/).
 
@@ -30,7 +32,10 @@ kashi has a **hard, file-level boundary** ([ADR 0001](../adr/0001-freestanding-f
    documented in [`core.md`](core.md).
 2. **Library face** — `src/lib.cyr` + the parser modules
    (`src/font_psf.cyr`, `src/font_bdf.cyr`, `src/font_pcf.cyr`).
-   Stdlib-using. Everything else.
+   Stdlib-using. Everything else. Consumed as the `cyrius distlib`
+   bundle `dist/kashi.cyr` (`modules = ["dist/kashi.cyr"]`, vendored as
+   `lib/kashi.cyr`; ADR 0001 amendment) — `src/lib.cyr` itself only
+   resolves inside this repo.
 
 Symbols in the library face will not appear in a freestanding-core
 consumer's link set. Mixing the two is fine for stdlib-using
@@ -43,7 +48,7 @@ programs (the demo binary does it) — just don't try to call
 |---|---|---|
 | [`core.md`](core.md) | Freestanding (kernel-safe) | 11 functions + 3 font IDs + 3 range constants |
 | [`loading.md`](loading.md) | Runtime font loading | 7 load/register functions |
-| [`accessors.md`](accessors.md) | Reading loaded fonts | 13 accessor + metadata functions |
+| [`accessors.md`](accessors.md) | Reading loaded fonts | 14 accessor + metadata functions (13 entries — the active-font get/set pair shares one) |
 | [`attach.md`](attach.md) | Sidecar Unicode tables | 4 attach functions |
 | [`parsers.md`](parsers.md) | Low-level parser primitives | 7 parser functions + 3 struct shapes |
 | [`codes.md`](codes.md) | Result codes + constants | 20 enum groups |

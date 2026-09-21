@@ -10,8 +10,18 @@ and this repo's [`CLAUDE.md`](CLAUDE.md) before making changes.
    `[package].cyrius`).
 2. Resolve deps: `cyrius deps`
 3. Build the library: `cyrius build src/lib.cyr build/kashi`
-4. Run tests: `cyrius test src/test.cyr` and `cyrius test tests/kashi.tcyr`
+4. Run tests: `cyrius test` (unit `src/test.cyr` + integration
+   `tests/kashi.tcyr`) and `cyrius fuzz tests/kashi.fcyr`
 5. Run the demo: `cyrius run src/main.cyr`
+6. Prove the boundary: `cyrius vet src/font_data.cyr` → "no dependencies"
+7. If you touched any `[lib]` module (`src/font_*.cyr`, `src/lib.cyr`):
+   `cyrius distlib` and commit `dist/kashi.cyr` + `dist/kashi.deps` — they
+   are the published library face and CI fails on drift.
+8. If you changed glyph bytes: rebuild the glyph sheet and update the pin
+   (`docs/examples/glyph_sheet.sha256`) deliberately — see the Rules.
+
+The CI workflow runs exactly this set, plus `cyrius fmt --check` and
+`cyrius lint` on every source file (`src/`, `tests/`, `docs/examples/`).
 
 ## The two faces — know which one you're touching
 
@@ -21,9 +31,8 @@ kashi has a **hard, file-level boundary** (see
 - **`src/font_data.cyr`** — the FREESTANDING core. NO stdlib, NO heap, NO
   syscalls, NO sakshi — only `store8`/`load8` intrinsics + arithmetic. The
   agnos kernel `include`s this file directly. **Never add an `include` or a
-  stdlib call here.** `cyaudit vet src/font_data.cyr` must report "no
-  dependencies" (cyrius 6.2.2 fixed the 6.0.3 packaging bug, so
-  `cyrius vet` now dispatches correctly).
+  stdlib call here.** `cyrius vet src/font_data.cyr` must report "no
+  dependencies" (it dispatches to `cyaudit vet`; older docs use that name).
 - **`src/lib.cyr`** plus the parser modules (`src/font_psf.cyr`,
   `src/font_bdf.cyr`, `src/font_pcf.cyr`) — the library face. The parser
   modules are *also* dependency-free (heapless, load8 + arithmetic only);
@@ -41,7 +50,11 @@ the library face.
   harness (`tests/kashi.fcyr`) enforces this.
 - **Glyph bytes are load-bearing.** The built-in tables must stay
   byte-for-byte identical to what the agnos kernel renders. If you change a
-  glyph, update the corresponding fidelity assertions in `src/test.cyr`.
+  glyph, update the corresponding fidelity assertions in `src/test.cyr` AND
+  the whole-table pin: `cyrius build docs/examples/glyph_sheet.cyr
+  build/glyph_sheet && ./build/glyph_sheet | sha256sum` →
+  `docs/examples/glyph_sheet.sha256`, in the same change, with the reason in
+  `CHANGELOG.md`. CI compares the sheet against the pin on every push.
 - Test after every change, not after the feature is "done".
 - ONE change at a time — never bundle unrelated changes.
 - Library code never panics — errors flow through return codes: parsers

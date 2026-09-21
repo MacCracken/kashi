@@ -121,3 +121,14 @@ rather than a forced one, which is the part that was missing.
 
 ⚠ The freestanding contract is unchanged: `src/font_data.cyr` stays stdlib-free and `cyrius vet` still
 reports `no dependencies` for it.
+
+**Addendum — 2026-09-21 (kashi 1.0.10): the bundle was not actually published until now.** `dist/`
+was gitignored and not attached to releases, so from 1.0.6 through 1.0.9 the tagged clones a consumer's
+`cyrius deps` fetches carried **no `dist/` at all** — `modules = ["dist/kashi.cyr"]` could resolve only
+through a sibling `path` checkout after a local `cyrius distlib`. Checked against the cached 1.0.6 /
+1.0.7 / 1.0.8 clones. 1.0.10 tracks `dist/kashi.cyr` + `dist/kashi.deps` in git (the convention every
+other bundle-publishing library in the stack already follows), attaches them to releases, and gates
+both in CI: the bundle must be tracked and must match a fresh `cyrius distlib`, and the release refuses
+to ship a bundle whose version stamp is not the tag. A scratch consumer resolving `git` + `tag` +
+`modules = ["dist/kashi.cyr"]` against a tagged clone vendored `lib/kashi.cyr`, pulled the sidecar's
+eight stdlib leaves, linked, and read glyphs through both the built-in and the registry paths.

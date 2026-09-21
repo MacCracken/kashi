@@ -1,0 +1,89 @@
+# kashi — glyph sheet: dump every built-in glyph as hex, one line per glyph.
+#
+# A runnable example of the FREESTANDING core (the only kashi file it
+# includes), and the tool behind the toolchain-bump recipe in
+# docs/development/roadmap.md: kashi emits fixed data, so the same sheet
+# rendered by two toolchains must be byte-identical — any difference means
+# codegen changed what the font says.
+#
+# Build and run (from the repo root; the manifest prepends the stdlib):
+#
+#   cyrius build docs/examples/glyph_sheet.cyr build/glyph_sheet
+#   ./build/glyph_sheet | sha256sum
+#
+# Output: 672 lines (3 fonts x 224 glyphs), each
+#
+#   f<id> <cp>: <row0><row1>...<row15>
+#
+# with every row's bytes in stride order (1 byte per row for the 8-wide
+# fonts, 2 for the 9x16), all lowercase hex. The line for 'A' in VGA 8x16 is
+#
+#   f00 41: 000010386cc6c6fec6c6c6c600000000
+#
+# ⚠ THIS FORMAT IS LOAD-BEARING. CI (ci.yml "Glyph sheet pin") runs this
+# program and compares the sha256 of its output with
+# docs/examples/glyph_sheet.sha256. A glyph change AND a format change both
+# move the hash; update the pin deliberately, in the same change, and say
+# which of the two it was in CHANGELOG.md.
+
+include "src/font_data.cyr"
+
+fn hex_digit(d) {
+    if (d < 10) { return 48 + d; }
+    return 87 + d;
+}
+
+fn put_hex_byte(b) {
+    var buf[2];
+    store8(&buf, hex_digit((b >> 4) & 15));
+    store8(&buf + 1, hex_digit(b & 15));
+    syscall(1, 1, &buf, 2);
+    return 0;
+}
+
+# One font: walk every encoded codepoint, every row, every byte of the row.
+# Reads through kashi_glyph_row_byte (stride-aware) and cross-checks the
+# leading byte against kashi_glyph_row, the hot-path accessor — a mismatch
+# prints a marker into the line, which the CI pin then catches.
+fn dump_font(font_id) {
+    var h = kashi_font_height(font_id);
+    var first = kashi_font_first(font_id);
+    var count = kashi_font_count(font_id);
+    var stride = kashi_font_stride(font_id);
+    var i = 0;
+    while (i < count) {
+        var ch = first + i;
+        syscall(1, 1, "f", 1);
+        put_hex_byte(font_id);
+        syscall(1, 1, " ", 1);
+        put_hex_byte(ch);
+        syscall(1, 1, ": ", 2);
+        var row = 0;
+        while (row < h) {
+            var b = 0;
+            while (b < stride) {
+                put_hex_byte(kashi_glyph_row_byte(font_id, ch, row, b));
+                b = b + 1;
+            }
+            if (kashi_glyph_row(font_id, ch, row) != kashi_glyph_row_byte(font_id, ch, row, 0)) {
+                syscall(1, 1, "!MISMATCH", 9);
+            }
+            row = row + 1;
+        }
+        syscall(1, 1, "\n", 1);
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn main() {
+    kashi_font_init();
+    if (kashi_font_is_ready() == 0) { return 1; }
+    dump_font(KASHI_FONT_VGA_8X16);
+    dump_font(KASHI_FONT_CGA_8X8);
+    dump_font(KASHI_FONT_VGA_9X16);
+    return 0;
+}
+
+var r = main();
+syscall(SYS_EXIT, r);

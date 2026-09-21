@@ -41,6 +41,25 @@ jobs:
           ./build/kashi-demo
       - name: Verify ELF
         run: xxd -l 4 build/kashi-demo | grep -q "7f45 4c46"
+      - name: Glyph sheet pin
+        # docs/examples/glyph_sheet.cyr renders every row byte of every
+        # built-in glyph (3 fonts x 224) as hex. kashi emits FIXED data, so
+        # the sha256 of that sheet is pinned in docs/examples/glyph_sheet.sha256:
+        # a glyph-table edit, a codegen change under a toolchain bump, and a
+        # format change in the example all move it, and all three must be
+        # deliberate (update the pin in the same change, say why in CHANGELOG).
+        # This is the roadmap's "compare the sheet byte-for-byte" step, run on
+        # every push instead of by hand.
+        run: |
+          cyrius build docs/examples/glyph_sheet.cyr build/glyph_sheet
+          ./build/glyph_sheet > build/glyph_sheet.txt
+          echo "glyph sheet: $(wc -l < build/glyph_sheet.txt) lines"
+          grep -q MISMATCH build/glyph_sheet.txt && { echo "FAIL: kashi_glyph_row disagrees with kashi_glyph_row_byte"; exit 1; }
+          expected="$(tr -d '[:space:]' < docs/examples/glyph_sheet.sha256)"
+          actual="$(sha256sum build/glyph_sheet.txt | cut -d' ' -f1)"
+          echo "expected $expected"
+          echo "actual   $actual"
+          [ "$expected" = "$actual" ] || { echo "FAIL: glyph sheet drifted from the pin — a glyph, the toolchain's codegen, or the example's format changed"; exit 1; }
 
   # ── Tests ──
   test:
@@ -80,12 +99,12 @@ jobs:
         run: cyrius deps
       - name: Format check
         run: |
-          for f in src/*.cyr tests/*.tcyr tests/*.bcyr tests/*.fcyr; do
+          for f in src/*.cyr tests/*.tcyr tests/*.bcyr tests/*.fcyr docs/examples/*.cyr; do
             cyrius fmt "$f" --check
           done
       - name: Lint
         run: |
-          for f in src/*.cyr; do cyrius lint "$f"; done
+          for f in src/*.cyr docs/examples/*.cyr; do cyrius lint "$f"; done
       - name: Vet — freestanding core must have ZERO deps
         # Load-bearing invariant (ADR 0001): src/font_data.cyr is what the
         # agnos kernel includes; it must never gain a dependency. This step
@@ -99,6 +118,30 @@ jobs:
           out="$(cyrius vet src/font_data.cyr 2>&1)"
           echo "$out"
           echo "$out" | grep -q "no dependencies" || { echo "FAIL: src/font_data.cyr gained a dependency"; exit 1; }
+      - name: Verify dist bundle is in sync with src/
+        # dist/kashi.cyr + dist/kashi.deps are the PUBLISHED library face —
+        # what a consumer resolves with `modules = ["dist/kashi.cyr"]` at a
+        # tag (ADR 0001 amendment). They are tracked (1.0.10) and must match
+        # what `cyrius distlib` produces from the [lib] module list, or a
+        # consumer at the tag gets a bundle that lags src/. The tracked check
+        # comes first: `git diff --quiet` on an UNTRACKED path exits 0, so a
+        # bundle that lost its .gitignore re-include would pass silently.
+        run: |
+          cyrius distlib
+          fail=0
+          for f in dist/kashi.cyr dist/kashi.deps; do
+            if ! git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              echo "ERROR: $f is not tracked — it must be committed (see .gitignore re-includes)."
+              fail=1
+              continue
+            fi
+            if ! git diff --quiet "$f"; then
+              echo "ERROR: $f is stale. Run 'cyrius distlib' and commit the result."
+              git --no-pager diff "$f" | head -40
+              fail=1
+            fi
+          done
+          test $fail -eq 0
 
   # ── Benchmarks ──
   benchmarks:

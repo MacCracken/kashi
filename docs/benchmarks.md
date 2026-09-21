@@ -33,7 +33,7 @@ few times and take the steady-state figure; sub-microsecond ops use a
 ≥1e6-iteration batch to amortize `clock_gettime` overhead (see the
 `tests/kashi.bcyr` header).
 
-## Current — 1.0.0 (2026-05-28)
+## Current — 1.0.10 (2026-09-21, cyrius 6.6.6)
 
 Host: AMD Ryzen 7 5800H, x86_64 Linux. Indicative single-host numbers, not
 a cross-machine guarantee.
@@ -42,16 +42,16 @@ a cross-machine guarantee.
 |---|---|---|
 | `glyph_row` | 17 ns | 1,000,000 |
 | `glyph_ptr` | 7 ns | 1,000,000 |
-| `scan_vga_8x16` | 64 µs | 10,000 |
+| `scan_vga_8x16` | 56 µs | 10,000 |
 | `font_row_builtin` | 19 ns | 1,000,000 |
 | `font_row_runtime` | 43 ns | 1,000,000 |
-| `font_row_runtime_cp` | 66 ns | 1,000,000 |
+| `font_row_runtime_cp` | 58 ns | 1,000,000 |
 
-`scan_vga_8x16` at 64 µs over 3,584 row reads (224 glyphs × 16 rows)
-≈ 17.9 ns/row, consistent with the standalone `glyph_row` figure — the
+`scan_vga_8x16` at 56 µs over 3,584 row reads (224 glyphs × 16 rows)
+≈ 15.6 ns/row, consistent with the standalone `glyph_row` figure — the
 whole-font sweep carries no per-glyph overhead beyond the accessor itself.
 
-## 0.x trend
+## Trend
 
 Numbers from `benchmarks/history.csv`. All times in ns. Same host
 (AMD Ryzen 7 5800H, x86_64 Linux). Empty cells indicate the benchmark
@@ -70,12 +70,17 @@ noise — only structural shifts are called out below.
 | **0.6.0** | 18 | 7 | 62,000 | 19 | 43 | 62 |
 | **0.8.0** | 18 | 7 | 63,000 | 20 | 43 | 65 |
 | **1.0.0** | 17 | 7 | 64,000 | 19 | 43 | 66 |
+| **1.0.9** | 16 | 7 | 56,193 | 19 | 43 | 58 |
+| **1.0.10** | 17 | 7 | 55,900 | 19 | 43 | 58 |
 
 > The 0.7.x cuts (BDF, PCF, sidecar tables) added parsers / load paths
 > but **did not touch the hot accessors**, so they aren't separately
 > measured — figures would be identical-within-noise to 0.6.0.
 > Similarly the 0.8.0 audit fixes are all on parse-time error paths;
 > the small rise vs 0.6.0 is sample variance, not a regression.
+> 1.0.1–1.0.8 were toolchain bumps with no source change and were not
+> separately recorded; 1.0.9 (the 6.6.4 → 6.6.6 bump) and 1.0.10 (test
+> and packaging changes only) are.
 
 ## Structural shifts called out
 
@@ -96,10 +101,18 @@ These are the only non-noise transitions in the table above:
   multiplication is by 1 — but Cyrius's optimizer doesn't currently
   collapse it. Acceptable; the new wide-glyph contract (ADR 0005) is
   more valuable than 1 ns/row.
+- **1.0.0 → 1.0.9 (`scan_vga_8x16` 64,000 → 56,193; `font_row_runtime_cp`
+  66 → 58 ns)**: toolchain, not source. Nothing in `src/` changed between
+  these rows; the pin moved 6.0.3 → 6.6.6 across 1.0.1–1.0.9, and the
+  compiler's codegen got ~12 % faster on the sweep and the codepoint
+  binary search. The glyph output is byte-identical across the bump (the
+  glyph-sheet pin, `docs/examples/glyph_sheet.sha256`, is the proof), so
+  this is a free improvement rather than a behaviour change.
 
 Everything else is within ±2 ns / ±1,000 ns of the preceding row —
 sample variance on a single host. The hot path has been **stable
-within noise from 0.4.0 onward**.
+within noise from 0.4.0 onward**, source-side; toolchain-side it has
+only improved.
 
 ## Hot-path render pattern
 
@@ -126,7 +139,9 @@ agnos's framebuffer console does.
 
 Each release (or whenever an accessor's cost changes), append rows
 to `benchmarks/history.csv` for the new version and refresh the
-"Current" + "0.x trend" tables above. `scan_vga_8x16` is recorded
+"Current" + "Trend" tables above. A pure toolchain bump is still a
+release: record it, because the toolchain is the one thing that has
+moved these numbers since 0.4.0. `scan_vga_8x16` is recorded
 in ns in the CSV (27 µs → 27,000) so all columns share a unit; the
 table renders the natural unit.
 

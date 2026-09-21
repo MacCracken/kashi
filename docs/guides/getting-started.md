@@ -42,19 +42,21 @@ cyrius fuzz  tests/kashi.fcyr            # parser fuzz + accessor bounds contrac
 cyrius bench tests/kashi.bcyr            # hot-path timings (CI runs it with CYRIUS_DCE=1)
 cyrius fmt   src/lib.cyr --check         # per file; CI checks src/*.cyr and tests/*
 cyrius lint  src/lib.cyr                 # per file; expected: 0 warnings, 0 untracked deferrals
-cyrius distlib                           # regenerate dist/kashi.cyr + dist/kashi.deps (see "Library face")
+cyrius distlib                           # regenerate dist/kashi.cyr + dist/kashi.deps (tracked; CI fails on drift)
+cyrius build docs/examples/glyph_sheet.cyr build/glyph_sheet && ./build/glyph_sheet | sha256sum
+                                         # must equal docs/examples/glyph_sheet.sha256 (CI checks)
 ```
 
 `cyrius test` with no argument runs both suites: the unit suite is the
 `[build].test` entry (`src/test.cyr`, ~390 assertions, including the
 byte-fidelity pins for the built-in tables) and `tests/*.tcyr` is
-auto-discovered (`tests/kashi.tcyr`, structural invariants + file
-round-trips). `cyrius test src/test.cyr` / `cyrius test tests/kashi.tcyr`
+auto-discovered (`tests/kashi.tcyr`, structural invariants for all three
+built-ins + file round-trips). `cyrius test src/test.cyr` / `cyrius test tests/kashi.tcyr`
 run them individually.
 
 `.github/workflows/ci.yml` runs exactly these — build smoke (library +
-DCE'd demo), tests, fmt/lint/vet, bench, fuzz — so a green local run is a
-green CI run.
+DCE'd demo + the glyph-sheet pin), tests, fmt/lint/vet + the dist drift
+gate, bench, fuzz — so a green local run is a green CI run.
 
 ## Layout
 
@@ -66,7 +68,8 @@ green CI run.
 | `src/main.cyr` | demo | Renders `'A'` in the two 8-wide built-ins. |
 | `src/test.cyr` | tests | Unit suite (`[build].test`). |
 | `tests/kashi.tcyr` / `.bcyr` / `.fcyr` | tests | Integration suite, benchmarks, fuzz harness. |
-| `dist/kashi.cyr`, `dist/kashi.deps` | Library face, bundled | Output of `cyrius distlib` from the `[lib]` module list — the single-file, vendorable form of the library face, plus a sidecar naming the stdlib leaves it needs. Gitignored today (see below). |
+| `dist/kashi.cyr`, `dist/kashi.deps` | Library face, bundled | Output of `cyrius distlib` from the `[lib]` module list — the single-file, vendorable form of the library face, plus a sidecar naming the stdlib leaves it needs. Tracked; CI fails if it drifts from `src/`. |
+| `docs/examples/glyph_sheet.cyr` (+ `.sha256`) | example / gate | Renders every built-in glyph as hex. CI pins the output's sha256 — the whole-table fidelity check and the toolchain-bump verification tool. |
 | `docs/api/` | reference | The frozen surface: [`core.md`](../api/core.md) for kernels, [`loading.md`](../api/loading.md) / [`accessors.md`](../api/accessors.md) / [`attach.md`](../api/attach.md) for userland, [`parsers.md`](../api/parsers.md), [`codes.md`](../api/codes.md). |
 | `docs/adr/`, `docs/architecture/`, `docs/guides/` | docs | Decisions, non-obvious invariants, how-tos. |
 
@@ -185,13 +188,10 @@ against your own `[deps].stdlib`. Then:
 include "lib/kashi.cyr"
 ```
 
-> ⚠ **As of 1.0.9 the bundle is not tracked in git or attached to releases**
-> (`dist/` is gitignored), so the `git` + `tag` form above cannot find it —
-> the tagged clones have no `dist/`. Until that changes, consume the library
-> face through a sibling `path` checkout after running `cyrius distlib`
-> there. Tracking `dist/` (the convention every other bundle-publishing
-> library in the stack follows) is the open item in
-> [`../development/roadmap.md`](../development/roadmap.md).
+The bundle is tracked in git and attached to every release since 1.0.10
+(before that `dist/` was gitignored, so the `git` + `tag` form could not
+resolve it — ADR 0001, addendum). CI regenerates it and fails on drift, so
+the bundle at a tag is exactly what `src/` at that tag folds to.
 
 Inside this repo — the demo, the tests, the benchmarks — `include
 "src/lib.cyr"` is the right spelling; that is the one place the
@@ -256,10 +256,13 @@ precedents; follow their shape.
 5. **Fidelity.** Pin the bytes in `src/test.cyr` the way the VGA `'A'` rows
    are pinned — byte-for-byte against the source table. The built-in tables
    are load-bearing; a glyph that drifts from what agnos renders is a bug
-   even if every test still "passes". `tests/kashi.tcyr`'s structural
-   invariants (row byte-bounded, pointer monotone, reinit idempotent) must
-   hold for the new id, and add the id to the fuzz harness's known-font list
-   in `tests/kashi.fcyr` so its bounds contract knows the font exists.
+   even if every test still "passes". Add a structural group for the new id
+   to `tests/kashi.tcyr` (the 9×16 one is the template), and add the id to
+   the fuzz harness's known-font list in `tests/kashi.fcyr` — an id the
+   harness does not know is reported as a bounds failure the first time the
+   random driver draws it. Then extend `docs/examples/glyph_sheet.cyr`'s
+   `main` to dump the new font and re-pin `docs/examples/glyph_sheet.sha256`
+   (the old fonts' lines must be unchanged in the new sheet).
 6. **Toolchain caveat.** A single literal over **64 KB** needs a pin
    `≥ 6.6.4` (older read-back defect: the table silently reads from its
    second byte with `rc=0`). The largest literal today is ~17 KB — well
@@ -287,9 +290,10 @@ beside this one, and an ADR — [0008 (BDF)](../adr/0008-bdf-import.md) and
 
 kashi emits fixed data, which makes a toolchain bump unusually easy to
 verify: bump `[package].cyrius`, `cyrius deps`, build, test, `cyrius
-distlib`, then render every glyph of every built-in on both toolchains and
-compare byte-for-byte. Any difference means codegen changed what the font
-says — stop there. The recipe and the 1.0.9 result are in
+distlib`, and let the glyph-sheet pin do the comparison — CI renders every
+glyph of every built-in with the new toolchain and compares the sheet's
+sha256 against `docs/examples/glyph_sheet.sha256`. A moved hash means
+codegen changed what the font says — stop there. The full procedure is in
 [`../development/roadmap.md`](../development/roadmap.md).
 
 ## When a change earns an ADR

@@ -10,13 +10,11 @@
 
 include "src/lib.cyr"
 
-# Treat `data`/`len` as a stream of bytes that pick (font, ch, row).
-fn fuzz_main(data, len) {
-    if (len < 3) { return 0; }
-    var font = load8(data + 0);
-    var ch = load8(data + 1);
-    var row = load8(data + 2);
-
+# The core-accessor bounds contract for one (font, ch, row) triple. Takes
+# full-width integers so the random driver below can probe the whole i64
+# domain, not just bytes. Returns 0 on pass or a distinct non-zero code per
+# contract so a failure names what broke.
+fn fuzz_core(font, ch, row) {
     var r = kashi_glyph_row(font, ch, row);
     var p = kashi_glyph_ptr(font, ch);
 
@@ -26,35 +24,65 @@ fn fuzz_main(data, len) {
     if (r > 0xFF) { return 1; }
 
     # Contract 2: out-of-range inputs must yield the safe sentinels.
+    # Every built-in id must be listed here: an id the harness does not know
+    # is treated as unknown and its (legitimate) non-null pointer is reported
+    # as a failure. The 9x16 (0.5.1) was missing until 1.0.10 — latent only
+    # because nothing random ever reached this function.
     var encoded = kashi_glyph_encoded(ch);
     var known_font = 0;
     if (font == KASHI_FONT_VGA_8X16) { known_font = 1; }
     if (font == KASHI_FONT_CGA_8X8) { known_font = 1; }
+    if (font == KASHI_FONT_VGA_9X16) { known_font = 1; }
 
     if (encoded == 0) {
-        if (r != 0) { return 1; }
-        if (p != 0) { return 1; }
+        if (r != 0) { return 2; }
+        if (p != 0) { return 2; }
     }
     if (known_font == 0) {
-        if (r != 0) { return 1; }
-        if (p != 0) { return 1; }
+        if (r != 0) { return 3; }
+        if (p != 0) { return 3; }
     }
 
-    # Contract 3: when both font and char are valid and the ptr is non-null,
-    # a row within height must equal load8(ptr+row).
     if (encoded == 1) {
         if (known_font == 1) {
-            if (p != 0) {
-                var h = kashi_font_height(font);
-                if (row >= 0) {
-                    if (row < h) {
-                        if (r != load8(p + row)) { return 1; }
-                    }
+            # A known font and an encoded char always resolve to a glyph.
+            if (p == 0) { return 4; }
+            var h = kashi_font_height(font);
+            var stride = kashi_font_stride(font);
+            var in_row = 1;
+            if (row < 0) { in_row = 0; }
+            if (row >= h) { in_row = 0; }
+
+            # Contract 3: an out-of-range row is the sentinel even when font
+            # and char are valid.
+            if (in_row == 0) {
+                if (r != 0) { return 5; }
+            }
+
+            # Contract 4 (stride-aware since the 9x16, whose rows are two
+            # bytes): the row accessor returns the LEADING byte of the row,
+            # i.e. load8(ptr + row * stride); kashi_glyph_row_byte reaches
+            # every byte of the row; byte_idx >= stride is the sentinel.
+            if (in_row == 1) {
+                if (r != load8(p + row * stride)) { return 6; }
+                var b = 0;
+                while (b < stride) {
+                    if (kashi_glyph_row_byte(font, ch, row, b) != load8(p + row * stride + b)) { return 7; }
+                    b = b + 1;
                 }
+                if (kashi_glyph_row_byte(font, ch, row, stride) != 0) { return 8; }
+                if (kashi_glyph_row_byte(font, ch, row, 0 - 1) != 0) { return 8; }
             }
         }
     }
     return 0;
+}
+
+# Treat `data`/`len` as a stream of bytes that pick (font, ch, row) — the
+# harness entry point; canned seeds and any external driver come in here.
+fn fuzz_main(data, len) {
+    if (len < 3) { return 0; }
+    return fuzz_core(load8(data + 0), load8(data + 1), load8(data + 2));
 }
 
 # --- PSF parser fuzz (the untrusted-input surface) ---
@@ -72,6 +100,54 @@ fn rng_seed(s) { _rng = s; return 0; }
 fn rng_next() {
     _rng = _rng * 2862933555777941757 + 3037000493;
     return (_rng >> 16) & 0x7FFFFFFF;
+}
+
+# A full-width value: two 31-bit draws spliced so bit 63 can be set, i.e.
+# negatives and the far ends of the i64 domain are reachable.
+fn rng_wide() {
+    return (rng_next() << 33) | (rng_next() << 2) | (rng_next() & 3);
+}
+
+# Random driver for the core-accessor contract (1.0.10). Three input shapes,
+# equally likely: BYTE-sized (every built-in id, every row, every char is
+# reachable — this is the shape that finds a built-in missing from the
+# known-font list), FULL-WIDTH (the sentinel path across the whole i64
+# domain, negatives included), and NEAR-EDGE (ids 0..4, chars just around
+# 0x20 / 0x7F / 0xFF, rows just around the cell height — where an off-by-one
+# in a bound would live).
+fn fuzz_core_rounds(rounds) {
+    var n = 0;
+    while (n < rounds) {
+        var pick = rng_next() % 3;
+        var font = 0;
+        var ch = 0;
+        var row = 0;
+        if (pick == 0) {
+            font = rng_next() & 0xFF;
+            ch = rng_next() & 0xFF;
+            row = rng_next() & 0xFF;
+        }
+        if (pick == 1) {
+            font = rng_wide();
+            ch = rng_wide();
+            row = rng_wide();
+        }
+        if (pick == 2) {
+            font = rng_next() % 5;
+            var cpick = rng_next() % 6;
+            if (cpick == 0) { ch = 0x1F; }
+            if (cpick == 1) { ch = 0x20; }
+            if (cpick == 2) { ch = 0x7F; }
+            if (cpick == 3) { ch = 0x80; }
+            if (cpick == 4) { ch = 0xFF; }
+            if (cpick == 5) { ch = 0x100; }
+            row = (rng_next() % 20) - 2;
+        }
+        var rc = fuzz_core(font, ch, row);
+        if (rc != 0) { return rc; }
+        n = n + 1;
+    }
+    return 0;
 }
 
 fn fuzz_psf(rounds) {
@@ -588,6 +664,19 @@ fn main() {
     store8(&seed + 1, 0x09);   # control char (unencoded)
     store8(&seed + 2, 200);    # out-of-range row
     if (fuzz_main(&seed, 3) != 0) { println("fuzz: FAIL seed2"); return 1; }
+
+    store8(&seed + 0, KASHI_FONT_VGA_9X16);   # the 2-byte-stride built-in
+    store8(&seed + 1, 0x41);
+    store8(&seed + 2, 5);
+    if (fuzz_main(&seed, 3) != 0) { println("fuzz: FAIL seed3"); return 1; }
+
+    # Core-accessor fuzz: until 1.0.10 the two seeds above were the ONLY
+    # inputs the bounds contract ever saw (the random loops below cover the
+    # parsers), which is how a built-in missing from its known-font list went
+    # unnoticed for four minor versions. 200k triples across three shapes.
+    rng_seed(0x5851F42D4C957F2D);
+    var fr = fuzz_core_rounds(200000);
+    if (fr != 0) { println("fuzz: FAIL core"); return fr; }
 
     # PSF parser fuzz: thousands of random/truncated/mutated buffers.
     rng_seed(0x9E3779B97F4A7C15);

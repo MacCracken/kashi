@@ -136,7 +136,7 @@ smaller `glyph_pad` than `scan_unit` are rejected with
   glyph_count consistency across METRICS and BITMAPS — all checked
   before any glyph byte is read.
 - The parser (`src/font_pcf.cyr`) is heapless and dependency-free
-  (`cyaudit vet` → "no dependencies").
+  (`cyrius vet` → "no dependencies").
 - Fuzzed in `tests/kashi.fcyr` (1500 rounds across four pick paths:
   random / valid template / mutated template / truncated template).
   PCF is kashi's biggest untrusted-input surface; the fuzz harness
