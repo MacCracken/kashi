@@ -34,9 +34,11 @@ output = "kashi"
 # **literally unconsumable downstream**, so the kernel's escape hatch was the only surface that
 # worked, and the ADR's own recommendation could not be followed by anyone.
 #
-# ⚠ THE FOLD LISTS THE LEAF MODULES, NOT `src/lib.cyr`. distlib concatenates what is listed; feeding
-# it the aggregator would carry its four `include` lines into the bundle and reproduce the exact
-# failure this fixes. Order is the include chain: font_data first (everything reads its tables).
+# ⚠ THE FOLD LISTS EVERY LEAF MODULE EXPLICITLY, WITH `src/lib.cyr` LAST — listing the aggregator
+# alone is NOT enough. distlib concatenates exactly what is listed and STRIPS `include` lines rather
+# than following them (measured 2026-09-21: a `modules = ["src/lib.cyr"]` fold is 1,177 lines with
+# the loaders but no `kashi_font_init` and no parser, and distlib's own self-check flags it as a real
+# defect). Order is the include chain: font_data first (everything reads its tables), aggregator last.
 #
 # ⛔ `src/font_data.cyr` STAYS the freestanding entry point and is NOT replaced by this. agnos has
 # `[deps] stdlib = []` and physically cannot link the stdlib the other three modules use — ADR 0001

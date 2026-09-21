@@ -7,6 +7,15 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+### Changed
+
+- `cyrius.cyml` `[lib]` comment reworded: it said the fold lists the leaf modules "NOT `src/lib.cyr`"
+  while the list (correctly) ends with `src/lib.cyr`, and it feared the aggregator would carry its
+  `include` lines into the bundle. Measured the opposite: `distlib` **strips** `include` lines rather
+  than following them, so a `modules = ["src/lib.cyr"]` fold is 1,177 lines with no core and no
+  parser (distlib's self-check flags it). The comment now states the real rule — every leaf listed
+  explicitly, in include order, aggregator last. No bundle change (`dist/kashi.cyr` byte-identical).
+
 ## [1.0.10] - 2026-09-21
 
 No public-API change. Three gaps found by the 2026-09-21 roadmap review, each closed and proven,
