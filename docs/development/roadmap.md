@@ -68,3 +68,54 @@ out-of-scope feature creep.
 - **Decisions** → [`../adr/`](../adr/).
 - **Security posture** → [`../../SECURITY.md`](../../SECURITY.md) +
   [`../audit/`](../audit/).
+
+---
+
+## Moving the cyrius pin to 6.6.6
+
+**Current pin: `cyrius = "6.6.4"`.** Nothing must change first — pin bump and rebuild.
+
+**What was checked** (7 `.cyr` under `src/`; vendored `lib/` excluded):
+
+- **Windows write corruption: not a kashi exposure.** `O_APPEND` / `O_TRUNC` appear **52
+  times, all inside the vendored `lib/` fold, zero in `src/`**. kashi never opens a file for
+  writing. Its only file I/O is five read-only `file_read_all(path, buf, cap)` calls in
+  `src/lib.cyr` (lines 420, 543, 660, 961, 984) — the runtime font-load path.
+- **The read-side half of the PE fix is the interesting one, and it is still not kashi's.**
+  6.6.6 stops `file_exists` / `file_read_all` requesting write access, so they now succeed on
+  read-only files and volumes. That is exactly kashi's access pattern — fonts are read-only
+  data — but the change is in the **PE** access-mode decode, and kashi has no Windows target:
+  CI is `ubuntu-latest` only and `src/` carries no `CYRIUS_TARGET_*` branch. No behaviour
+  change on Linux or on the agnos build.
+- **No shape the new refusals catch.** Zero `struct` declarations in `src/`, so no
+  struct/vector copy, no by-value struct parameter, no struct-valued return, no top-level
+  struct call. No `async fn`, no `operator` fn, no SIMD-returning fn, no fn mixing pair and
+  scalar returns, no `var` inside a top-level block (zero top-level `{` / `if (` / `while (`
+  at column 0), no raw `SYS_STATFS`, no `lib/regression.cyr` consumer, no `vec_*` of kashi's
+  own, no duplicate top-level global, no symlink in `lib/`.
+- **The literal-size question, measured.** `src/font_data.cyr` is the glyph byte-table wall
+  and carries kashi's longest string literal at **17,121 bytes** — the largest in this slice
+  of the ecosystem, and still well under the **64 KB** threshold of the 6.6.4 read-back
+  defect. Not exposed today. ⚠ But it is the closest any repo here gets, and font tables only
+  grow: if a future font pushes a single literal past 64 KB, the pin **must** be ≥6.6.4 or
+  the table silently reads back from its second byte with `rc=0`. Worth a line in the
+  "adding a font" checklist.
+
+**What it gains:** 6.6.5's aggregate-layout fix (silently wrong since 5.8.17) and the
+corrected ENTRY stack bases, plus 6.6.6's nine new refusals.
+
+**Verify after bumping:** `cyrius deps` → `cyrius build` → `cyrius test` → **regenerate
+`dist/kashi.cyr`**, then render a glyph sheet and compare it byte-for-byte against the
+pre-bump render. kashi emits fixed data; a pixel difference after a toolchain bump means
+codegen changed what the font says, which is worth stopping for rather than tagging through.
+
+⚠ **`src/font_data.cyr` is the freestanding entry point included directly by the agnos
+kernel** (`cyrius.cyml` records why it stays that way). The agnos kernel compiles it with
+*its* toolchain, not kashi's, so the bump is only complete when the kernel side has a pin
+that accepts whatever the regenerated table looks like. Confirm that before tagging rather
+than after.
+
+⚠ The refreshed `lib/` will carry the 6.6.6 `sigil.cyr` and `mabda.cyr`, whose shipped dist
+does not pass `cyrfmt --check`. That is harmless here — kashi's format gate never walks
+`lib/`. Do not "fix" it in the fold; per the ecosystem rule the repair belongs in the sigil
+and mabda source repos, then re-vendors.
