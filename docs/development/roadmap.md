@@ -161,3 +161,11 @@ differed only in its version stamp; 393 + 49 assertions passed; `cyrius
 vet` stayed dependency-free; bench flat within noise (and ~12 % faster
 than the 1.0.0 / 6.0.3 rows on the sweep and the codepoint search —
 codegen, not source). Full numbers in `CHANGELOG.md` *1.0.9*.
+
+## Recorded by cyrius 6.6.17 (2026-10-05) — for the next cyrius pin move
+
+⛔ **Nothing to do until cyrius 6.6.17 is tagged and out.** Docs-only note from the cyrius 6.6.17 lanes; each item
+is this repo's to adopt when it pins ≥ 6.6.17. Nothing here gates a cyrius release.
+
+- **Bare `cyrius test` runs `[build] test = "src/test.cyr"` from 6.6.17** (cyrius m5), BEFORE the `tests/`
+  walk — so kashi's 393 assertions run in CI for the first time. Check they are green before bumping the pin.
