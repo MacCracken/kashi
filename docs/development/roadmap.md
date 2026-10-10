@@ -1,8 +1,17 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-09-21 (1.0.10)
+> **Last Updated**: 2026-10-09 (1.1.0)
 >
 > **Status: No Open Work.**
+>
+> 1.1.0 (2026-10-09) answered the first concrete consumer need since 1.0:
+> the compositor truncates window titles with U+2026 '…', which CP437 has
+> no cell for, and every consumer was drawing UTF-8 as CP437 mojibake.
+> kashi now owns the Unicode → CP437 mapping (`kashi_cp437_from_unicode`)
+> and an extension block for glyphs CP437 lacks ('…', '�'), and the
+> library face's built-in codepoint bug is fixed
+> ([ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md)).
+> Additive; nothing is booked after it.
 >
 > kashi reached 1.0.0 with every v1 criterion met. The release
 > narrative lives in [`CHANGELOG.md`](../../CHANGELOG.md); this file
@@ -54,6 +63,15 @@ need shows up, the scope is already roughly understood.
   higher-density cell or a different character set) is an additive
   change kashi-side; would bump `KASHI_RT_FONT_BASE` from 3 to 4.
   Semver-compatible because the constant is referenced symbolically.
+- **More extension glyphs** (ADR 0011's block) — CP437's `0x01..0x1F`
+  pictures (☺ ♥ ♪ ► ↑ …, which kashi has never encoded), or punctuation a
+  consumer's UI emits (‘ ’ “ ” – — •). Append cells after `KASHI_EXT_LAST`,
+  draw them in every built-in font, extend `kashi_cp437_from_unicode` and
+  re-pin the sheet. Wait for a consumer to name the glyph.
+- **Aliases in `kashi_cp437_from_unicode`** — e.g. U+03B2 'β' → `0xE1`
+  'ß', U+2126 'Ω' → `0xEA`, as Linux's consolemap does. The 1.1.0 map is
+  exactly the codec's inverse so it stays checkable against an external
+  oracle; aliases would be additive.
 
 ## What would legitimately reopen this file
 
@@ -62,6 +80,8 @@ need shows up, the scope is already roughly understood.
 - A kernel finds an actual bounds bug → patch + audit entry.
 - agnos picks up a fourth built-in cell size → freestanding-core
   additive.
+- A consumer needs a glyph CP437 does not have → an extension cell, the
+  ADR 0011 way (codepoint-reachable only; `0x20..0xFF` untouched).
 - A CVE drops against a font format kashi parses → audit + targeted
   fix.
 - The glyph-sheet pin (`docs/examples/glyph_sheet.sha256`) moves under
@@ -104,7 +124,8 @@ gate set. Toolchain bumps are patch releases (1.0.1–1.0.9 were all this).
    `cyrius lib sync --full` refreshes the whole snapshot; `lib/` is
    ignored, so this is hygiene, not a repo change.
 3. **Gate set**: `cyrius build` (library + `CYRIUS_DCE=1` demo; record
-   both sizes), `cyrius test` (record the assertion counts),
+   both sizes), `cyrius test` and `cyrius test src/test.cyr` (record
+   both assertion counts — below 6.6.17 a bare run skips the unit suite),
    `cyrius fuzz tests/kashi.fcyr`, `cyrius vet src/font_data.cyr` →
    "no dependencies", `cyrius fmt --check` and `cyrius lint` on every
    source file, `CYRIUS_DCE=1 cyrius bench tests/kashi.bcyr` (append the
@@ -168,4 +189,7 @@ codegen, not source). Full numbers in `CHANGELOG.md` *1.0.9*.
 is this repo's to adopt when it pins ≥ 6.6.17. Nothing here gates a cyrius release.
 
 - **Bare `cyrius test` runs `[build] test = "src/test.cyr"` from 6.6.17** (cyrius m5), BEFORE the `tests/`
-  walk — so kashi's 393 assertions run in CI for the first time. Check they are green before bumping the pin.
+  walk. Checked 2026-10-09 in a scratch copy pinned to 6.6.17: a bare run reports 448 + 145 passed, two files.
+  Until 1.1.0 CI ran only the bare command, so on 6.6.6 it gated `tests/kashi.tcyr` alone and the unit
+  assertions never ran in CI; since 1.1.0 the test job also runs `cyrius test src/test.cyr` as its own step.
+  At the pin move that step only repeats the bare run — **drop it in the same change**.

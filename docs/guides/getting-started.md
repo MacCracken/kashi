@@ -1,13 +1,13 @@
 # Getting started with kashi
 
-> **Last Updated**: 2026-09-21 (1.0.9 — rewritten for the frozen 1.0 surface;
-> the previous revision described the 0.1.0 scaffold)
+> **Last Updated**: 2026-10-09 (1.1.0 — Unicode text: `kashi_cp437_from_unicode`
+> and the extension glyphs; rewritten for the frozen 1.0 surface at 1.0.9)
 
 kashi is the AGNOS console-font subsystem: three built-in CP437 bitmap fonts
 that a framebuffer console paints straight from BSS, plus runtime loading of
 PSF / BDF / PCF fonts for userland. The public API has been **frozen since
-1.0.0** — the reference is [`../api/`](../api/), and nothing in this guide
-goes beyond it.
+1.0.0** (1.1.0 added to it, changing nothing) — the reference is
+[`../api/`](../api/), and nothing in this guide goes beyond it.
 
 kashi has **two faces** with a hard, file-level boundary. If you read one
 thing first, read [ADR 0001](../adr/0001-freestanding-font-data-core.md):
@@ -35,8 +35,9 @@ that file is the one the kernel takes.
 ```sh
 cyrius deps                              # vendor the stdlib leaves into lib/
 cyrius build src/lib.cyr build/kashi     # the library face
-cyrius run   src/main.cyr                # demo: 'A' in VGA 8x16 and CGA 8x8, as ASCII art
-cyrius test                              # unit (src/test.cyr) + integration (tests/kashi.tcyr)
+cyrius run   src/main.cyr                # demo: 'A' in both 8-wide built-ins, then '…' and '�', as ASCII art
+cyrius test                              # integration (tests/*.tcyr) — on the 6.6.6 pin, only that
+cyrius test  src/test.cyr                # unit suite (a bare run reaches it only from cyrius 6.6.17)
 cyrius vet   src/font_data.cyr           # MUST print "no dependencies" — the freestanding boundary
 cyrius fuzz  tests/kashi.fcyr            # parser fuzz + accessor bounds contract
 cyrius bench tests/kashi.bcyr            # hot-path timings (CI runs it with CYRIUS_DCE=1)
@@ -47,29 +48,33 @@ cyrius build docs/examples/glyph_sheet.cyr build/glyph_sheet && ./build/glyph_sh
                                          # must equal docs/examples/glyph_sheet.sha256 (CI checks)
 ```
 
-`cyrius test` with no argument runs both suites: the unit suite is the
-`[build].test` entry (`src/test.cyr`, ~390 assertions, including the
-byte-fidelity pins for the built-in tables) and `tests/*.tcyr` is
-auto-discovered (`tests/kashi.tcyr`, structural invariants for all three
-built-ins + file round-trips). `cyrius test src/test.cyr` / `cyrius test tests/kashi.tcyr`
-run them individually.
+There are two suites, and on the pinned cyrius 6.6.6 `cyrius test` with no
+argument runs only one of them: it auto-discovers `tests/*.tcyr`
+(`tests/kashi.tcyr`, ~145 assertions — structural invariants for all three
+built-ins, the Unicode → cell map, file round-trips) and does **not** run the
+`[build].test` entry. Run the unit suite by name: `cyrius test src/test.cyr`
+(~450 assertions, including the byte-fidelity pins for the built-in tables).
+From cyrius 6.6.17 a bare `cyrius test` runs both; until the pin moves, run
+the two commands. `cyrius test tests/kashi.tcyr` runs the integration suite
+alone.
 
 `.github/workflows/ci.yml` runs exactly these — build smoke (library +
-DCE'd demo + the glyph-sheet pin), tests, fmt/lint/vet + the dist drift
-gate, bench, fuzz — so a green local run is a green CI run.
+DCE'd demo + the glyph-sheet pin), both test suites (the unit suite as its
+own `cyrius test src/test.cyr` step), fmt/lint/vet + the dist drift gate,
+bench, fuzz — so a green local run is a green CI run.
 
 ## Layout
 
 | Path | Face | What it is |
 |---|---|---|
-| `src/font_data.cyr` | **Freestanding core** | The three built-in glyph tables + the 11 accessors. NO stdlib, NO heap, NO syscalls — `store8`/`load8` + arithmetic only. The agnos kernel `include`s this file directly. |
+| `src/font_data.cyr` | **Freestanding core** | The three built-in glyph tables (CP437 + the two extension glyphs), the 11 accessors, and the Unicode → cell map `kashi_cp437_from_unicode`. NO stdlib, NO heap, NO syscalls — `store8`/`load8` + arithmetic only. The agnos kernel `include`s this file directly. |
 | `src/font_psf.cyr`, `src/font_bdf.cyr`, `src/font_pcf.cyr` | Library (parsers) | Heapless format parsers — also dependency-free (`load8` + arithmetic), but they serve the library face. |
 | `src/lib.cyr` | **Library face** root (`[build].entry`) | Runtime font registry, `kashi_load_*` / `kashi_register_font` / `kashi_attach_unicode_*`, and the unified `kashi_font_*` accessors. Uses the stdlib (allocation, file I/O). `include`s the core and the parsers — never the reverse. |
-| `src/main.cyr` | demo | Renders `'A'` in the two 8-wide built-ins. |
+| `src/main.cyr` | demo | Renders `'A'` in the two 8-wide built-ins, then '…' and '�' through `kashi_cp437_from_unicode`. |
 | `src/test.cyr` | tests | Unit suite (`[build].test`). |
 | `tests/kashi.tcyr` / `.bcyr` / `.fcyr` | tests | Integration suite, benchmarks, fuzz harness. |
 | `dist/kashi.cyr`, `dist/kashi.deps` | Library face, bundled | Output of `cyrius distlib` from the `[lib]` module list — the single-file, vendorable form of the library face, plus a sidecar naming the stdlib leaves it needs. Tracked; CI fails if it drifts from `src/`. |
-| `docs/examples/glyph_sheet.cyr` (+ `.sha256`) | example / gate | Renders every built-in glyph as hex. CI pins the output's sha256 — the whole-table fidelity check and the toolchain-bump verification tool. |
+| `docs/examples/glyph_sheet.cyr` (+ `.sha256`) | example / gate | Renders every built-in glyph (CP437, then the extension cells) as hex. CI pins the output's sha256 — the whole-table fidelity check and the toolchain-bump verification tool. |
 | `docs/api/` | reference | The frozen surface: [`core.md`](../api/core.md) for kernels, [`loading.md`](../api/loading.md) / [`accessors.md`](../api/accessors.md) / [`attach.md`](../api/attach.md) for userland, [`parsers.md`](../api/parsers.md), [`codes.md`](../api/codes.md). |
 | `docs/adr/`, `docs/architecture/`, `docs/guides/` | docs | Decisions, non-obvious invariants, how-tos. |
 
@@ -96,7 +101,7 @@ and, by stack convention, `path` too so a sibling checkout wins):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.0.9"
+tag     = "1.1.0"
 path    = "../kashi"                  # optional; a sibling checkout overrides the clone
 modules = ["src/font_data.cyr"]       # vendored as lib/kashi_font_data.cyr
 ```
@@ -145,10 +150,39 @@ The built-ins:
 | 1 | `KASHI_FONT_CGA_8X8` | 8×8 | 1 | Hand-drawn AGNOS ASCII low half + Linux PD `font_8x8.c` high half |
 | 2 | `KASHI_FONT_VGA_9X16` | 9×16 | 2 | Derived at init from font 0 + the VGA col-9 rule (ADR 0006) |
 
-All three cover `0x20..0xFF` (full CP437, `KASHI_GLYPH_COUNT = 224`).
-Metadata comes from `kashi_font_width` / `_height` / `_first` / `_count` /
-`_stride(font_id)`; `kashi_glyph_encoded(ch)` is the caller-facing range
-gate.
+All three cover `0x20..0xFF` (full CP437, `KASHI_GLYPH_COUNT = 224`) plus,
+since 1.1.0, two extension cells after it (`KASHI_EXT_FIRST..KASHI_EXT_LAST`:
+'…' and '�'). Metadata comes from `kashi_font_width` / `_height` / `_first` /
+`_count` / `_stride(font_id)` (`_first` / `_count` describe the CP437 range);
+`kashi_glyph_encoded(ch)` is the caller-facing range gate.
+
+### Draw Unicode text
+
+The accessors above take a **cell**, and cells `0x80..0xFF` are CP437, not
+Latin-1 — cell `0xE7` is 'τ'. Passing UTF-8 bytes (or decoded codepoints)
+straight to `kashi_glyph_row` draws mojibake: "Ä" (`C3 84`) comes out as `├ä`.
+Decode the UTF-8 yourself, then map each scalar to its cell once per glyph:
+
+```cyrius
+var cell = kashi_cp437_from_unicode(u);    # u: one decoded Unicode scalar
+if (cell == 0) {                           # no built-in glyph for u
+    cell = kashi_cp437_from_unicode(0xFFFD);   # draw '�' (or skip — 0 renders blank)
+}
+var p = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, cell);
+# ... load8(p + row) per row ...
+
+# A truncated title gets a real ellipsis:
+var ell = kashi_cp437_from_unicode(0x2026);   # U+2026 '…'
+```
+
+ASCII maps to itself, the 128 CP437 high-half characters to their cells
+(U+00E7 'ç' → `0x87`, U+2500 '─' → `0xC4`), U+2302 '⌂' to `0x7F`, and U+2026 /
+U+FFFD to the extension cells; everything else — controls included, U+007F
+DELETE among them — is `0`. Call `kashi_font_init()` first: the CP437 half of
+the map is built there. Raw CP437 **bytes** (art files, BBS screens) are
+already cells: pass them straight to `kashi_glyph_*` as before. Full table in
+[`../api/core.md`](../api/core.md#kashi_cp437_from_unicodecp); the reasoning
+in [ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md).
 
 **Wide glyphs.** `kashi_font_stride(id)` is the bytes per row — `1` for the
 8-wide fonts, `2` for the 9×16. `kashi_glyph_row` returns the *leading*
@@ -175,7 +209,7 @@ amendment):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.0.9"
+tag     = "1.1.0"
 path    = "../kashi"
 modules = ["dist/kashi.cyr"]          # vendored as lib/kashi.cyr
 ```
@@ -208,9 +242,11 @@ kashi_font_init();            # built-ins are still there, ids 0..2
 var id = kashi_load_psf_file("/usr/share/kbd/consolefonts/default8x16.psf");
 if (id < 0) { return 1; }     # 0 - KASHI_EFORMAT / 0 - KASHI_EINVAL
 
-# Unified accessors work for built-in AND runtime ids, addressed by codepoint:
+# Unified accessors work for built-in AND runtime ids, addressed by Unicode
+# codepoint (a built-in maps it through kashi_cp437_from_unicode, 1.1.0):
 var h = kashi_rt_font_height(id);
 var bits = kashi_font_row(id, 0x41, 7);          # one row byte; 0 if out of range
+var ccedil = kashi_font_row(KASHI_FONT_VGA_8X16, 0xE7, 12);   # 'ç' — CP437 cell 0x87
 
 # Hot path, same shape as the core:
 var p = kashi_font_ptr(id, 0x41);
@@ -237,17 +273,21 @@ precedents; follow their shape.
    `KASHI_RT_FONT_BASE` in `src/lib.cyr` from `3` to `4` — runtime ids start
    above the built-ins, and the constant is referenced symbolically
    everywhere, so this is semver-compatible.
-2. **Buffer.** Add a module-scope BSS buffer sized in **bytes**:
-   `var kashi_fontX[glyphs * rows * stride];` (the existing three are
-   `kashi_font16[3584]`, `kashi_font8[1792]`, `kashi_font9_16[7168]`). Mind
+2. **Buffer.** Add a module-scope BSS buffer sized in **bytes**, for the 224
+   CP437 cells **plus** the `KASHI_EXT_COUNT` extension cells:
+   `var kashi_fontX[(224 + 2) * rows * stride];` (the existing three are
+   `kashi_font16[3616]`, `kashi_font8[1808]`, `kashi_font9_16[7232]`). Mind
    the u64-unit rule: module-scope `var X[N]` reserves 8N bytes and kashi
    addresses the first N — see
    [`../architecture/001-*`](../architecture/001-module-scope-var-array-byte-addressing.md).
 3. **Table.** Add a packer in the shape of `kashi_fset16` / `kashi_fset8`,
-   **keeping the `[KASHI_GLYPH_FIRST, KASHI_GLYPH_LAST]` guard** (audit
+   **keeping the `[KASHI_GLYPH_FIRST, KASHI_EXT_LAST]` guard** (audit
    2026-05-27, F1 — it costs nothing at init and stops a table typo from
    corrupting neighbouring BSS), then the literal wall in
-   `kashi_font_init()`. A derived font (like the 9×16) computes its rows
+   `kashi_font_init()` — including the extension cells ('…' and '�', drawn
+   in the new font's weight; ADR 0011 shows the existing ones).
+   `kashi_cp437_from_unicode` needs no change: it names cells, and every
+   font has every cell. A derived font (like the 9×16) computes its rows
    there instead of shipping a table.
 4. **Accessors.** Wire the new id into every metadata accessor —
    `kashi_font_width` / `_height` / `_first` / `_count` / `_stride` — and
@@ -261,8 +301,9 @@ precedents; follow their shape.
    the fuzz harness's known-font list in `tests/kashi.fcyr` — an id the
    harness does not know is reported as a bounds failure the first time the
    random driver draws it. Then extend `docs/examples/glyph_sheet.cyr`'s
-   `main` to dump the new font and re-pin `docs/examples/glyph_sheet.sha256`
-   (the old fonts' lines must be unchanged in the new sheet).
+   `main` to dump the new font (a `dump_font` and a `dump_ext` line) and
+   re-pin `docs/examples/glyph_sheet.sha256` (the old fonts' lines must be
+   unchanged in the new sheet).
 6. **Toolchain caveat.** A single literal over **64 KB** needs a pin
    `≥ 6.6.4` (older read-back defect: the table silently reads from its
    second byte with `rc=0`). The largest literal today is ~17 KB — well
@@ -301,7 +342,7 @@ codegen changed what the font says — stop there. The full procedure is in
 A new storage model, any change at the freestanding boundary, a new
 built-in font, a new format, or anything that touches the frozen surface.
 Use [`../adr/template.md`](../adr/template.md); the index in
-[`../adr/README.md`](../adr/README.md) lists the ten so far.
+[`../adr/README.md`](../adr/README.md) lists the eleven so far.
 
 ## Where to go next
 

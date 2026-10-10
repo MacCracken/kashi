@@ -1,13 +1,50 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-09-21 (**1.0.10** — published bundle, fuzz
-> driver, glyph-sheet pin, docs currency) |
+> **Last refresh**: 2026-10-09 (**1.1.0** — Unicode → CP437 mapping,
+> the U+2026 / U+FFFD extension glyphs, the library face's built-in
+> codepoint fix) |
 > **Refresh cadence**: bumped every release.
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
+
+**1.1.0** — Additive minor (ADR 0011). The ellipsis the compositor needs
+for truncated titles, and Unicode text for every consumer:
+- **`kashi_cp437_from_unicode(cp)`** in the freestanding core: Unicode
+  codepoint → the cell that draws it, or 0. ASCII identity; the CP437
+  high half per the standard mapping (Python's `cp437` codec = the
+  Unicode Consortium's CP437.TXT; dhancha's table agrees entry for
+  entry); U+2302 → `0x7F` while U+007F DELETE → 0; 226 codepoints map in
+  all of Unicode. ASCII fast path + binary search over a 128-entry index
+  that `kashi_font_init` fills from a source already sorted by codepoint
+  (straight stores, no sort, no count reset); `load8`/`store8` only,
+  `cyrius vet` still "no dependencies".
+- **Extension block** `KASHI_EXT_FIRST..KASHI_EXT_LAST` (`0x100`
+  U+2026 '…', `0x101` U+FFFD '�'), kashi-drawn in all three fonts,
+  stored right after `0xFF`; reachable only by codepoint.
+  `KASHI_GLYPH_*` / `kashi_font_count` unchanged.
+- **Fixed**: the library face's `kashi_font_row` / `_ptr` / `_row_byte`
+  read a built-in's codepoint as a CP437 cell (U+00E7 'ç' drew 0xE7 'τ');
+  they map it now. Callers passing CP437 cells there switch to
+  `kashi_glyph_*`.
+- Byte-indexed consumers see nothing: every byte of `0x20..0xFF` in all
+  three fonts is 1.0.10's (FNV-1a test + the new sheet's first 672 lines
+  hash to the old pin `b68ca4d9…`). Glyph-sheet pin re-pinned
+  deliberately: 678 lines, `5544d63f…`.
+- Tests: unit 393 → **448**, integration 57 → **145** (incl. the index's
+  order and its byte identity across a re-init); fuzz gains the Unicode
+  contract (100k triples) and reaches the extension cells. CI now runs the
+  unit suite as its own step (a bare `cyrius test` skips it on 6.6.6).
+  Mutation-tested in two rounds: 26 against the first draft (all 24 that
+  change behaviour caught, 2 equivalent) and 12 against the final index
+  build (all 11 that change behaviour caught; the 12th, a count reset
+  before the fill, is equivalent single-threaded).
+- Cost: library 256,592 → **262,656 B**, DCE'd demo 137,936 → **144,072 B**
+  (+6,064 B of that from the core: 1,928 B BSS + ~3 KB code);
+  `kashi_font_init` **+1.2 µs (+6 %)**, 20.8 → 22.0 µs; `font_row_builtin`
+  +3 ns; ~26 ns per high-half lookup; agnos image headroom −5.7 KB.
 
 **1.0.10** — No API change. Three gaps closed and a docs sweep:
 - **`dist/kashi.cyr` actually published.** The 1.0.6 bundle was
@@ -97,8 +134,9 @@ out-of-scope; none are booked.
 ## What's implemented
 
 - **Freestanding font-data core** — `src/font_data.cyr`. NO stdlib
-  (`cyrius vet` → "no dependencies"). Range `0x20..0xFF` (full CP437,
-  224 slots). Three built-in fonts:
+  (`cyrius vet` → "no dependencies"). Cells `0x20..0xFF` (full CP437,
+  224 slots) + the extension block `0x100..0x101` ('…', '�'; 1.1.0).
+  Three built-in fonts:
   - `KASHI_FONT_VGA_8X16` (id 0) — IBM VGA BIOS 8×16, 224 glyphs (full
     CP437; PD source = Linux's `font_8x16.c`).
   - `KASHI_FONT_CGA_8X8` (id 1) — dual-sourced 8×8 (hand-drawn AGNOS
@@ -110,6 +148,9 @@ out-of-scope; none are booked.
     `kashi_glyph_ptr`, `kashi_font_{width,height,first,count,stride}`,
     `kashi_glyph_encoded`. All bounds-safe for the full `i64` input
     domain.
+  - **Unicode → cell** (1.1.0, ADR 0011): `kashi_cp437_from_unicode` —
+    226 mapped codepoints, everything else 0; `KASHI_EXT_FIRST` /
+    `_LAST` / `_COUNT`.
 - **PSF parser** — `src/font_psf.cyr` (heapless). `kashi_psf_parse`
   validates PSF1/PSF2 headers; `kashi_psf_uni_token` decodes the
   Unicode table.
@@ -141,7 +182,9 @@ out-of-scope; none are booked.
     font ids only (built-ins → `KASHI_EINVAL`). 256 KiB file cap
     (`KASHI_TAB_FILE_CAP`).
   - Unified **codepoint-addressed** `kashi_font_row` / `kashi_font_ptr`
-    (built-in 0,1,2 vs runtime ≥ 3).
+    (built-in 0,1,2 vs runtime ≥ 3). Built-ins map the Unicode codepoint
+    through `kashi_cp437_from_unicode` since 1.1.0 (before, they read it
+    as a CP437 cell).
   - **Multi-byte row access**: `kashi_font_stride` /
     `kashi_glyph_row_byte` in the core; `kashi_rt_font_stride` /
     `kashi_rt_glyph_row_byte` / `kashi_font_row_byte` in the library.
@@ -152,13 +195,17 @@ out-of-scope; none are booked.
     `kashi_set_active_font` / `kashi_active_font`.
   - Scope: width 1–32 (multi-byte rows up to 4 bytes/row).
 - **Published bundle** — `dist/kashi.cyr` + `dist/kashi.deps`
-  (`cyrius distlib` over the `[lib]` modules; 3,742 lines). Tracked and
+  (`cyrius distlib` over the `[lib]` modules; 3,985 lines as distlib
+  reports them, 4,004 by `wc -l`). Tracked and
   released since 1.0.10; what a consumer declares as
   `modules = ["dist/kashi.cyr"]`. CI fails on drift.
-- **Demo** — `src/main.cyr`, renders 'A' in both 8-wide built-in fonts.
+- **Demo** — `src/main.cyr`, renders 'A' in both 8-wide built-in fonts,
+  then '…' and '�' through `kashi_cp437_from_unicode`.
 - **Example / gate** — `docs/examples/glyph_sheet.cyr`, every built-in
-  glyph as hex; sha256 pinned in `docs/examples/glyph_sheet.sha256`
-  (`b68ca4d9…`) and checked in CI.
+  glyph as hex (672 CP437 lines, then the 6 extension lines); sha256
+  pinned in `docs/examples/glyph_sheet.sha256` (`5544d63f…` since 1.1.0;
+  the first 672 lines still hash to the 1.0.x pin `b68ca4d9…`) and
+  checked in CI.
 
 ## What's booked (not built — future)
 
@@ -178,31 +225,55 @@ See [`roadmap.md`](roadmap.md).
 
 ## Build & size
 
-- Library build (`cyrius build src/lib.cyr build/kashi`): clean, **256,592 B**.
-- Demo (`CYRIUS_DCE=1 cyrius build src/main.cyr`): **137,936 B**.
-- Both on cyrius 6.6.6; the growth since the 0.x figures (~84 KB) is the
-  stdlib's, not kashi's — the source is unchanged since 1.0.0.
+- Library build (`cyrius build src/lib.cyr build/kashi`): clean, **262,656 B**
+  (sha256 `6ce819b9…`; 1.0.10: 256,592 B).
+- Demo (`CYRIUS_DCE=1 cyrius build src/main.cyr`): **144,072 B**
+  (sha256 `74e2ceef…`; 1.0.10: 137,936 B). The 1.0.10 demo source against
+  the 1.1.0 core is 144,000 B — the core's share of the growth is +6,064 B:
+  1,928 B of BSS (two glyphs × three fonts at the u64-unit reservation, the
+  1 KiB reverse index, its counter) and ~3 KB of code (the map, the index
+  fill, the extension glyphs). Every binary that links `src/font_data.cyr`
+  pays about that.
+- Both on cyrius 6.6.6. Until 1.1.0 the growth since the 0.x figures
+  (~84 KB) was the stdlib's, not kashi's.
 
 ## Tests
 
-- `src/test.cyr` — 393 assertions (incl. the 13 audit regression
+- `src/test.cyr` — 448 assertions (incl. the 13 audit regression
   assertions added in 0.8.0 for findings F1, F2, F3, F5, F6, F7, F8,
-  F9; F4 was cosmetic). `cyrius test` → **0 failed**.
-- `tests/kashi.tcyr` — 57 assertions (structural invariants for all
-  three built-ins incl. the 9×16 stride-2 group added in 1.0.10, PSF +
-  BDF + PCF file round-trips, PSF + sidecar tab file round-trip,
-  missing-file negative cases).
-- **450 assertions total, 0 failed.**
+  F9; F4 was cosmetic; 1.1.0 added the extension-glyph fidelity bytes,
+  a Unicode spot group, and moved the out-of-range probes from `0x100`
+  to `KASHI_EXT_LAST + 1`). **0 failed.** ⚠ On the 6.6.6 pin a bare
+  `cyrius test` runs only `tests/*.tcyr` — run `cyrius test src/test.cyr`
+  for this suite (6.6.17+ runs it bare; see the roadmap note). CI runs it
+  as its own step since 1.1.0; before that it never ran in CI.
+- `tests/kashi.tcyr` — 145 assertions (structural invariants for all
+  three built-ins incl. the 9×16 stride-2 group added in 1.0.10; 1.1.0's
+  Unicode groups: the full CP437 round trip against the suite's own
+  codec copy, the reverse index's order (codepoints strictly ascending)
+  and its byte identity across a re-init, a sweep of all of
+  U+0000..U+10FFFF (exactly 226 map),
+  the 0x7F rule, the extension glyphs' rows in all three fonts, extension
+  bounds, the library face on built-ins across 224 cells × 3 fonts, and
+  FNV-1a proof that `0x20..0xFF` is byte-for-byte 1.0.10; PSF + BDF + PCF
+  file round-trips, PSF + sidecar tab file round-trip, missing-file
+  negative cases).
+- **593 assertions total, 0 failed.**
 - `tests/kashi.fcyr` — the core-accessor bounds contract (three canned
-  seeds + 200,000 random `(font, ch, row)` triples across byte-sized,
-  full-width i64 and near-edge shapes; eight distinct failure codes),
+  seeds + 200,000 random `(font, ch, row)` triples across small (9-bit
+  cells, so the extension is reached), full-width i64 and near-edge
+  shapes; eight distinct failure codes), the Unicode → cell contract
+  (1.1.0: 100,000 `(cp, font, row)` triples, codes 9–11 — only 0 or an
+  encoded cell, ASCII identity, library face == core of the mapped cell),
   the PSF parser (4000 rounds), the BDF parser (2000 rounds), the PCF
   parser (1500 rounds), and the text-tab parser (1000 rounds across
   random / template / mutated / truncated picks). No crashes; all
   accept-paths bounds-safe. Mutation-tested in 1.0.10.
-- `tests/kashi.bcyr` — see `docs/benchmarks.md`; the hot path is
+- `tests/kashi.bcyr` — see `docs/benchmarks.md`; the core hot path is
   unchanged source-side since 0.4.0, and ~12 % faster toolchain-side
-  since 1.0.0 (cyrius 6.0.3 → 6.6.6).
+  since 1.0.0 (cyrius 6.0.3 → 6.6.6). 1.1.0 adds three Unicode benches
+  and `font_init`, and costs `font_row_builtin` +3 ns (the mapping) and
+  `kashi_font_init` +1.2 µs (the extension glyphs + the index fill).
 - Glyph-sheet pin — `docs/examples/glyph_sheet.sha256`, checked in CI.
 
 ## Cleanliness (P(-1) gates)
@@ -230,7 +301,9 @@ See [`roadmap.md`](roadmap.md).
 ## Glyph fidelity
 
 Built-in tables diffed byte-for-byte against agnos's source — **0
-mismatches**. Runtime-loaded fonts (PSF / BDF / PCF) carry their own
+mismatches**. The two extension glyphs (1.1.0) are kashi-drawn, not from
+any ROM; their rows are pinned in `src/test.cyr` / `tests/kashi.tcyr` and
+drawn in ADR 0011. Runtime-loaded fonts (PSF / BDF / PCF) carry their own
 glyphs from the source; kashi exercises round-trips on small
 synthetic buffers in `src/test.cyr` and `tests/kashi.tcyr`.
 
@@ -248,18 +321,38 @@ consumer. Unchanged since 0.7.2.
 
 All six take the **freestanding core** (`modules = ["src/font_data.cyr"]`,
 vendored as `lib/kashi_font_data.cyr`); none calls a runtime loader —
-surveyed 2026-09-21 across `~/Repos`. Pins as of that survey:
+surveyed 2026-09-21 across `~/Repos`. Pins re-read from each `cyrius.cyml` 2026-10-09
+(the agnos row's toolchain was not re-checked):
 
 | Consumer | kashi | their cyrius | notes |
 |---|---|---|---|
 | **agnos** (kernel) | `path` only, no tag | 6.6.4 | Integrated at 1.38.0 (M3, 0.7.0); folds `src/font_data.cyr` into the kernel since 1.57.4. `fb_console.cyr` renders via `kashi_glyph_ptr` + `load8`; `gpu.cyr` via `kashi_glyph_row`. |
-| dhancha | 1.0.8 | 6.6.4 | Default face for `dh_draw_text`. |
-| crab | 1.0.8 | 6.6.4 | |
+| dhancha | 1.0.10 | 6.6.6 | Default face for `dh_draw_text`. |
+| crab | 1.0.10 | 6.6.6 | |
 | jalwa | 1.0.7 | 6.6.3 | |
-| aethersafha | 1.0.7 | 6.6.2 | |
-| puka | 1.0.6 | 6.6.2 | Five programs include the core. |
+| aethersafha | 1.0.10 | 6.6.11 | |
+| puka | 1.0.10 | 6.6.6 | Five programs include the core. ⚠ `fb__glyph_draw` passes Unicode **scalars** to `kashi_glyph_row` — not a byte-indexed consumer (below). |
 
 The desktop-stack four carry a manifest note to switch to
 `modules = ["dist/kashi.cyr"]` the day they need runtime loading — which
 resolves only from 1.0.10 on. 1.0.9 and 1.0.10 are data-identical to
 1.0.6–1.0.8, so no consumer needs to move for correctness.
+
+**1.1.0 for consumers** — nothing changes for a byte-indexed consumer
+(every `0x20..0xFF` byte is 1.0.10's). ⚠ puka is not one: its framebuffer
+renderer passes scalars, so on its bump U+0100 / U+0101 go from blank to
+'…' / '�' — map through `kashi_cp437_from_unicode` first, which also fixes
+its long-wrong U+0080..U+00FF. What it offers: a consumer drawing
+UTF-8 decodes, then `kashi_cp437_from_unicode` per scalar (dhancha's
+`dh_text_cp437` and thoth's `graster.cyr` fold are private copies of that
+job); the compositor's truncated titles get a real '…' via
+`kashi_cp437_from_unicode(0x2026)`. What every core consumer pays: ~6 KB
+of binary and +1.2 µs per `kashi_font_init()` — per draw for dhancha
+(and crab / puka through their vendored copy), whose `dh_draw_text_ink`
+inits unconditionally; a `kashi_font_is_ready()` guard there would make
+it once. ⚠ agnos takes kashi by `path`, so a sibling checkout at 1.1.0 is
+what its next local build compiles, no glyph change: measured with its
+`scripts/build.sh` on 6.6.6, image headroom under the 0x390000 ceiling
+99,336 → 93,592 B plain, 45,600 → 39,840 B with `TEST=1 KTEST=1` (both
+pass its image-layout gate). Its `KASHI_REF` clone fallback still says
+1.0.10 — bump it (build.sh / test.sh / bench.sh) when 1.1.0 is tagged.

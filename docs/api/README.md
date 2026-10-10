@@ -3,11 +3,12 @@
 > **Frozen as of 0.9.0** (2026-05-28). Every exported symbol below
 > has a stable signature and semantic guarantee through the 1.0.0
 > release and beyond. Breaking changes after 1.0.0 require a major
-> version bump.
+> version bump. 1.1.0 (2026-10-09) added one function and one enum
+> group, changing none ([ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md)).
 
-This is the full reference for kashi's public surface — 43 public
-functions and 20 enum groups across two faces (freestanding + library).
-(`src/` declares 45 `fn kashi_*`; the other two are the init-time
+This is the full reference for kashi's public surface — 44 public
+functions and 21 enum groups across two faces (freestanding + library).
+(`src/` declares 46 `fn kashi_*`; the other two are the init-time
 `kashi_fset8` / `kashi_fset16` packers, internal — see below.) For
 narrative how-tos see [`docs/guides/`](../guides/); for the *why*
 behind design choices see [`docs/adr/`](../adr/).
@@ -16,7 +17,7 @@ behind design choices see [`docs/adr/`](../adr/).
 
 | You are… | Read… |
 |---|---|
-| A freestanding-kernel author embedding kashi | [`core.md`](core.md) — the 11 accessors + 3 font IDs that ship to the kernel. **Do not read the others.** |
+| A freestanding-kernel author embedding kashi | [`core.md`](core.md) — the 11 accessors, the Unicode → cell map and the 3 font IDs that ship to the kernel. **Do not read the others.** |
 | A userland consumer loading bitmap fonts | [`loading.md`](loading.md), then [`accessors.md`](accessors.md). |
 | A consumer attaching external Unicode mappings | [`attach.md`](attach.md) (sidecar tables). |
 | Building a custom font-format parser on top of kashi's primitives | [`parsers.md`](parsers.md) — the heapless `*_parse_*` and `*_next_*` cursor APIs. |
@@ -46,12 +47,12 @@ programs (the demo binary does it) — just don't try to call
 
 | File | Surface | Symbols |
 |---|---|---|
-| [`core.md`](core.md) | Freestanding (kernel-safe) | 11 functions + 3 font IDs + 3 range constants |
+| [`core.md`](core.md) | Freestanding (kernel-safe) | 12 functions + 3 font IDs + 3 CP437 range + 3 extension constants |
 | [`loading.md`](loading.md) | Runtime font loading | 7 load/register functions |
 | [`accessors.md`](accessors.md) | Reading loaded fonts | 14 accessor + metadata functions (13 entries — the active-font get/set pair shares one) |
 | [`attach.md`](attach.md) | Sidecar Unicode tables | 4 attach functions |
 | [`parsers.md`](parsers.md) | Low-level parser primitives | 7 parser functions + 3 struct shapes |
-| [`codes.md`](codes.md) | Result codes + constants | 20 enum groups |
+| [`codes.md`](codes.md) | Result codes + constants | 21 enum groups |
 
 ## Stability promise
 
@@ -74,7 +75,12 @@ programs (the demo binary does it) — just don't try to call
 - `kashi_fset8` / `kashi_fset16` in `src/font_data.cyr`: these are
   init-time helpers used only by `kashi_font_init` to pack the
   built-in glyph tables. Their name omits the `_kashi_` underscore
-  convention as an oversight; treat them as internal.
+  convention as an oversight; treat them as internal. (The 1.1.0
+  index builders `_kashi_cp437_ent` / `_kashi_cp437_rev8` and the
+  `kashi_cp437_rev` / `kashi_cp437_n` globals are internal too.)
+- The extension **cell numbers** themselves (`0x100`, `0x101`): get a
+  cell from `kashi_cp437_from_unicode`, or enumerate
+  `KASHI_EXT_FIRST..KASHI_EXT_LAST`; the block may grow.
 - The bench / test entry points (`tests/kashi.bcyr`,
   `tests/kashi.tcyr`, `tests/kashi.fcyr`).
 - Struct field offsets when not specifically listed (e.g.,

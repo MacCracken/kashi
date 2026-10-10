@@ -22,13 +22,23 @@ Security-relevant areas:
   trust boundary; it is fuzzed (`tests/kashi.fcyr`) over the full
   integer range of each argument.
 - **Buffer sizing** — the freestanding core's module-scope BSS
-  buffers (`var kashi_font16[3584]`, `var kashi_font8[1792]`,
-  `var kashi_font9_16[7168]`) reserve 8× their byte count (Cyrius
-  module-scope u64 units; see
+  buffers (`var kashi_font16[3616]`, `var kashi_font8[1808]`,
+  `var kashi_font9_16[7232]` — 224 CP437 + 2 extension glyphs each,
+  since 1.1.0) reserve 8× their byte count (Cyrius module-scope u64
+  units; see
   `docs/architecture/001-module-scope-var-array-byte-addressing.md`).
   All byte access is bounded to the used region; the table-builder
-  helpers (`kashi_fset16`, `kashi_fset8`) reject out-of-range
-  codepoints (audit 2026-05-27 F1).
+  helpers (`kashi_fset16`, `kashi_fset8`) reject cells outside
+  `[0x20, KASHI_EXT_LAST]` (audit 2026-05-27 F1).
+- **Unicode → cell mapping** (1.1.0) — `kashi_cp437_from_unicode` is
+  total over the `i64` domain (anything unmapped → `0`, which every
+  accessor treats as out of range) and only ever answers `0` or an
+  encoded cell; its binary search indexes `[0, kashi_cp437_n)` of a
+  128-slot table (`kashi_cp437_rev[128]`, one u64 slot per entry) that
+  the init-time writer fills slot by slot, bounding slot, codepoint and
+  cell (a bad one is skipped, never written past the table). Fuzzed in
+  `tests/kashi.fcyr` (`fuzz_unicode`) and swept over all of Unicode in
+  `tests/kashi.tcyr`.
 - **Font-file parsing** — PSF1/PSF2 (`src/font_psf.cyr`), BDF
   (`src/font_bdf.cyr`), and PCF (`src/font_pcf.cyr`) all parse
   untrusted file bytes. Each parser is **heapless and

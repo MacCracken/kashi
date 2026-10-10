@@ -1,9 +1,12 @@
 # Freestanding core API (`src/font_data.cyr`)
 
-> **Frozen as of 0.9.0**. Consumed by the agnos kernel via
+> **Frozen as of 0.9.0**; extended additively in 1.1.0
+> (`kashi_cp437_from_unicode` + the extension cells —
+> [ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md)).
+> Consumed by the agnos kernel via
 > `[deps.kashi] modules=["src/font_data.cyr"]`. Uses only
 > `store8`/`load8` intrinsics + arithmetic — no stdlib, no heap,
-> no syscalls. `cyaudit vet src/font_data.cyr` reports
+> no syscalls. `cyrius vet src/font_data.cyr` reports
 > "no dependencies".
 
 ## Built-in font IDs
@@ -16,11 +19,31 @@ The freestanding core carries three built-in fonts, addressable by id:
 | `KASHI_FONT_CGA_8X8` | `1` | Hand-drawn AGNOS-original 8×8 ASCII low half (`0x20..0x7F`) + Linux PD `font_8x8.c` high half (`0x80..0xFF`). 224 glyphs. |
 | `KASHI_FONT_VGA_9X16` | `2` | VGA 9×16 derived at init from `KASHI_FONT_VGA_8X16` + the VGA col-9 replication rule for `0xC0..0xDF` ([ADR 0006](../adr/0006-vga-9x16-derived-builtin.md)). No new byte tables; computed at boot. |
 
-All three cover the codepoint range `0x20..0xFF` (printable ASCII +
-CP437 high half). Runtime-loaded fonts get ids ≥ `KASHI_RT_FONT_BASE`
+All three cover the CP437 cells `0x20..0xFF` (printable ASCII +
+CP437 high half) and, since 1.1.0, the two extension cells after them.
+Runtime-loaded fonts get ids ≥ `KASHI_RT_FONT_BASE`
 (see [`codes.md`](codes.md)).
 
-## Codepoint range constants
+## Cells vs codepoints
+
+Every per-glyph accessor in this file takes a **cell**, not a Unicode
+codepoint:
+
+| Cells | What they are |
+|---|---|
+| `0x20..0xFF` | The CP437 code page — the bytes agnos and every byte-indexed consumer render. **Cells `0x80..0xFF` are not Latin-1**: cell `0xE7` is 'τ'; U+00E7 'ç' is cell `0x87`. This range never changes meaning. |
+| `0x100..0x101` | The **extension block** (1.1.0): glyphs CP437 has no cell for — `0x100` U+2026 '…', `0x101` U+FFFD '�'. No byte value names them. |
+
+Unicode text reaches a cell through
+[`kashi_cp437_from_unicode(cp)`](#kashi_cp437_from_unicodecp), which answers
+`0` — a cell every accessor treats as out of range — when no built-in glyph
+exists. Treat the extension cell numbers as kashi-internal: get them from
+`kashi_cp437_from_unicode`, or enumerate `KASHI_EXT_FIRST..KASHI_EXT_LAST`;
+don't spell `0x100`.
+
+## Cell range constants
+
+The CP437 range (unchanged since 0.4.0 — these never describe the extension):
 
 | Constant | Value | Meaning |
 |---|---|---|
@@ -28,9 +51,16 @@ CP437 high half). Runtime-loaded fonts get ids ≥ `KASHI_RT_FONT_BASE`
 | `KASHI_GLYPH_LAST` | `0xFF` | Last encoded codepoint (last CP437 cell). |
 | `KASHI_GLYPH_COUNT` | `224` | `KASHI_GLYPH_LAST - KASHI_GLYPH_FIRST + 1`. |
 
-A built-in font has glyph data for every codepoint in this range.
-Codepoints outside the range return safe sentinels from the accessors
-(row `0`, ptr `0`).
+The extension block (`KashiExtRange`, added in 1.1.0):
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `KASHI_EXT_FIRST` | `0x100` | First extension cell; `== KASHI_GLYPH_LAST + 1`, so storage is contiguous. |
+| `KASHI_EXT_LAST` | `0x101` | Last extension cell. |
+| `KASHI_EXT_COUNT` | `2` | `KASHI_EXT_LAST - KASHI_EXT_FIRST + 1`. |
+
+A built-in font has glyph data for every cell in both ranges. Cells
+outside them return safe sentinels from the accessors (row `0`, ptr `0`).
 
 ## Init
 
@@ -40,10 +70,21 @@ Codepoints outside the range return safe sentinels from the accessors
 fn kashi_font_init();
 ```
 
-Packs the built-in glyph tables into BSS and derives the VGA 9×16
-table from the 8×16 table. **Must run once at boot**, before the
-first call to any accessor. Idempotent — calling twice is safe and
-produces byte-identical results.
+Packs the built-in glyph tables into BSS, derives the VGA 9×16
+table from the 8×16 table, and builds the 128-entry Unicode reverse
+index `kashi_cp437_from_unicode` searches. **Must run once at boot**,
+before the first call to any accessor. Idempotent — calling twice is
+safe and produces byte-identical results: every store writes a final
+value to a fixed address (the index source is pre-sorted; nothing is
+reset and refilled), so a reader racing a *re*-init never sees a wrong
+value. The *first* call must finish before another CPU reads — kashi
+has no synchronisation of its own.
+
+**Cost**: ~22 µs per call (1.1.0: +1.2 µs over 1.0.10 for the extension
+glyphs and the index fill; `font_init` in
+[`docs/benchmarks.md`](../benchmarks.md)). It is boot work: a consumer
+that calls it on every draw pays that per draw — check
+`kashi_font_is_ready()` first instead.
 
 For freestanding consumers: this is the only init step. No
 allocations, no syscalls.
@@ -97,7 +138,7 @@ bytes.
 | Param | Type | Range / meaning |
 |---|---|---|
 | `font_id` | `i64` | Font id (built-in 0..2; runtime ≥ 3). Unknown → returns 0. |
-| `ch` | `i64` | Codepoint. Out-of-range → 0. |
+| `ch` | `i64` | Cell (`0x20..0xFF` CP437, `0x100..0x101` extension). Out-of-range → 0. |
 | `row` | `i64` | Row index 0..height-1. Out-of-range → 0. |
 
 ```cyrius
@@ -144,9 +185,9 @@ while (bi < stride) {
 fn kashi_glyph_ptr(font_id, ch);   # -> ptr or 0 (null)
 ```
 
-Base pointer to glyph `ch`'s row bytes. The `i`th row is at
-`load8(ptr + i * stride)`. Returns `0` for unknown font or
-out-of-range codepoint.
+Base pointer to glyph `ch`'s row bytes (`ch` a cell). The `i`th row
+is at `load8(ptr + i * stride)`. Returns `0` for unknown font or
+out-of-range cell.
 
 ```cyrius
 # Resolve once, blit all rows in a tight loop.
@@ -168,11 +209,12 @@ glyph, then direct `load8` reads per row. ~7 ns + ~1 ns/row vs
 ### `kashi_glyph_encoded(ch)`
 
 ```cyrius
-fn kashi_glyph_encoded(ch);   # -> 1 if ch is in [FIRST, LAST], else 0
+fn kashi_glyph_encoded(ch);   # -> 1 if ch is in [FIRST, LAST] or [EXT_FIRST, EXT_LAST], else 0
 ```
 
-Whether codepoint `ch` has an encoded glyph in the built-in range.
-Pure predicate; doesn't read glyph data.
+Whether cell `ch` has a built-in glyph: the CP437 range or (since
+1.1.0) the extension block. Pure predicate; doesn't read glyph data.
+Every per-glyph accessor gates on it.
 
 ```cyrius
 if (kashi_glyph_encoded(ch) == 0) {
@@ -180,6 +222,52 @@ if (kashi_glyph_encoded(ch) == 0) {
     ch = 0x3F;
 }
 ```
+
+1.1.0 changed its answer for exactly two inputs: `0x100` and `0x101`
+were out of range and are now the extension cells. Its answer for
+every value `≤ 0xFF` is unchanged.
+
+### `kashi_cp437_from_unicode(cp)`
+
+```cyrius
+fn kashi_cp437_from_unicode(cp);   # -> cell for kashi_glyph_*, or 0 (no built-in glyph)
+```
+
+Added in 1.1.0 ([ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md)).
+The cell that draws Unicode codepoint `cp` in the built-in fonts:
+
+| `cp` | Result |
+|---|---|
+| U+0020..U+007E | itself |
+| the 128 codepoints of the CP437 high half | `0x80..0xFF`, per the standard CP437 mapping (Python's `cp437` codec / the Unicode Consortium's `CP437.TXT`): U+00E7 'ç' → `0x87`, U+2500 '─' → `0xC4`, U+00A0 NBSP → `0xFF` |
+| U+2302 HOUSE '⌂' | `0x7F` (the glyph kashi's VGA cell `0x7F` draws; the CGA 8×8 draws that cell blank) |
+| U+007F DELETE | `0` — a control character, like U+0000..U+001F and U+0080..U+009F |
+| U+2026 HORIZONTAL ELLIPSIS | `KASHI_EXT_FIRST` |
+| U+FFFD REPLACEMENT CHARACTER | `KASHI_EXT_FIRST + 1` |
+| anything else (incl. negatives, past U+10FFFF) | `0` |
+
+Exactly 226 codepoints map. Font-independent — it names a cell, and
+every built-in font has every cell. `0` renders blank / null through
+every accessor; substitute `kashi_cp437_from_unicode(0xFFFD)` if you
+want a visible mark instead. Allocation-free: an ASCII fast path, then
+a binary search (≤ 8 probes) of the reverse index `kashi_font_init`
+builds. **Call `kashi_font_init` first** — before it only ASCII,
+U+2302 and the extension resolve, and the high half answers `0`.
+
+```cyrius
+# Draw a decoded Unicode scalar `u` (your UTF-8 decoder's output).
+var cell = kashi_cp437_from_unicode(u);
+if (cell == 0) { cell = kashi_cp437_from_unicode(0xFFFD); }   # optional: show '�'
+var p = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, cell);           # resolve once per glyph
+# ... load8(p + row) per row, as above ...
+
+# Truncate with a real ellipsis:
+var ell = kashi_cp437_from_unicode(0x2026);
+```
+
+**Performance**: ~4 ns for ASCII, ~26 ns for a high-half codepoint
+(see [`docs/benchmarks.md`](../benchmarks.md)) — once per glyph, not
+per row.
 
 ## Per-font metadata
 
@@ -214,10 +302,13 @@ different range.
 ### `kashi_font_count(font_id)`
 
 ```cyrius
-fn kashi_font_count(font_id);   # -> number of encoded glyphs
+fn kashi_font_count(font_id);   # -> number of CP437 glyphs
 ```
 
-Number of encoded glyphs (`KASHI_GLYPH_COUNT` for built-ins).
+Number of CP437 glyphs (`KASHI_GLYPH_COUNT`, 224, for built-ins), so
+`first .. first + count` enumerates the CP437 range. The extension
+block is **not** counted — enumerate `KASHI_EXT_FIRST..KASHI_EXT_LAST`
+separately (as `docs/examples/glyph_sheet.cyr` does).
 
 ### `kashi_font_stride(font_id)`
 
@@ -235,17 +326,28 @@ agnos kernel's load-bearing dependency. Specifically:
 
 - **Function signatures, parameter order, return semantics** are
   frozen.
-- **Constants** (font IDs, range bounds): values are frozen. A
-  future cut may add new font IDs (e.g., `KASHI_FONT_VGA_10X20 = 3`)
+- **Constants** (font IDs, range bounds): values are frozen — with
+  one stated exception, the extension block's upper end (next bullet).
+  A future cut may add new font IDs (e.g., `KASHI_FONT_VGA_10X20 = 3`)
   but won't renumber existing ones.
-- **`KASHI_GLYPH_FIRST` / `KASHI_GLYPH_LAST`**: a future cut may
-  widen the range (e.g., to U+0000..U+FFFF) but won't narrow it.
-  Consumers reading the constants are forward-safe; consumers that
-  hard-coded `0x20`/`0xFF` are off in that case.
+- **`KASHI_GLYPH_FIRST` / `KASHI_GLYPH_LAST` / `KASHI_GLYPH_COUNT`**
+  describe the CP437 cells and stay `0x20` / `0xFF` / `224`. The cell
+  space grows past them only through the extension block (1.1.0): a
+  later minor may append cells after the current last one, raising
+  `KASHI_EXT_LAST` / `KASHI_EXT_COUNT` (`KASHI_EXT_FIRST` stays
+  `0x100`) — read the constants, don't hard-code `0x101`. Existing
+  extension cells keep their glyphs. Unicode reaches cells only through
+  `kashi_cp437_from_unicode` — the core does not become
+  codepoint-addressed, because `0x80..0xFF` are CP437 cells, not
+  Latin-1.
+- **Glyph bytes for `0x20..0xFF`** are frozen (the glyph-sheet pin's
+  first 672 lines).
 - **Byte order in glyph rows** (bit 7 = leftmost pixel) is frozen.
 
 The freestanding core does NOT use the `_kashi_` underscore prefix
 convention used by the library face's internal helpers — every
 function in `font_data.cyr` is part of the public surface above
 EXCEPT `kashi_fset8` / `kashi_fset16`, which are init-time table
-packers and should not be called externally.
+packers and should not be called externally. The 1.1.0 index helpers
+(`_kashi_cp437_ent`, `_kashi_cp437_rev8`) do carry the prefix and are
+internal, as are the `kashi_cp437_rev` / `kashi_cp437_n` globals.

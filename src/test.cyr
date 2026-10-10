@@ -57,7 +57,8 @@ fn test_glyph_row_byte() {
     # bounds-safety: negative / out-of-range inputs -> 0.
     assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0x41, 7, 0 - 1), 0, "neg byte_idx");
     assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0x41, 0 - 1, 0), 0, "neg row");
-    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, 0x100, 0, 0), 0, "oob ch");
+    # First cell past the extension block (1.1.0 moved the bound from 0xFF).
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_8X16, KASHI_EXT_LAST + 1, 10, 0), 0, "oob ch");
     assert_eq(kashi_glyph_row_byte(99, 0x41, 0, 0), 0, "unknown font");
     return 0;
 }
@@ -72,7 +73,11 @@ fn test_encoded_gate() {
     assert_eq(kashi_glyph_encoded(0x7F), 1, "0x7F encoded");
     assert_eq(kashi_glyph_encoded(0x80), 1, "0x80 encoded (CP437)");
     assert_eq(kashi_glyph_encoded(0xFF), 1, "0xFF encoded (last CP437)");
-    assert_eq(kashi_glyph_encoded(0x100), 0, "0x100 not encoded");
+    # 1.1.0 (ADR 0011): the extension block follows 0xFF directly; the
+    # out-of-range bound moved from 0x100 to KASHI_EXT_LAST + 1 (0x102).
+    assert_eq(kashi_glyph_encoded(KASHI_EXT_FIRST), 1, "0x100 encoded (ext: U+2026)");
+    assert_eq(kashi_glyph_encoded(KASHI_EXT_LAST), 1, "0x101 encoded (ext: U+FFFD)");
+    assert_eq(kashi_glyph_encoded(KASHI_EXT_LAST + 1), 0, "0x102 not encoded");
     assert_eq(kashi_glyph_encoded(0), 0, "NUL not encoded");
     return 0;
 }
@@ -200,9 +205,12 @@ fn test_cga_8x8_bytes() {
 fn test_accessor_bounds() {
     test_group("accessor bounds");
     assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x1F, 0), 0, "row oob-char-lo 0");
-    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x100, 0), 0, "row oob-char-hi 0");
+    # The high bound is the last EXTENSION cell since 1.1.0 (was 0xFF).
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, KASHI_EXT_LAST + 1, 10), 0, "row oob-char-hi 0");
     assert_eq(kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x1F), 0, "ptr oob-char-lo null");
-    assert_eq(kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x100), 0, "ptr oob-char-hi null");
+    assert_eq(kashi_glyph_ptr(KASHI_FONT_VGA_8X16, KASHI_EXT_LAST + 1), 0, "ptr oob-char-hi null");
+    assert_eq(kashi_glyph_ptr(KASHI_FONT_CGA_8X8, KASHI_EXT_LAST + 1), 0, "cga ptr oob-char-hi null");
+    assert_eq(kashi_glyph_ptr(KASHI_FONT_VGA_9X16, KASHI_EXT_LAST + 1), 0, "vga9 ptr oob-char-hi null");
 
     assert_eq(kashi_glyph_row(7, 0x41, 0), 0, "row unknown-font 0");
     assert_eq(kashi_glyph_ptr(7, 0x41), 0, "ptr unknown-font null");
@@ -241,6 +249,99 @@ fn test_full_coverage() {
     }
     assert_eq(all_ok16, 1, "all 224 vga glyphs present");
     assert_eq(all_ok8, 1, "all 224 cga glyphs present (full CP437)");
+    # 1.1.0: the extension cells resolve too, in all three fonts.
+    var ext_ok = 1;
+    var e = KASHI_EXT_FIRST;
+    while (e <= KASHI_EXT_LAST) {
+        if (kashi_glyph_ptr(KASHI_FONT_VGA_8X16, e) == 0) { ext_ok = 0; }
+        if (kashi_glyph_ptr(KASHI_FONT_CGA_8X8, e) == 0) { ext_ok = 0; }
+        if (kashi_glyph_ptr(KASHI_FONT_VGA_9X16, e) == 0) { ext_ok = 0; }
+        e = e + 1;
+    }
+    assert_eq(ext_ok, 1, "all extension glyphs present (3 fonts)");
+    return 0;
+}
+
+# --- 1.1.0 extension block (ADR 0011): exact bytes of the kashi-drawn glyphs ---
+#
+# Not from any ROM, so these rows ARE the design (ADR 0011 carries the art).
+# Cell numbers are used directly here because this pins the storage; real
+# callers get them from kashi_cp437_from_unicode.
+
+fn test_ext_bytes() {
+    test_group("extension bytes");
+    var ell = KASHI_EXT_FIRST;        # U+2026 HORIZONTAL ELLIPSIS
+    var rep = KASHI_EXT_FIRST + 1;    # U+FFFD REPLACEMENT CHARACTER
+    # VGA 8x16 '...' = hi 0, lo 0x0000DBDB00000000: ##.##.## on rows 10-11
+    # only — the rows (and 2x2 weight) of the VGA period, three times over.
+    var r = 0;
+    var ink = 0;
+    while (r < 16) {
+        var b = kashi_glyph_row(KASHI_FONT_VGA_8X16, ell, r);
+        var bit = 0;
+        while (bit < 8) {
+            if ((b & (1 << bit)) != 0) { ink = ink + 1; }
+            bit = bit + 1;
+        }
+        r = r + 1;
+    }
+    assert_eq(ink, 12, "vga U+2026 ink = three 2x2 dots");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, ell, 9), 0x00, "vga U+2026 row9");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, ell, 10), 0xDB, "vga U+2026 row10");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, ell, 11), 0xDB, "vga U+2026 row11");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, ell, 12), 0x00, "vga U+2026 row12");
+    # VGA 8x16 U+FFFD = hi 0x0010387CC6BAFAF6, lo 0xEEFEEE7C38100000.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 0), 0x00, "vga U+FFFD row0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 1), 0x10, "vga U+FFFD row1 tip");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 3), 0x7C, "vga U+FFFD row3");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 4), 0xC6, "vga U+FFFD row4 ? top");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 5), 0xBA, "vga U+FFFD row5 ? bowl");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 6), 0xFA, "vga U+FFFD row6");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 7), 0xF6, "vga U+FFFD row7");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 8), 0xEE, "vga U+FFFD row8 ? stem");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 9), 0xFE, "vga U+FFFD row9 gap");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 10), 0xEE, "vga U+FFFD row10 ? dot");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 11), 0x7C, "vga U+FFFD row11");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 13), 0x10, "vga U+FFFD row13 tip");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, 14), 0x00, "vga U+FFFD row14");
+    # CGA 8x8 '...' = 0x0000000000DBDB00 (its period is on rows 5-6).
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, ell, 4), 0x00, "cga U+2026 row4");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, ell, 5), 0xDB, "cga U+2026 row5");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, ell, 6), 0xDB, "cga U+2026 row6");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, ell, 7), 0x00, "cga U+2026 row7");
+    # CGA 8x8 U+FFFD = 0x3844F6EEFE6C3800.
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, rep, 0), 0x38, "cga U+FFFD row0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, rep, 1), 0x44, "cga U+FFFD row1 ? top");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, rep, 2), 0xF6, "cga U+FFFD row2");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, rep, 3), 0xEE, "cga U+FFFD row3 ? stem");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, rep, 4), 0xFE, "cga U+FFFD row4 gap");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, rep, 5), 0x6C, "cga U+FFFD row5 ? dot");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, rep, 6), 0x38, "cga U+FFFD row6");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, rep, 7), 0x00, "cga U+FFFD row7 blank");
+    # VGA 9x16: leading byte = the 8x16 row, col 9 blank (outside 0xC0..0xDF).
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, ell, 10, 0), 0xDB, "vga9 U+2026 r10 b0");
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, ell, 10, 1), 0x00, "vga9 U+2026 r10 col9 blank");
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, rep, 9, 0), 0xFE, "vga9 U+FFFD r9 b0");
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, rep, 9, 1), 0x00, "vga9 U+FFFD r9 col9 blank");
+    # The neighbours are untouched: the last CP437 cell is still blank.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xFF, 10), 0x00, "vga 0xFF still blank");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0xFF, 5), 0x00, "cga 0xFF still blank");
+    return 0;
+}
+
+# --- 1.1.0 Unicode -> cell (ADR 0011); the full table is in tests/kashi.tcyr ---
+
+fn test_cp437_unit() {
+    test_group("cp437 from unicode (unit)");
+    assert_eq(kashi_cp437_from_unicode(0x41), 0x41, "ASCII A -> 0x41");
+    assert_eq(kashi_cp437_from_unicode(0xE7), 0x87, "U+00E7 -> 0x87");
+    assert_eq(kashi_cp437_from_unicode(0x2557), 0xBB, "U+2557 double down-left -> 0xBB");
+    assert_eq(kashi_cp437_from_unicode(0x2302), 0x7F, "U+2302 HOUSE -> 0x7F");
+    assert_eq(kashi_cp437_from_unicode(0x7F), 0, "U+007F DELETE -> 0");
+    assert_eq(kashi_cp437_from_unicode(0x2026), KASHI_EXT_FIRST, "U+2026 -> ext");
+    assert_eq(kashi_cp437_from_unicode(0xFFFD), KASHI_EXT_FIRST + 1, "U+FFFD -> ext + 1");
+    assert_eq(kashi_cp437_from_unicode(0x100), 0, "U+0100 -> 0");
+    assert_eq(kashi_cp437_from_unicode(0 - 7), 0, "negative -> 0");
     return 0;
 }
 
@@ -273,18 +374,29 @@ fn test_font_ready() {
 fn test_fset_guard() {
     test_group("fset guard");
     var ones = 0xFFFFFFFFFFFFFFFF;
-    # Below FIRST (0x20) and above LAST (0xFF), both fonts.
+    # Below FIRST (0x20) and past the last EXTENSION cell (KASHI_EXT_LAST + 1
+    # since 1.1.0 — 0x100 is a real cell now), both fonts.
     kashi_fset16(0x1F, ones, ones);
-    kashi_fset16(0x100, ones, ones);
+    kashi_fset16(KASHI_EXT_LAST + 1, ones, ones);
     kashi_fset16(0 - 1, ones, ones);
     kashi_fset8(0x1F, ones);
-    kashi_fset8(0x100, ones);
+    kashi_fset8(KASHI_EXT_LAST + 1, ones);
     kashi_fset8(0 - 1, ones);
-    # In-range glyphs unchanged: space blank, 'A' row, DEL triangle base.
+    # In-range glyphs unchanged: space blank, 'A' row, DEL triangle base,
+    # and the extension cell right before the rejected one.
     assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x20, 0), 0x00, "guard: vga space intact");
     assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x41, 7), 0xFE, "guard: vga A intact");
     assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x7F, 10), 0xFE, "guard: vga DEL intact");
     assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x41, 4), 0xFE, "guard: cga A intact");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, KASHI_EXT_LAST, 0), 0x00, "guard: vga ext U+FFFD r0 intact");
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, KASHI_EXT_LAST, 7), 0x00, "guard: cga ext U+FFFD r7 intact");
+    # The high-side write is observable: the first byte past the used
+    # region (226 glyphs) is reserved padding (architecture note 001), which
+    # is exactly where an unguarded pack at KASHI_EXT_LAST + 1 would land.
+    var used16 = (KASHI_GLYPH_COUNT + KASHI_EXT_COUNT) * 16;
+    var used8 = (KASHI_GLYPH_COUNT + KASHI_EXT_COUNT) * 8;
+    assert_eq(load8(&kashi_font16 + used16), 0, "guard: vga padding past ext untouched");
+    assert_eq(load8(&kashi_font8 + used8), 0, "guard: cga padding past ext untouched");
     assert_eq(kashi_font_is_ready(), 1, "guard: ready intact");
     # Restore a clean table for later tests (defensive if the guard regresses).
     kashi_font_init();
@@ -907,8 +1019,14 @@ fn test_vga_9x16_derived() {
     assert_eq(kashi_glyph_row(KASHI_FONT_VGA_9X16, 0xDB, 0), 0xFF, "vga9 glyph_row = leading byte");
 
     # Library-face codepoint dispatcher must route the new built-in id 2 to core.
-    assert_eq(kashi_font_row_byte(KASHI_FONT_VGA_9X16, 0xDB, 0, 1), 0x80,
+    # 1.1.0 (ADR 0011): the library face takes a UNICODE codepoint, so the
+    # full block is U+2588 (-> cell 0xDB). Until 1.1.0 this passed the cell
+    # 0xDB itself — which is U+00DB 'Û', a letter CP437 does not have, and
+    # now (correctly) unmapped: the exact mix-up the 1.1.0 fix removes.
+    assert_eq(kashi_font_row_byte(KASHI_FONT_VGA_9X16, 0x2588, 0, 1), 0x80,
       "library font_row_byte dispatches vga9");
+    assert_eq(kashi_font_row_byte(KASHI_FONT_VGA_9X16, 0xDB, 0, 1), 0,
+      "library U+00DB (not in CP437) -> unmapped 0");
     return 0;
 }
 
@@ -1745,6 +1863,8 @@ fn main() {
     test_cga_8x8_bytes();
     test_accessor_bounds();
     test_full_coverage();
+    test_ext_bytes();
+    test_cp437_unit();
     test_lib_skeleton();
     test_font_ready();
     test_fset_guard();

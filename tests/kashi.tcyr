@@ -145,6 +145,408 @@ fn test_vga_9x16_structural() {
     return 0;
 }
 
+# --- Unicode -> CP437 cell, and the extension block (1.1.0, ADR 0011) ---
+#
+# This suite keeps its OWN copy of the standard CP437 -> Unicode mapping of
+# the high half (generated from Python's 'cp437' codec, i.e. the Unicode
+# Consortium's CP437.TXT), separate from src/font_data.cyr's, so a
+# transcription slip in either fails here. Slot i (one u64) holds the
+# codepoint of cell 0x80 + i — module scope, so `[128]` is 128 u64 slots.
+var _ti_cp437_uni[128];
+
+fn _ti_cp437_row(cell, a, b, c, d, e, f, g, h) {
+    var p = &_ti_cp437_uni + (cell - 0x80) * 8;
+    store64(p, a);
+    store64(p + 8, b);
+    store64(p + 16, c);
+    store64(p + 24, d);
+    store64(p + 32, e);
+    store64(p + 40, f);
+    store64(p + 48, g);
+    store64(p + 56, h);
+    return 0;
+}
+
+fn _ti_cp437_fill() {
+    _ti_cp437_row(0x80, 0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7);
+    _ti_cp437_row(0x88, 0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5);
+    _ti_cp437_row(0x90, 0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9);
+    _ti_cp437_row(0x98, 0x00FF, 0x00D6, 0x00DC, 0x00A2, 0x00A3, 0x00A5, 0x20A7, 0x0192);
+    _ti_cp437_row(0xA0, 0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA);
+    _ti_cp437_row(0xA8, 0x00BF, 0x2310, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB);
+    _ti_cp437_row(0xB0, 0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x2561, 0x2562, 0x2556);
+    _ti_cp437_row(0xB8, 0x2555, 0x2563, 0x2551, 0x2557, 0x255D, 0x255C, 0x255B, 0x2510);
+    _ti_cp437_row(0xC0, 0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x255E, 0x255F);
+    _ti_cp437_row(0xC8, 0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x2567);
+    _ti_cp437_row(0xD0, 0x2568, 0x2564, 0x2565, 0x2559, 0x2558, 0x2552, 0x2553, 0x256B);
+    _ti_cp437_row(0xD8, 0x256A, 0x2518, 0x250C, 0x2588, 0x2584, 0x258C, 0x2590, 0x2580);
+    _ti_cp437_row(0xE0, 0x03B1, 0x00DF, 0x0393, 0x03C0, 0x03A3, 0x03C3, 0x00B5, 0x03C4);
+    _ti_cp437_row(0xE8, 0x03A6, 0x0398, 0x03A9, 0x03B4, 0x221E, 0x03C6, 0x03B5, 0x2229);
+    _ti_cp437_row(0xF0, 0x2261, 0x00B1, 0x2265, 0x2264, 0x2320, 0x2321, 0x00F7, 0x2248);
+    _ti_cp437_row(0xF8, 0x00B0, 0x2219, 0x00B7, 0x221A, 0x207F, 0x00B2, 0x25A0, 0x00A0);
+    return 0;
+}
+
+# The codepoint kashi says CP437 cell `c` (0x20..0xFF) draws: ASCII is
+# itself, 0x7F is U+2302 HOUSE (the ADR 0011 rule — the codec's U+007F
+# DELETE is a control character), the high half per the table above.
+fn _ti_cell_uni(c) {
+    if (c < 0x7F) { return c; }
+    if (c == 0x7F) { return 0x2302; }
+    return load64(&_ti_cp437_uni + (c - 0x80) * 8);
+}
+
+# Rows `first`..`first + 7` of `cell` in `font_id` (leading bytes, through
+# kashi_glyph_row) against eight expected rows packed like the source's
+# literals (byte `packed >> 56` = row `first`). Returns how many differ.
+fn _ti_rows8(font_id, cell, first, packed) {
+    var bad = 0;
+    var i = 0;
+    while (i < 8) {
+        var want = (packed >> (56 - i * 8)) & 0xFF;
+        if (kashi_glyph_row(font_id, cell, first + i) != want) { bad = bad + 1; }
+        i = i + 1;
+    }
+    return bad;
+}
+
+# FNV-1a 64 over every row byte of cells 0x20..0xFF of one font, in the
+# glyph sheet's order (cell, row, byte), read through the byte-indexed
+# accessor a byte-indexed consumer uses.
+fn _ti_cp437_fnv(font_id) {
+    var h = 0xCBF29CE484222325;
+    var height = kashi_font_height(font_id);
+    var stride = kashi_font_stride(font_id);
+    var ch = KASHI_GLYPH_FIRST;
+    while (ch <= KASHI_GLYPH_LAST) {
+        var row = 0;
+        while (row < height) {
+            var b = 0;
+            while (b < stride) {
+                h = h ^ kashi_glyph_row_byte(font_id, ch, row, b);
+                h = h * 0x100000001B3;
+                b = b + 1;
+            }
+            row = row + 1;
+        }
+        ch = ch + 1;
+    }
+    return h;
+}
+
+# 1 + the first slot of the reverse index (kashi_cp437_rev, one u64 slot
+# per entry: byte 0 = cp >> 8, byte 1 = cp & 0xFF, byte 2 = cell) whose
+# codepoint is not strictly above the previous slot's, or whose cell is
+# below 0x80; 0 when all 128 are in order. An unwritten slot reads as
+# codepoint 0 and fails. Strict ascent is what the binary search needs.
+fn _ti_rev_first_unsorted() {
+    var prev = 0;
+    var i = 0;
+    while (i < 128) {
+        var e = &kashi_cp437_rev + i * 8;
+        var ecp = (load8(e) << 8) | load8(e + 1);
+        if (ecp <= prev) { return i + 1; }
+        if (load8(e + 2) < 0x80) { return i + 1; }
+        prev = ecp;
+        i = i + 1;
+    }
+    return 0;
+}
+
+# FNV-1a 64 over all 1 KiB of the reverse index's slots.
+fn _ti_rev_fnv() {
+    var h = 0xCBF29CE484222325;
+    var i = 0;
+    while (i < 1024) {
+        h = h ^ load8(&kashi_cp437_rev + i);
+        h = h * 0x100000001B3;
+        i = i + 1;
+    }
+    return h;
+}
+
+# Before kashi_font_init the reverse index is empty: ASCII, U+2302 and the
+# extension still resolve (pure arithmetic) and the high half answers 0,
+# which the accessors render blank — the same "safe but blank" state every
+# glyph is in before init. Runs from main() ahead of kashi_font_init.
+fn test_cp437_preinit() {
+    test_group("cp437 map before init");
+    assert_eq(kashi_font_is_ready(), 0, "preinit: fonts not ready yet");
+    assert_eq(kashi_cp437_from_unicode(0x41), 0x41, "preinit: ASCII resolves");
+    assert_eq(kashi_cp437_from_unicode(0x2302), 0x7F, "preinit: U+2302 resolves");
+    assert_eq(kashi_cp437_from_unicode(0x2026), KASHI_EXT_FIRST, "preinit: U+2026 resolves");
+    assert_eq(kashi_cp437_from_unicode(0xE7), 0, "preinit: high half -> 0 (blank)");
+    return 0;
+}
+
+fn test_cp437_map() {
+    test_group("cp437 from unicode");
+    _ti_cp437_fill();
+    # Every CP437 cell 0x20..0xFF is reachable by its codepoint and lands on
+    # itself (cell -> Unicode -> cell). first_bad names the first cell that
+    # does not, so a failure points at the entry.
+    var first_bad = 0;
+    var c = KASHI_GLYPH_FIRST;
+    while (c <= KASHI_GLYPH_LAST) {
+        if (kashi_cp437_from_unicode(_ti_cell_uni(c)) != c) {
+            if (first_bad == 0) { first_bad = c; }
+        }
+        c = c + 1;
+    }
+    assert_eq(first_bad, 0, "cell -> Unicode -> cell round trip, 0x20..0xFF (first bad cell)");
+    # The confusions this mapping exists to stop.
+    assert_eq(kashi_cp437_from_unicode(0xE7), 0x87, "U+00E7 c-cedilla -> 0x87 (not 0xE7)");
+    assert_eq(kashi_cp437_from_unicode(0x3C4), 0xE7, "U+03C4 tau -> 0xE7");
+    assert_eq(kashi_cp437_from_unicode(0x2500), 0xC4, "U+2500 light horizontal -> 0xC4");
+    assert_eq(kashi_cp437_from_unicode(0x2588), 0xDB, "U+2588 full block -> 0xDB");
+    assert_eq(kashi_cp437_from_unicode(0xC7), 0x80, "U+00C7 -> 0x80 (first high cell)");
+    assert_eq(kashi_cp437_from_unicode(0xA0), 0xFF, "U+00A0 NBSP (lowest high-half cp) -> 0xFF");
+    assert_eq(kashi_cp437_from_unicode(0x25A0), 0xFE, "U+25A0 black square (highest) -> 0xFE");
+    var ascii_ok = 1;
+    var a = 0x20;
+    while (a <= 0x7E) {
+        if (kashi_cp437_from_unicode(a) != a) { ascii_ok = 0; }
+        a = a + 1;
+    }
+    assert_eq(ascii_ok, 1, "U+0020..U+007E -> themselves");
+    # The 0x7F rule: cell 0x7F draws IBM's house, so U+2302 HOUSE reaches it;
+    # U+007F DELETE is a control character and maps to nothing.
+    assert_eq(kashi_cp437_from_unicode(0x2302), 0x7F, "U+2302 HOUSE -> 0x7F");
+    assert_eq(kashi_cp437_from_unicode(0x7F), 0, "U+007F DELETE -> 0");
+    assert_eq(kashi_cp437_from_unicode(0x2026), KASHI_EXT_FIRST, "U+2026 -> KASHI_EXT_FIRST");
+    assert_eq(kashi_cp437_from_unicode(0xFFFD), KASHI_EXT_FIRST + 1, "U+FFFD -> KASHI_EXT_FIRST + 1");
+    # The index is in binary-search order AS WRITTEN (init runs no sort), so
+    # check the search's precondition on the table itself.
+    assert_eq(kashi_cp437_n, 128, "reverse index holds 128 entries");
+    assert_eq(_ti_rev_first_unsorted(), 0, "reverse index strictly ascending by codepoint (1 + first bad slot)");
+    # A second kashi_font_init rewrites the index in place: same count, and
+    # every byte the value that was already there.
+    var rev_before = _ti_rev_fnv();
+    kashi_font_init();
+    assert_eq(kashi_cp437_n, 128, "re-init: reverse index still 128 entries");
+    assert_eq(_ti_rev_fnv(), rev_before, "re-init: every reverse-index byte unchanged");
+    assert_eq(kashi_cp437_from_unicode(0xE7), 0x87, "re-init: U+00E7 still -> 0x87");
+    return 0;
+}
+
+fn test_cp437_unmapped() {
+    test_group("cp437 unmapped -> 0");
+    var ctl_ok = 1;
+    var k = 0;
+    while (k < 0x20) {
+        if (kashi_cp437_from_unicode(k) != 0) { ctl_ok = 0; }
+        k = k + 1;
+    }
+    k = 0x7F;
+    while (k <= 0x9F) {
+        if (kashi_cp437_from_unicode(k) != 0) { ctl_ok = 0; }
+        k = k + 1;
+    }
+    assert_eq(ctl_ok, 1, "C0, DEL and C1 controls -> 0");
+    assert_eq(kashi_cp437_from_unicode(0xC0), 0, "U+00C0 A-grave (not in CP437) -> 0");
+    assert_eq(kashi_cp437_from_unicode(0xDB), 0, "U+00DB U-circumflex -> 0 (cell 0xDB is the block)");
+    assert_eq(kashi_cp437_from_unicode(0x100), 0, "U+0100 -> 0 (cell 0x100 is not a codepoint)");
+    assert_eq(kashi_cp437_from_unicode(0x101), 0, "U+0101 -> 0");
+    assert_eq(kashi_cp437_from_unicode(0x3B2), 0, "U+03B2 beta -> 0 (0xE1 is sharp s)");
+    assert_eq(kashi_cp437_from_unicode(0x263A), 0, "U+263A smiley -> 0 (cell 0x01 is not encoded)");
+    assert_eq(kashi_cp437_from_unicode(0x2025), 0, "U+2025 two-dot leader -> 0");
+    assert_eq(kashi_cp437_from_unicode(0x2027), 0, "U+2027 -> 0");
+    assert_eq(kashi_cp437_from_unicode(0x25A1), 0, "U+25A1 (past the highest) -> 0");
+    assert_eq(kashi_cp437_from_unicode(0xFFFC), 0, "U+FFFC -> 0");
+    assert_eq(kashi_cp437_from_unicode(0xFFFE), 0, "U+FFFE -> 0");
+    assert_eq(kashi_cp437_from_unicode(0x10FFFF), 0, "U+10FFFF -> 0");
+    assert_eq(kashi_cp437_from_unicode(0x110000), 0, "past Unicode -> 0");
+    assert_eq(kashi_cp437_from_unicode(0 - 1), 0, "negative -> 0");
+    assert_eq(kashi_cp437_from_unicode(0x7FFFFFFFFFFFFFFF), 0, "i64 max -> 0");
+    assert_eq(kashi_cp437_from_unicode(0 - 0x7FFFFFFFFFFFFFFF), 0, "i64 near-min -> 0");
+    # Exhaustive over Unicode: exactly 226 codepoints have a built-in glyph
+    # (95 ASCII + 128 high half + U+2302 + the 2 extension glyphs), and every
+    # answer is a cell the accessors accept.
+    var mapped = 0;
+    var bad_cell = 0;
+    var u = 0;
+    while (u <= 0x10FFFF) {
+        var cell = kashi_cp437_from_unicode(u);
+        if (cell != 0) {
+            mapped = mapped + 1;
+            if (kashi_glyph_encoded(cell) == 0) { bad_cell = bad_cell + 1; }
+        }
+        u = u + 1;
+    }
+    assert_eq(mapped, 226, "exactly 226 codepoints in U+0000..U+10FFFF map");
+    assert_eq(bad_cell, 0, "every mapped result is an encoded cell");
+    return 0;
+}
+
+fn test_ext_glyphs() {
+    test_group("extension glyphs");
+    var ell = kashi_cp437_from_unicode(0x2026);
+    var rep = kashi_cp437_from_unicode(0xFFFD);
+    # VGA 8x16: '...' is the period's 2x2 dot three times (##.##.## on rows
+    # 10-11, the rows '.' (0x2E) uses); U+FFFD the lozenge with a 5x7 '?'.
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x2E, 10), 0x18, "vga '.' row10 is the 2x2 dot");
+    assert_eq(_ti_rows8(KASHI_FONT_VGA_8X16, ell, 0, 0x0000000000000000), 0, "vga U+2026 rows 0-7");
+    assert_eq(_ti_rows8(KASHI_FONT_VGA_8X16, ell, 8, 0x0000DBDB00000000), 0, "vga U+2026 rows 8-15");
+    assert_eq(_ti_rows8(KASHI_FONT_VGA_8X16, rep, 0, 0x0010387CC6BAFAF6), 0, "vga U+FFFD rows 0-7");
+    assert_eq(_ti_rows8(KASHI_FONT_VGA_8X16, rep, 8, 0xEEFEEE7C38100000), 0, "vga U+FFFD rows 8-15");
+    # CGA 8x8: its '.' sits on rows 5-6; U+FFFD the octagon with a 3x5 '?'.
+    assert_eq(kashi_glyph_row(KASHI_FONT_CGA_8X8, 0x2E, 5), 0x18, "cga '.' row5 is the 2x2 dot");
+    assert_eq(_ti_rows8(KASHI_FONT_CGA_8X8, ell, 0, 0x0000000000DBDB00), 0, "cga U+2026 rows 0-7");
+    assert_eq(_ti_rows8(KASHI_FONT_CGA_8X8, rep, 0, 0x3844F6EEFE6C3800), 0, "cga U+FFFD rows 0-7");
+    # VGA 9x16 (derived, ADR 0006): byte 0 = the 8x16 row, byte 1 (col 9)
+    # blank — the extension is outside the 0xC0..0xDF replication range.
+    var lead_ok = 1;
+    var col9_blank = 1;
+    var r = 0;
+    while (r < 16) {
+        var e0 = kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, ell, r, 0);
+        var f0 = kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, rep, r, 0);
+        if (e0 != kashi_glyph_row(KASHI_FONT_VGA_8X16, ell, r)) { lead_ok = 0; }
+        if (f0 != kashi_glyph_row(KASHI_FONT_VGA_8X16, rep, r)) { lead_ok = 0; }
+        if (kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, ell, r, 1) != 0) { col9_blank = 0; }
+        if (kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, rep, r, 1) != 0) { col9_blank = 0; }
+        r = r + 1;
+    }
+    assert_eq(lead_ok, 1, "vga9 ext byte 0 == the vga 8x16 rows");
+    assert_eq(col9_blank, 1, "vga9 ext col 9 blank");
+    assert_eq(kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, ell, 10, 0), 0xDB, "vga9 U+2026 r10 b0");
+    assert_eq(kashi_glyph_row(KASHI_FONT_VGA_9X16, rep, 9), 0xFE, "vga9 U+FFFD r9 leading byte");
+    # The pointer path agrees with the row accessor (hot-path pattern). The
+    # deref is guarded so a regression to null reports instead of crashing.
+    var p = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, ell);
+    assert_neq(p, 0, "vga U+2026 ptr non-null");
+    var via_ptr = 0;
+    if (p != 0) { via_ptr = load8(p + 11); }
+    assert_eq(via_ptr, 0xDB, "vga U+2026 load8(ptr + 11)");
+    return 0;
+}
+
+fn test_ext_bounds() {
+    test_group("extension bounds");
+    # Contiguity is what lets one `(ch - FIRST) * size` offset reach both.
+    assert_eq(KASHI_EXT_FIRST, KASHI_GLYPH_LAST + 1, "ext starts right after 0xFF");
+    assert_eq(KASHI_EXT_LAST - KASHI_EXT_FIRST + 1, KASHI_EXT_COUNT, "ext count matches its bounds");
+    # The CP437 constants and kashi_font_count keep their 1.0 meaning.
+    assert_eq(KASHI_GLYPH_LAST, 0xFF, "glyph last still 0xFF");
+    assert_eq(KASHI_GLYPH_COUNT, 224, "glyph count still 224");
+    assert_eq(kashi_font_count(KASHI_FONT_VGA_8X16), 224, "font_count still the CP437 count");
+    var spacing_ok = 1;
+    var past_null = 1;
+    var row_sentinel = 1;
+    var byte_sentinel = 1;
+    var f = 0;
+    while (f < 3) {
+        var h = kashi_font_height(f);
+        var stride = kashi_font_stride(f);
+        var p_ff = kashi_glyph_ptr(f, 0xFF);
+        var p_e0 = kashi_glyph_ptr(f, KASHI_EXT_FIRST);
+        var p_e1 = kashi_glyph_ptr(f, KASHI_EXT_LAST);
+        if (p_e0 - p_ff != h * stride) { spacing_ok = 0; }
+        if (p_e1 - p_e0 != h * stride) { spacing_ok = 0; }
+        if (kashi_glyph_ptr(f, KASHI_EXT_LAST + 1) != 0) { past_null = 0; }
+        if (kashi_glyph_row(f, KASHI_EXT_LAST + 1, 10) != 0) { past_null = 0; }
+        if (kashi_glyph_row(f, KASHI_EXT_FIRST, h) != 0) { row_sentinel = 0; }
+        if (kashi_glyph_row(f, KASHI_EXT_LAST, 0 - 1) != 0) { row_sentinel = 0; }
+        if (kashi_glyph_row_byte(f, KASHI_EXT_LAST, 5, stride) != 0) { byte_sentinel = 0; }
+        if (kashi_glyph_row_byte(f, KASHI_EXT_FIRST, 5, 0 - 1) != 0) { byte_sentinel = 0; }
+        f = f + 1;
+    }
+    assert_eq(spacing_ok, 1, "ext ptrs continue the glyph stride after 0xFF (3 fonts)");
+    assert_eq(past_null, 1, "KASHI_EXT_LAST + 1 is null / blank (3 fonts)");
+    assert_eq(row_sentinel, 1, "ext cells: out-of-range row -> 0 (3 fonts)");
+    assert_eq(byte_sentinel, 1, "ext cells: byte_idx >= stride or < 0 -> 0 (3 fonts)");
+    assert_eq(kashi_glyph_ptr(7, KASHI_EXT_FIRST), 0, "unknown font + ext cell -> null");
+    assert_eq(kashi_glyph_encoded(KASHI_EXT_LAST + 1), 0, "first cell past ext unencoded");
+    return 0;
+}
+
+# The library face on BUILT-IN fonts takes a Unicode codepoint (1.1.0).
+fn test_lib_unicode_builtin() {
+    test_group("library face: unicode on built-ins");
+    _ti_cp437_fill();    # idempotent; keeps this group order-independent
+    # The bug 1.1.0 fixes: U+00E7 'c-cedilla' drew cell 0xE7 'tau'.
+    var c_ok = 1;
+    var differs = 0;
+    var r = 0;
+    while (r < 16) {
+        var got = kashi_font_row(KASHI_FONT_VGA_8X16, 0xE7, r);
+        if (got != kashi_glyph_row(KASHI_FONT_VGA_8X16, 0x87, r)) { c_ok = 0; }
+        if (got != kashi_glyph_row(KASHI_FONT_VGA_8X16, 0xE7, r)) { differs = 1; }
+        r = r + 1;
+    }
+    assert_eq(c_ok, 1, "vga font_row U+00E7 == CP437 0x87 rows");
+    assert_eq(differs, 1, "vga font_row U+00E7 is no longer cell 0xE7 (tau)");
+    assert_eq(kashi_font_ptr(KASHI_FONT_VGA_8X16, 0xE7),
+      kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x87), "vga font_ptr U+00E7 == cell 0x87");
+    assert_eq(kashi_font_ptr(KASHI_FONT_CGA_8X8, 0xE7),
+      kashi_glyph_ptr(KASHI_FONT_CGA_8X8, 0x87), "cga font_ptr U+00E7 == cell 0x87");
+    assert_eq(kashi_font_row_byte(KASHI_FONT_VGA_9X16, 0xE7, 12, 0),
+      kashi_glyph_row_byte(KASHI_FONT_VGA_9X16, 0x87, 12, 0), "vga9 font_row_byte U+00E7 == cell 0x87");
+    # Every CP437 glyph is reachable through the library face by its
+    # codepoint, in all three fonts (ASCII lands where it always did) — the
+    # pointer, and every row byte through both row accessors.
+    var reach_ok = 1;
+    var rows_ok = 1;
+    var f = 0;
+    while (f < 3) {
+        var h = kashi_font_height(f);
+        var stride = kashi_font_stride(f);
+        var c = KASHI_GLYPH_FIRST;
+        while (c <= KASHI_GLYPH_LAST) {
+            var u = _ti_cell_uni(c);
+            if (kashi_font_ptr(f, u) != kashi_glyph_ptr(f, c)) { reach_ok = 0; }
+            var rr = 0;
+            while (rr < h) {
+                if (kashi_font_row(f, u, rr) != kashi_glyph_row(f, c, rr)) { rows_ok = 0; }
+                var b = 0;
+                while (b < stride) {
+                    if (kashi_font_row_byte(f, u, rr, b) != kashi_glyph_row_byte(f, c, rr, b)) { rows_ok = 0; }
+                    b = b + 1;
+                }
+                rr = rr + 1;
+            }
+            c = c + 1;
+        }
+        f = f + 1;
+    }
+    assert_eq(reach_ok, 1, "font_ptr(id, U(cell)) == glyph_ptr(id, cell), 224 cells x 3 fonts");
+    assert_eq(rows_ok, 1, "font_row / font_row_byte(id, U(cell)) == the cell's rows, 3 fonts");
+    assert_eq(kashi_font_ptr(KASHI_FONT_VGA_8X16, 0x2026),
+      kashi_glyph_ptr(KASHI_FONT_VGA_8X16, KASHI_EXT_FIRST), "vga font_ptr U+2026 == ext cell");
+    assert_eq(kashi_font_row(KASHI_FONT_VGA_8X16, 0x2026, 10), 0xDB, "vga font_row U+2026 r10");
+    assert_eq(kashi_font_row(KASHI_FONT_CGA_8X8, 0x2026, 5), 0xDB, "cga font_row U+2026 r5");
+    assert_eq(kashi_font_row(KASHI_FONT_VGA_8X16, 0xFFFD, 9), 0xFE, "vga font_row U+FFFD r9");
+    assert_eq(kashi_font_row_byte(KASHI_FONT_VGA_9X16, 0x2026, 10, 1), 0, "vga9 font_row_byte U+2026 col 9 blank");
+    assert_eq(kashi_font_ptr(KASHI_FONT_VGA_8X16, 0x2302),
+      kashi_glyph_ptr(KASHI_FONT_VGA_8X16, 0x7F), "vga font_ptr U+2302 == cell 0x7F");
+    assert_eq(kashi_font_row(KASHI_FONT_VGA_8X16, 0x2302, 10), 0xFE, "vga font_row U+2302 house base r10");
+    # Unmapped codepoints render blank / null, as a runtime font's do.
+    var blank = 1;
+    r = 0;
+    while (r < 16) {
+        if (kashi_font_row(KASHI_FONT_VGA_8X16, 0x100, r) != 0) { blank = 0; }
+        if (kashi_font_row(KASHI_FONT_VGA_8X16, 0x7F, r) != 0) { blank = 0; }
+        if (kashi_font_row(KASHI_FONT_VGA_8X16, 0x263A, r) != 0) { blank = 0; }
+        r = r + 1;
+    }
+    assert_eq(blank, 1, "unmapped U+0100 / U+007F / U+263A render blank");
+    assert_eq(kashi_font_ptr(KASHI_FONT_VGA_8X16, 0x100), 0, "font_ptr U+0100 null (not the ext cell)");
+    assert_eq(kashi_font_ptr(KASHI_FONT_VGA_8X16, 0x7F), 0, "font_ptr U+007F null");
+    assert_eq(kashi_font_ptr(KASHI_FONT_CGA_8X8, 0 - 1), 0, "font_ptr negative cp null");
+    return 0;
+}
+
+# Byte-indexed reads of 0x20..0xFF are exactly 1.0.10's. The expected
+# FNV-1a values were computed from the 1.0.10 glyph sheet (sha256
+# b68ca4d9...), so a match means no byte-indexed consumer sees any change.
+fn test_cp437_bytes_unchanged() {
+    test_group("cp437 bytes unchanged since 1.0.10");
+    assert_eq(_ti_cp437_fnv(KASHI_FONT_VGA_8X16), 0xE5BC21886E563E88, "vga 8x16: 0x20..0xFF bytes == 1.0.10");
+    assert_eq(_ti_cp437_fnv(KASHI_FONT_CGA_8X8), 0x6BE5DCEF83C5D456, "cga 8x8: 0x20..0xFF bytes == 1.0.10");
+    assert_eq(_ti_cp437_fnv(KASHI_FONT_VGA_9X16), 0x87C79BBB359687DA, "vga 9x16: 0x20..0xFF bytes == 1.0.10");
+    return 0;
+}
+
 fn test_psf_file_roundtrip() {
     test_group("psf file round-trip");
     # 256 glyphs, height 3. Plant glyph 'B' (index 0x42) rows = 0x11,0x22,0x33.
@@ -430,6 +832,7 @@ fn test_psf_tab_file_roundtrip() {
 
 fn main() {
     alloc_init();
+    test_cp437_preinit();     # before kashi_font_init: the documented pre-init answers
     kashi_font_init();
 
     test_row_byte_bounded();
@@ -437,6 +840,12 @@ fn main() {
     test_pointer_monotone();
     test_reinit_idempotent();
     test_vga_9x16_structural();
+    test_cp437_map();
+    test_cp437_unmapped();
+    test_ext_glyphs();
+    test_ext_bounds();
+    test_lib_unicode_builtin();
+    test_cp437_bytes_unchanged();
     test_psf_file_roundtrip();
     test_psf_unicode_file();
     test_bdf_file_roundtrip();

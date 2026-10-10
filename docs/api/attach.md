@@ -23,8 +23,10 @@ All four attach functions:
   or the input is malformed, the previous map is restored
   (audit F9, 0.8.0).
 - **Reject built-in font IDs** (< `KASHI_RT_FONT_BASE`) with
-  `KASHI_EINVAL`. Built-ins use the freestanding core's ASCII
-  codepoint scheme directly; attach is runtime-only.
+  `KASHI_EINVAL`. Built-ins carry their own fixed mapping — the
+  freestanding core's `kashi_cp437_from_unicode` (1.1.0, ADR 0011:
+  ASCII, the CP437 repertoire, U+2026 / U+FFFD); attach is
+  runtime-only.
 
 Return convention: `KASHI_OK` (0) on success, `0 - <KashiResult>`
 on failure (`KASHI_EINVAL` = 102 for bad args; `KASHI_EFORMAT` =

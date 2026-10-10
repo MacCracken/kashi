@@ -38,12 +38,19 @@ include "src/font_pcf.cyr"
 # failure. Built-in ids 0,1 are never returned by these. (`0 - N` form per
 # the no-negative-literals rule.)
 #
-# Glyph addressing (M2 — see docs/adr/0003): the unified accessors
-# kashi_font_ptr / kashi_font_row are CODEPOINT-addressed. Built-ins use an
-# ASCII codepoint (0x20..0x7F). A runtime font that carried a PSF Unicode
-# table resolves the codepoint through that table; a runtime font WITHOUT a
-# table falls back to treating the codepoint as a raw glyph index. Raw
-# glyph-INDEX access (tooling / enumeration) is kashi_rt_glyph_ptr / _row.
+# Glyph addressing (M2 — see docs/adr/0003; built-ins refined by
+# docs/adr/0011): the unified accessors kashi_font_ptr / kashi_font_row /
+# kashi_font_row_byte are CODEPOINT-addressed — `cp` is a Unicode codepoint
+# for every font. A built-in resolves it through kashi_cp437_from_unicode
+# (ASCII, the CP437 repertoire, U+2302 and the extension glyphs U+2026 /
+# U+FFFD; anything else is unmapped -> 0 / null, exactly like a runtime
+# font's unmapped codepoint). Until 1.1.0 a built-in took `cp` as the CP437
+# CELL, so U+00E7 'ç' drew cell 0xE7 'τ' — fixed; byte-indexed callers want
+# the core's kashi_glyph_* accessors, which still take the cell. A runtime
+# font that carried a PSF Unicode table resolves the codepoint through that
+# table; a runtime font WITHOUT a table falls back to treating the
+# codepoint as a raw glyph index. Raw glyph-INDEX access (tooling /
+# enumeration) is kashi_rt_glyph_ptr / _row.
 # ---------------------------------------------------------------------------
 
 # Runtime fonts start at id 3 (0 = VGA 8x16, 1 = CGA 8x8, 2 = VGA 9x16 are
@@ -1037,15 +1044,19 @@ fn kashi_rt_glyph_row_byte(font_id, idx, row, byte_idx) {
     return load8(base + row * stride + byte_idx);
 }
 
-# --- Unified, CODEPOINT-addressed accessors: built-in (0,1) vs runtime (>=2) ---
+# --- Unified, CODEPOINT-addressed accessors: built-in (0..2) vs runtime (>=3) ---
 
-# Base pointer to a glyph's row bytes for ANY font, addressed by codepoint.
-# Built-ins: `cp` is an ASCII codepoint (0x20..0x7F). Runtime: `cp` resolved
-# via the font's Unicode map, or treated as a raw glyph index if the font
-# carried no table. Returns 0 (null) for an unknown font or unmapped cp.
+# Base pointer to a glyph's row bytes for ANY font, addressed by Unicode
+# codepoint. Built-ins: `cp` is mapped to a cell by kashi_cp437_from_unicode
+# (1.1.0, ADR 0011) — ASCII, the CP437 repertoire, U+2302 and the extension
+# glyphs U+2026 / U+FFFD resolve; anything else is unmapped (until 1.1.0 `cp`
+# was taken as the CP437 cell, so U+00E7 'ç' drew 0xE7 'τ'). Runtime: `cp`
+# resolved via the font's Unicode map, or treated as a raw glyph index if
+# the font carried no table. Returns 0 (null) for an unknown font or
+# unmapped cp.
 fn kashi_font_ptr(font_id, cp) {
     if (font_id < KASHI_RT_FONT_BASE) {
-        return kashi_glyph_ptr(font_id, cp);
+        return kashi_glyph_ptr(font_id, kashi_cp437_from_unicode(cp));
     }
     var rec = _kashi_rt_get(font_id);
     if (rec == 0) { return 0; }
@@ -1054,13 +1065,15 @@ fn kashi_font_ptr(font_id, cp) {
     return kashi_rt_glyph_ptr(font_id, idx);
 }
 
-# One row byte of a glyph for ANY font, addressed by codepoint (see
-# kashi_font_ptr). For wide fonts (stride > 1) this is the LEADING byte;
-# use kashi_font_row_byte for the other bytes. Returns 0 for an unknown
-# font, unmapped cp, or bad row.
+# One row byte of a glyph for ANY font, addressed by Unicode codepoint
+# (built-ins map it through kashi_cp437_from_unicode — see kashi_font_ptr).
+# For wide fonts (stride > 1) this is the LEADING byte; use
+# kashi_font_row_byte for the other bytes. Returns 0 for an unknown font,
+# unmapped cp, or bad row. Resolves `cp` on every call; a render loop should
+# resolve once per glyph with kashi_font_ptr and read rows with load8.
 fn kashi_font_row(font_id, cp, row) {
     if (font_id < KASHI_RT_FONT_BASE) {
-        return kashi_glyph_row(font_id, cp, row);
+        return kashi_glyph_row(font_id, kashi_cp437_from_unicode(cp), row);
     }
     var rec = _kashi_rt_get(font_id);
     if (rec == 0) { return 0; }
@@ -1069,13 +1082,14 @@ fn kashi_font_row(font_id, cp, row) {
     return kashi_rt_glyph_row(font_id, idx, row);
 }
 
-# Multi-byte-aware row accessor for ANY font, addressed by codepoint.
+# Multi-byte-aware row accessor for ANY font, addressed by Unicode
+# codepoint (built-ins map it through kashi_cp437_from_unicode, 1.1.0).
 # `byte_idx` 0 is the leftmost 8 px, then 8..15, etc. For stride-1 fonts
 # only byte_idx 0 is meaningful. Bounds-safe across the full input domain.
 # Added in 0.5.0 (ADR 0005).
 fn kashi_font_row_byte(font_id, cp, row, byte_idx) {
     if (font_id < KASHI_RT_FONT_BASE) {
-        return kashi_glyph_row_byte(font_id, cp, row, byte_idx);
+        return kashi_glyph_row_byte(font_id, kashi_cp437_from_unicode(cp), row, byte_idx);
     }
     var rec = _kashi_rt_get(font_id);
     if (rec == 0) { return 0; }

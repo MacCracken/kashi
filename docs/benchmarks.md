@@ -21,6 +21,10 @@ measures the accessors in isolation:
 | `font_row_builtin` | `kashi_font_row` against a built-in id (the unified dispatcher's fast path). |
 | `font_row_runtime` | `kashi_font_row` against a runtime-loaded font without a Unicode map (identity-index fallback). |
 | `font_row_runtime_cp` | `kashi_font_row` against a runtime font WITH a Unicode map — binary search through the codepoint→glyph table. |
+| `cp437_from_unicode_ascii` | `kashi_cp437_from_unicode(0x41)` — the Unicode → cell map's ASCII fast path (1.1.0, ADR 0011). |
+| `cp437_from_unicode_high` | `kashi_cp437_from_unicode(0xE7)` — a CP437 high-half codepoint: binary search of the 128-entry reverse index. |
+| `font_row_builtin_cp` | `kashi_font_row(VGA, 0xE7, row)` — the library face on a built-in with a non-ASCII codepoint: map + core row fetch, per call. |
+| `font_init` | One `kashi_font_init()` — packing the three built-in tables, the 9×16 derivation and the Unicode index (1.1.0). Init-time work, but not a one-off everywhere: dhancha calls it on every bitmap-text draw. |
 
 ## How to run
 
@@ -33,22 +37,56 @@ few times and take the steady-state figure; sub-microsecond ops use a
 ≥1e6-iteration batch to amortize `clock_gettime` overhead (see the
 `tests/kashi.bcyr` header).
 
-## Current — 1.0.10 (2026-09-21, cyrius 6.6.6)
+## Current — 1.1.0 (2026-10-09, cyrius 6.6.6)
 
-Host: AMD Ryzen 7 5800H, x86_64 Linux. Indicative single-host numbers, not
-a cross-machine guarantee.
+Host: AMD Ryzen 7 5800H, x86_64 Linux, quiet (load average < 1).
+Indicative single-host numbers, not a cross-machine guarantee. Absolute
+figures sat ~5–8 % above the 2026-09-21 record on the same host, so the
+**1.0.10 binary was re-measured in the same session** (the same
+`font_init` bench appended to its suite) — that column is the one to
+compare against. Medians of 9 interleaved runs (`CYRIUS_DCE=1`); a second,
+loaded-host session (load average 3–6) gave the same deltas.
 
-| Benchmark | avg | iters |
-|---|---|---|
-| `glyph_row` | 17 ns | 1,000,000 |
-| `glyph_ptr` | 7 ns | 1,000,000 |
-| `scan_vga_8x16` | 56 µs | 10,000 |
-| `font_row_builtin` | 19 ns | 1,000,000 |
-| `font_row_runtime` | 43 ns | 1,000,000 |
-| `font_row_runtime_cp` | 58 ns | 1,000,000 |
+| Benchmark | 1.1.0 | 1.0.10, same session | iters |
+|---|---|---|---|
+| `glyph_row` | 17.7 ns | 17.2 ns | 1,000,000 |
+| `glyph_ptr` | 7.4 ns | 7.4 ns | 1,000,000 |
+| `scan_vga_8x16` | 62.1 µs | 60.3 µs | 10,000 |
+| `font_row_builtin` | 23.7 ns | 20.7 ns | 1,000,000 |
+| `font_row_runtime` | 46.5 ns | 46.6 ns | 1,000,000 |
+| `font_row_runtime_cp` | 62.3 ns | 62.2 ns | 1,000,000 |
+| `cp437_from_unicode_ascii` | 3.9 ns | — | 1,000,000 |
+| `cp437_from_unicode_high` | 26.3 ns | — | 1,000,000 |
+| `font_row_builtin_cp` | 42.6 ns | — | 1,000,000 |
+| `font_init` | 22.0 µs | 20.8 µs | 10,000 |
 
-`scan_vga_8x16` at 56 µs over 3,584 row reads (224 glyphs × 16 rows)
-≈ 15.6 ns/row, consistent with the standalone `glyph_row` figure — the
+What moved, and why:
+
+- **`font_row_builtin` +3 ns** — the library face now maps a built-in's
+  codepoint through `kashi_cp437_from_unicode` (the 1.1.0 fix), and
+  `kashi_font_row` resolves on every call, i.e. per row. ASCII takes the
+  4 ns fast path; a high-half codepoint costs ~26 ns (`font_row_builtin_cp`
+  = 43 ns). Resolve once per glyph with `kashi_font_ptr` (or
+  `kashi_cp437_from_unicode` + `kashi_glyph_ptr`) and the mapping is paid
+  once, not 16 times.
+- **`font_init` +1.2 µs (+6 %)** — about 0.2 µs for the two extension
+  glyphs in each font and their 9×16 derivation, about 1.0 µs for filling
+  the 128-entry Unicode index (measured by building the same tree without
+  the fill). The index source is listed already sorted by codepoint and
+  written with straight stores — no sort runs at init (ADR 0011 records
+  why: sorting at init doubled the function). A consumer that calls
+  `kashi_font_init()` per draw (dhancha) pays the 1.2 µs per draw;
+  guarding the call with `kashi_font_is_ready()` makes it once.
+- **`scan_vga_8x16` +3 %** — code placement, not work. The scan's only
+  source change is `kashi_glyph_encoded`'s upper-bound constant
+  (`0xFF` → `0x101`); a 1.1.0 build with that constant put back at `0xFF`
+  measured the same (63.0 µs against 63.2 µs, 1.0.10 61.4 µs, in a
+  separate 7-run session), so it follows the moved code, not the compare.
+- **`glyph_row`** 17.2 → 17.7 ns here and 18.1 → 18.0 ns in the loaded
+  session: flat within noise. Its only source change is the same bound.
+
+`scan_vga_8x16` at ~62 µs over 3,584 row reads (224 glyphs × 16 rows)
+≈ 17 ns/row, consistent with the standalone `glyph_row` figure — the
 whole-font sweep carries no per-glyph overhead beyond the accessor itself.
 
 ## Trend
@@ -72,6 +110,8 @@ noise — only structural shifts are called out below.
 | **1.0.0** | 17 | 7 | 64,000 | 19 | 43 | 66 |
 | **1.0.9** | 16 | 7 | 56,193 | 19 | 43 | 58 |
 | **1.0.10** | 17 | 7 | 55,900 | 19 | 43 | 58 |
+| 1.0.10 (re-run 2026-10-09) | 17 | 7 | 60,277 | 21 | 47 | 62 |
+| **1.1.0** (2026-10-09) | 18 | 7 | 62,147 | 24 | 46 | 62 |
 
 > The 0.7.x cuts (BDF, PCF, sidecar tables) added parsers / load paths
 > but **did not touch the hot accessors**, so they aren't separately
@@ -80,7 +120,13 @@ noise — only structural shifts are called out below.
 > the small rise vs 0.6.0 is sample variance, not a regression.
 > 1.0.1–1.0.8 were toolchain bumps with no source change and were not
 > separately recorded; 1.0.9 (the 6.6.4 → 6.6.6 bump) and 1.0.10 (test
-> and packaging changes only) are.
+> and packaging changes only) are. For the 1.1.0 row the 1.0.10 binary was
+> re-measured in the same session (the `1.0.10-rerun` rows in the CSV),
+> because the host's absolute numbers had drifted ~5–8 % above the
+> 2026-09-21 record: compare 1.1.0 with that row, not with the 2026-09-21
+> one. 1.1.0's four new benchmarks (`cp437_from_unicode_*`,
+> `font_row_builtin_cp`, `font_init`) are in the Current table and the CSV;
+> `font_init` has a `1.0.10-rerun` row too.
 
 ## Structural shifts called out
 
@@ -101,6 +147,12 @@ These are the only non-noise transitions in the table above:
   multiplication is by 1 — but Cyrius's optimizer doesn't currently
   collapse it. Acceptable; the new wide-glyph contract (ADR 0005) is
   more valuable than 1 ns/row.
+- **1.0.10 → 1.1.0 (`font_row_builtin` 21 → 24 ns, same session)**: the
+  built-in path now maps the codepoint (ADR 0011) — a real, intended cost,
+  per row on the convenience accessor; see "Current" for how to pay it once
+  per glyph. `font_init` +1.2 µs (+6 %) is the extension glyphs plus the
+  Unicode index fill; `scan_vga_8x16` +3 % is code placement (both shown
+  above).
 - **1.0.0 → 1.0.9 (`scan_vga_8x16` 64,000 → 56,193; `font_row_runtime_cp`
   66 → 58 ns)**: toolchain, not source. Nothing in `src/` changed between
   these rows; the pin moved 6.0.3 → 6.6.6 across 1.0.1–1.0.9, and the
@@ -133,7 +185,8 @@ if (p != 0) {
 ```
 
 This skirts the `kashi_font_row` overhead per row and is what
-agnos's framebuffer console does.
+agnos's framebuffer console does. For a built-in font it also pays the
+Unicode → cell mapping (1.1.0) once per glyph instead of once per row.
 
 ## Updating
 

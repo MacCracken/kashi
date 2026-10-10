@@ -132,6 +132,56 @@ fn main(): i64 {
     bench_batch_stop(b6, 1000000);
     bench_report(b6);
 
+    # Unicode -> cell (1.1.0, ADR 0011), the per-glyph cost a UTF-8 text
+    # path adds. ASCII takes the fast path (two compares)...
+    var b7 = bench_new("cp437_from_unicode_ascii");
+    bench_batch_start(b7);
+    i = 0;
+    while (i < 1000000) {
+        sink = sink + kashi_cp437_from_unicode(0x41);
+        i = i + 1;
+    }
+    bench_batch_stop(b7, 1000000);
+    bench_report(b7);
+
+    # ...a high-half codepoint pays the binary search over the 128-entry
+    # reverse index (U+00E7 'c-cedilla' -> 0x87)...
+    var b8 = bench_new("cp437_from_unicode_high");
+    bench_batch_start(b8);
+    i = 0;
+    while (i < 1000000) {
+        sink = sink + kashi_cp437_from_unicode(0xE7);
+        i = i + 1;
+    }
+    bench_batch_stop(b8, 1000000);
+    bench_report(b8);
+
+    # ...and the library face resolves on every kashi_font_row call, so a
+    # non-ASCII codepoint on a built-in is mapping + core row fetch.
+    var b9 = bench_new("font_row_builtin_cp");
+    bench_batch_start(b9);
+    i = 0;
+    while (i < 1000000) {
+        sink = sink + kashi_font_row(KASHI_FONT_VGA_8X16, 0xE7, 5);
+        i = i + 1;
+    }
+    bench_batch_stop(b9, 1000000);
+    bench_report(b9);
+
+    # Table init. Not a one-off for every consumer: dhancha calls
+    # kashi_font_init() on every bitmap-text draw, so its cost is per draw
+    # there. It is a straight-line fill (glyph packing, the 9x16 derivation,
+    # 128 fixed-slot index stores) with no search or sort.
+    var b10 = bench_new("font_init");
+    bench_batch_start(b10);
+    i = 0;
+    while (i < 10000) {
+        sink = sink + kashi_font_init();
+        i = i + 1;
+    }
+    bench_batch_stop(b10, 10000);
+    bench_report(b10);
+
     return 0;
 }
 

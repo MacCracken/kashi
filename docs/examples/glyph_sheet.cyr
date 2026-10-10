@@ -11,7 +11,8 @@
 #   cyrius build docs/examples/glyph_sheet.cyr build/glyph_sheet
 #   ./build/glyph_sheet | sha256sum
 #
-# Output: 672 lines (3 fonts x 224 glyphs), each
+# Output: 678 lines. First the CP437 range of each font in turn — 672 lines
+# (3 fonts x 224 glyphs, 0x20..0xFF), each
 #
 #   f<id> <cp>: <row0><row1>...<row15>
 #
@@ -19,6 +20,15 @@
 # fonts, 2 for the 9x16), all lowercase hex. The line for 'A' in VGA 8x16 is
 #
 #   f00 41: 000010386cc6c6fec6c6c6c600000000
+#
+# Then the extension block (1.1.0, ADR 0011) — 6 lines (3 fonts x 2 cells),
+# in the same shape with the cell as three hex digits:
+#
+#   f00 100: 00000000000000000000dbdb00000000      (U+2026 '…' in VGA 8x16)
+#
+# The extension lines come LAST on purpose: lines 1..672 are byte-identical
+# to the 1.0.x sheet, so `head -672` of a 1.1 sheet still hashes to the 1.0.x
+# pin (b68ca4d9…) — the proof that the CP437 range did not move.
 #
 # ⚠ THIS FORMAT IS LOAD-BEARING. CI (ci.yml "Glyph sheet pin") runs this
 # program and compares the sha256 of its output with
@@ -41,37 +51,64 @@ fn put_hex_byte(b) {
     return 0;
 }
 
-# One font: walk every encoded codepoint, every row, every byte of the row.
-# Reads through kashi_glyph_row_byte (stride-aware) and cross-checks the
-# leading byte against kashi_glyph_row, the hot-path accessor — a mismatch
-# prints a marker into the line, which the CI pin then catches.
-fn dump_font(font_id) {
+# A cell number: two hex digits for the CP437 range, three past it.
+fn put_hex_cell(ch) {
+    if (ch > 0xFF) {
+        var buf[1];
+        store8(&buf, hex_digit((ch >> 8) & 15));
+        syscall(1, 1, &buf, 1);
+    }
+    put_hex_byte(ch & 0xFF);
+    return 0;
+}
+
+# One glyph: every row, every byte of the row. Reads through
+# kashi_glyph_row_byte (stride-aware) and cross-checks the leading byte
+# against kashi_glyph_row, the hot-path accessor — a mismatch prints a
+# marker into the line, which the CI pin then catches.
+fn dump_glyph(font_id, ch) {
     var h = kashi_font_height(font_id);
+    var stride = kashi_font_stride(font_id);
+    syscall(1, 1, "f", 1);
+    put_hex_byte(font_id);
+    syscall(1, 1, " ", 1);
+    put_hex_cell(ch);
+    syscall(1, 1, ": ", 2);
+    var row = 0;
+    while (row < h) {
+        var b = 0;
+        while (b < stride) {
+            put_hex_byte(kashi_glyph_row_byte(font_id, ch, row, b));
+            b = b + 1;
+        }
+        if (kashi_glyph_row(font_id, ch, row) != kashi_glyph_row_byte(font_id, ch, row, 0)) {
+            syscall(1, 1, "!MISMATCH", 9);
+        }
+        row = row + 1;
+    }
+    syscall(1, 1, "\n", 1);
+    return 0;
+}
+
+# One font's CP437 range: every encoded codepoint kashi_font_first /
+# kashi_font_count describe.
+fn dump_font(font_id) {
     var first = kashi_font_first(font_id);
     var count = kashi_font_count(font_id);
-    var stride = kashi_font_stride(font_id);
     var i = 0;
     while (i < count) {
-        var ch = first + i;
-        syscall(1, 1, "f", 1);
-        put_hex_byte(font_id);
-        syscall(1, 1, " ", 1);
-        put_hex_byte(ch);
-        syscall(1, 1, ": ", 2);
-        var row = 0;
-        while (row < h) {
-            var b = 0;
-            while (b < stride) {
-                put_hex_byte(kashi_glyph_row_byte(font_id, ch, row, b));
-                b = b + 1;
-            }
-            if (kashi_glyph_row(font_id, ch, row) != kashi_glyph_row_byte(font_id, ch, row, 0)) {
-                syscall(1, 1, "!MISMATCH", 9);
-            }
-            row = row + 1;
-        }
-        syscall(1, 1, "\n", 1);
+        dump_glyph(font_id, first + i);
         i = i + 1;
+    }
+    return 0;
+}
+
+# One font's extension block (KASHI_EXT_FIRST..KASHI_EXT_LAST).
+fn dump_ext(font_id) {
+    var ch = KASHI_EXT_FIRST;
+    while (ch <= KASHI_EXT_LAST) {
+        dump_glyph(font_id, ch);
+        ch = ch + 1;
     }
     return 0;
 }
@@ -82,6 +119,9 @@ fn main() {
     dump_font(KASHI_FONT_VGA_8X16);
     dump_font(KASHI_FONT_CGA_8X8);
     dump_font(KASHI_FONT_VGA_9X16);
+    dump_ext(KASHI_FONT_VGA_8X16);
+    dump_ext(KASHI_FONT_CGA_8X8);
+    dump_ext(KASHI_FONT_VGA_9X16);
     return 0;
 }
 

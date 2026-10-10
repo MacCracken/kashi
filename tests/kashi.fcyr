@@ -7,6 +7,9 @@
 # Fuzz the full int range of each argument and assert the bounds contract:
 #   - out-of-range char/font/row => row 0, ptr 0 (null)
 #   - in-range inputs => ptr inside the buffer, row == load8(ptr+row)
+# "In range" is the CP437 cells plus, since 1.1.0, the extension block
+# (KASHI_EXT_FIRST..KASHI_EXT_LAST) — kashi_glyph_encoded decides. The
+# Unicode -> cell mapping gets its own contract (fuzz_unicode, codes 9-11).
 
 include "src/lib.cyr"
 
@@ -109,12 +112,13 @@ fn rng_wide() {
 }
 
 # Random driver for the core-accessor contract (1.0.10). Three input shapes,
-# equally likely: BYTE-sized (every built-in id, every row, every char is
-# reachable — this is the shape that finds a built-in missing from the
-# known-font list), FULL-WIDTH (the sentinel path across the whole i64
-# domain, negatives included), and NEAR-EDGE (ids 0..4, chars just around
-# 0x20 / 0x7F / 0xFF, rows just around the cell height — where an off-by-one
-# in a bound would live).
+# equally likely: SMALL (byte-sized ids and rows, 9-bit cells, so every
+# built-in id, every row and every cell — CP437 and, since 1.1.0, the
+# extension block past 0xFF — is reachable; this is the shape that finds a
+# built-in missing from the known-font list), FULL-WIDTH (the sentinel path
+# across the whole i64 domain, negatives included), and NEAR-EDGE (ids 0..4,
+# cells just around 0x20 / 0x7F / 0xFF / the extension's two ends, rows just
+# around the cell height — where an off-by-one in a bound would live).
 fn fuzz_core_rounds(rounds) {
     var n = 0;
     while (n < rounds) {
@@ -124,7 +128,7 @@ fn fuzz_core_rounds(rounds) {
         var row = 0;
         if (pick == 0) {
             font = rng_next() & 0xFF;
-            ch = rng_next() & 0xFF;
+            ch = rng_next() & 0x1FF;
             row = rng_next() & 0xFF;
         }
         if (pick == 1) {
@@ -134,16 +138,70 @@ fn fuzz_core_rounds(rounds) {
         }
         if (pick == 2) {
             font = rng_next() % 5;
-            var cpick = rng_next() % 6;
+            var cpick = rng_next() % 8;
             if (cpick == 0) { ch = 0x1F; }
             if (cpick == 1) { ch = 0x20; }
             if (cpick == 2) { ch = 0x7F; }
             if (cpick == 3) { ch = 0x80; }
             if (cpick == 4) { ch = 0xFF; }
-            if (cpick == 5) { ch = 0x100; }
+            if (cpick == 5) { ch = KASHI_EXT_FIRST; }
+            if (cpick == 6) { ch = KASHI_EXT_LAST; }
+            if (cpick == 7) { ch = KASHI_EXT_LAST + 1; }
             row = (rng_next() % 20) - 2;
         }
         var rc = fuzz_core(font, ch, row);
+        if (rc != 0) { return rc; }
+        n = n + 1;
+    }
+    return 0;
+}
+
+# The Unicode -> cell contract (1.1.0, ADR 0011) for one (cp, font, row):
+#   9  — kashi_cp437_from_unicode answered neither 0 nor an encoded cell;
+#   10 — printable ASCII did not map to itself;
+#   11 — the library face's built-in path disagrees with the core
+#        (kashi_font_row / _ptr / _row_byte(font, cp) must equal
+#        kashi_glyph_*(font, kashi_cp437_from_unicode(cp))).
+# Codes continue fuzz_core's 1..8 so a failure still names what broke.
+fn fuzz_unicode(cp, font, row) {
+    var c = kashi_cp437_from_unicode(cp);
+    if (c != 0) {
+        if (kashi_glyph_encoded(c) == 0) { return 9; }
+    }
+    if (cp >= 0x20) {
+        if (cp <= 0x7E) {
+            if (c != cp) { return 10; }
+        }
+    }
+    if (font >= 0) {
+        if (font < KASHI_RT_FONT_BASE) {
+            if (kashi_font_row(font, cp, row) != kashi_glyph_row(font, c, row)) { return 11; }
+            if (kashi_font_ptr(font, cp) != kashi_glyph_ptr(font, c)) { return 11; }
+            if (kashi_font_row_byte(font, cp, row, 1) != kashi_glyph_row_byte(font, c, row, 1)) { return 11; }
+        }
+    }
+    return 0;
+}
+
+# Random driver for fuzz_unicode, three shapes: FULL-WIDTH codepoints (the
+# whole i64 domain — almost all unmapped), the UNICODE range
+# (0..0x10FFFF), and DENSE (0..0x27FF, where every mapped codepoint but
+# U+FFFD lives, plus that one). Fonts 0..3 (3 = first runtime id, unloaded
+# here) and rows just around the cell heights.
+fn fuzz_unicode_rounds(rounds) {
+    var n = 0;
+    while (n < rounds) {
+        var pick = rng_next() % 3;
+        var cp = 0;
+        if (pick == 0) { cp = rng_wide(); }
+        if (pick == 1) { cp = rng_next() % 0x110000; }
+        if (pick == 2) {
+            cp = rng_next() % 0x2800;
+            if ((rng_next() % 64) == 0) { cp = 0xFFFD; }
+        }
+        var font = rng_next() % 4;
+        var row = (rng_next() % 20) - 2;
+        var rc = fuzz_unicode(cp, font, row);
         if (rc != 0) { return rc; }
         n = n + 1;
     }
@@ -677,6 +735,13 @@ fn main() {
     rng_seed(0x5851F42D4C957F2D);
     var fr = fuzz_core_rounds(200000);
     if (fr != 0) { println("fuzz: FAIL core"); return fr; }
+
+    # Unicode -> cell fuzz (1.1.0): the mapping only ever answers 0 or an
+    # encoded cell, and the library face's built-in path is exactly
+    # core(kashi_cp437_from_unicode(cp)). 100k (cp, font, row) triples.
+    rng_seed(0x2545F4914F6CDD1D);
+    var ur = fuzz_unicode_rounds(100000);
+    if (ur != 0) { println("fuzz: FAIL unicode"); return ur; }
 
     # PSF parser fuzz: thousands of random/truncated/mutated buffers.
     rng_seed(0x9E3779B97F4A7C15);

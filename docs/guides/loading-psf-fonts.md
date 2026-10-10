@@ -1,6 +1,6 @@
 # Loading PSF fonts at runtime
 
-> **Last Updated**: 2026-05-28 (0.7.2 — sidecar Unicode tables added)
+> **Last Updated**: 2026-10-09 (1.1.0 — built-in addressing note: codepoints map through `kashi_cp437_from_unicode`; 0.7.2 added sidecar Unicode tables)
 
 The **library face** (`src/lib.cyr`) can import [PC Screen Font][psf] files
 (PSF1 and PSF2) at runtime and serve their glyphs through the same accessor
@@ -72,11 +72,14 @@ if (p != 0) {
 ```
 
 > **Addressing**: `kashi_font_row` / `kashi_font_ptr` are **codepoint**-addressed.
-> Built-in fonts take an ASCII codepoint (`0x20`–`0x7F`). A runtime font that
-> carried a PSF Unicode table resolves the codepoint through that table; a
-> runtime font *without* a table falls back to treating the codepoint as a
-> raw glyph index. An unmapped codepoint (or out-of-range row) returns `0`
-> (blank), never a wild read.
+> Built-in fonts map the Unicode codepoint through `kashi_cp437_from_unicode`
+> (1.1.0, ADR 0011): ASCII, the whole CP437 repertoire (accents, box drawing,
+> Greek, maths), U+2302 and the extension glyphs U+2026 '…' / U+FFFD '�'
+> resolve. (Through 1.0.10 built-ins read the value as a CP437 cell, so
+> U+00E7 'ç' drew 'τ'.) A runtime font that carried a PSF Unicode table
+> resolves the codepoint through that table; a runtime font *without* a table
+> falls back to treating the codepoint as a raw glyph index. An unmapped
+> codepoint (or out-of-range row) returns `0` (blank), never a wild read.
 >
 > For explicit raw glyph-**index** access into a runtime font (tooling,
 > enumeration), use `kashi_rt_glyph_ptr(id, idx)` / `kashi_rt_glyph_row(id,
@@ -167,8 +170,8 @@ var rc2 = kashi_attach_unicode_text_file(id, "/path/to/font.tab");
 
 **Semantics:**
 - `font_id` must be a runtime id (≥ `KASHI_RT_FONT_BASE`). Built-in
-  fonts return `KASHI_EINVAL` — they're addressable via ASCII
-  codepoints directly through the freestanding core.
+  fonts return `KASHI_EINVAL` — their mapping is fixed: the freestanding
+  core's `kashi_cp437_from_unicode` (ASCII + CP437 + U+2026 / U+FFFD).
 - Attach **replaces** any existing umap / seqs on the runtime record
   (the prior allocations leak-conceptually; the bump allocator
   reclaims at process exit). No "merge" mode.

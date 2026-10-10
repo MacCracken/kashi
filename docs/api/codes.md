@@ -68,17 +68,33 @@ Runtime-font ID base.
 |---|---|---|
 | `KASHI_RT_FONT_BASE` | `3` | First runtime font_id. Lower values are built-ins; loaded fonts get `≥ 3`, assigned in load order. |
 
-## Codepoint range
+## Cell ranges
 
 ### `KashiGlyphRange` (`src/font_data.cyr`)
 
-The built-in fonts' codepoint coverage.
+The built-in fonts' CP437 coverage.
 
 | Constant | Value | Meaning |
 |---|---|---|
 | `KASHI_GLYPH_FIRST` | `0x20` (32) | First encoded codepoint (space). |
 | `KASHI_GLYPH_LAST` | `0xFF` (255) | Last encoded codepoint (last CP437 cell). |
 | `KASHI_GLYPH_COUNT` | `224` | `LAST - FIRST + 1`. |
+
+These describe the **CP437 cells** only; `kashi_font_first` /
+`kashi_font_count` report them. The extension block has its own group.
+
+### `KashiExtRange` (`src/font_data.cyr`, 1.1.0)
+
+The extension block: kashi-drawn glyphs CP437 has no cell for, stored
+after cell `0xFF` in every built-in font and reachable only through
+`kashi_cp437_from_unicode` ([ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md)).
+Cell `KASHI_EXT_FIRST + 0` is U+2026 '…', `+ 1` is U+FFFD '�'.
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `KASHI_EXT_FIRST` | `0x100` (256) | First extension cell (`== KASHI_GLYPH_LAST + 1` — storage is contiguous). Fixed. |
+| `KASHI_EXT_LAST` | `0x101` (257) | Last extension cell. May rise in a later minor as cells are appended. |
+| `KASHI_EXT_COUNT` | `2` | `LAST - FIRST + 1`. Rises with `KASHI_EXT_LAST`. |
 
 ## PSF constants
 

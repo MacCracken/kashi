@@ -47,6 +47,11 @@ fn main() {
     demo_render_glyph(KASHI_FONT_VGA_8X16, 0x41);
     println("'A' in CGA 8x8:");
     demo_render_glyph(KASHI_FONT_CGA_8X8, 0x41);
+    # 1.1.0: Unicode text reaches a glyph through kashi_cp437_from_unicode —
+    # including the two kashi-drawn glyphs CP437 has no cell for (ADR 0011).
+    println("U+2026 '…' and U+FFFD '�' in VGA 8x16, via kashi_cp437_from_unicode:");
+    demo_render_glyph(KASHI_FONT_VGA_8X16, kashi_cp437_from_unicode(0x2026));
+    demo_render_glyph(KASHI_FONT_VGA_8X16, kashi_cp437_from_unicode(0xFFFD));
     return 0;
 }
 

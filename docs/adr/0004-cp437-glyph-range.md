@@ -7,6 +7,10 @@ freestanding addressing range)
 **Superseded in part by**: [ADR 0007](0007-cga-high-half-from-linux-pd.md)
 (0.5.2) — the CGA 8×8 high half this ADR leaves blank was filled from the
 Linux PD `font_8x8.c`; the text below records the decision as made.
+**Extended by**: [ADR 0011](0011-unicode-to-cp437-and-extension-glyphs.md)
+(1.1.0) — an extension block of two kashi-drawn cells (`0x100` U+2026, `0x101`
+U+FFFD) now follows `0xFF`, reachable only through `kashi_cp437_from_unicode`;
+`KASHI_GLYPH_FIRST` / `LAST` / `COUNT` and every byte of `0x20..0xFF` are unchanged.
 
 ## Context
 

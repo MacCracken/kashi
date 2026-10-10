@@ -1,6 +1,6 @@
 # 0003 — Codepoint addressing for runtime fonts via the PSF Unicode table
 
-**Status**: Accepted
+**Status**: Accepted (built-in addressing refined by [ADR 0011](0011-unicode-to-cp437-and-extension-glyphs.md) — from 1.1.0 a built-in font maps `cp` through `kashi_cp437_from_unicode` instead of reading it as an "ASCII codepoint"/CP437 cell; the text below records the decision as made)
 **Date**: 2026-05-27
 **Refines**: [ADR 0002](0002-runtime-font-registry.md)
 

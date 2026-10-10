@@ -43,7 +43,8 @@ jobs:
         run: xxd -l 4 build/kashi-demo | grep -q "7f45 4c46"
       - name: Glyph sheet pin
         # docs/examples/glyph_sheet.cyr renders every row byte of every
-        # built-in glyph (3 fonts x 224) as hex. kashi emits FIXED data, so
+        # built-in glyph (3 fonts x 224 CP437 cells, then x 2 extension
+        # cells since 1.1.0) as hex. kashi emits FIXED data, so
         # the sha256 of that sheet is pinned in docs/examples/glyph_sheet.sha256:
         # a glyph-table edit, a codegen change under a toolchain bump, and a
         # format change in the example all move it, and all three must be
@@ -76,11 +77,21 @@ jobs:
           echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
       - name: Resolve deps
         run: cyrius deps
-      - name: Test
-        # Bare `cyrius test` picks up the [build].test entry (src/test.cyr)
-        # AND auto-discovers tests/*.tcyr — one command covers the unit
-        # suite and the integration suite (tests/kashi.tcyr).
+      - name: Test (integration)
+        # On the pinned cyrius 6.6.6 a bare `cyrius test` runs only the
+        # auto-discovered tests/*.tcyr (tests/kashi.tcyr). It does NOT run
+        # the [build].test entry, src/test.cyr — measured: one file, 0 of
+        # the unit assertions. Per the roadmap's 6.6.17 pin note, a bare
+        # run picks src/test.cyr up from 6.6.17.
         run: cyrius test
+      - name: Test (unit)
+        # The unit suite (src/test.cyr: the built-in tables' byte-fidelity
+        # pins, accessor bounds, the audit regressions), named explicitly
+        # because the bare run above does not reach it on this pin. It
+        # exits non-zero on any failed assertion. Once the pin is >= 6.6.17
+        # the bare run covers it and this step only repeats it — drop it in
+        # that pin move.
+        run: cyrius test src/test.cyr
 
   # ── Lint / format / freestanding boundary ──
   lint:

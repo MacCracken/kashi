@@ -5,6 +5,10 @@
 **Refines / extends**: [ADR 0003](0003-codepoint-addressing-runtime-fonts.md)
 (codepoint→glyph map for runtime fonts), the 0.6.0 audit F2 tightening
 (reject codepoints > U+10FFFF and the UTF-16 surrogate range).
+**Note (1.1.0)**: the Consequences sentence about built-ins using "the freestanding
+core's ASCII codepoint scheme" is superseded by [ADR 0011](0011-unicode-to-cp437-and-extension-glyphs.md)
+— built-ins now map codepoints through `kashi_cp437_from_unicode`. Attach is still
+runtime-only.
 
 ## Context
 

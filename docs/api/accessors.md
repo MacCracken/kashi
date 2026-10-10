@@ -2,7 +2,9 @@
 
 > **Frozen as of 0.9.0**. Library-face read accessors that span
 > built-in (ids 0,1,2) and runtime (ids ≥ `KASHI_RT_FONT_BASE`)
-> fonts through one set of entry points.
+> fonts through one set of entry points. 1.1.0 fixed what a built-in
+> font does with the codepoint
+> ([ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md)).
 
 All accessors are **bounds-safe for the full `i64` input domain**.
 Out-of-range inputs return safe sentinels (0 / null), never a wild
@@ -12,9 +14,22 @@ deref.
 
 These three functions are kashi's main read surface. They route
 built-in ids to the freestanding core and runtime ids to the
-library-face registry. Codepoints resolve via the font's
-codepoint→glyph map (built at load time) or fall back to identity
-for fonts loaded without a map (e.g., raw `kashi_register_font`).
+library-face registry. `cp` is a **Unicode codepoint** for every font:
+
+- **Built-in fonts** map it to a cell with
+  [`kashi_cp437_from_unicode`](core.md#kashi_cp437_from_unicodecp) —
+  ASCII, the CP437 repertoire (U+00E7 'ç', U+2500 '─', …), U+2302 '⌂'
+  and the extension glyphs U+2026 '…' / U+FFFD '�' resolve; anything
+  else is unmapped. ⚠ Through 1.0.10 a built-in read `cp` as the CP437
+  **cell**, so U+00E7 'ç' drew cell `0xE7` 'τ' and box-drawing
+  codepoints drew nothing — fixed in 1.1.0. If you were passing CP437
+  bytes here on purpose, call the core's `kashi_glyph_*` instead: they
+  take the cell, unchanged.
+- **Runtime fonts** resolve it via the font's codepoint→glyph map
+  (built at load time) or fall back to identity for fonts loaded
+  without a map (e.g., raw `kashi_register_font`).
+
+An unmapped codepoint is `0` / null for both kinds.
 
 ### `kashi_font_ptr(font_id, cp)`
 
@@ -55,10 +70,12 @@ row; use `kashi_font_row_byte` for the other bytes.
 
 ```cyrius
 var bits = kashi_font_row(id, 0x41, 7);   # 'A' row 7
+var dots = kashi_font_row(KASHI_FONT_VGA_8X16, 0x2026, 10);   # '…' row 10 = 0xDB
 ```
 
 Convenient for non-hot-path use; the hot path should resolve once
-via `kashi_font_ptr`.
+via `kashi_font_ptr`. It resolves `cp` on every call — for a built-in
+that is one `kashi_cp437_from_unicode` per row.
 
 ### `kashi_font_row_byte(font_id, cp, row, byte_idx)`
 
@@ -228,7 +245,9 @@ consumer.
   built-in fonts and runtime fonts with a map use codepoints;
   raw-registered or table-less fonts use identity-index. A future
   cut may add an explicit "codepoint-or-index" probe API; existing
-  semantics won't change.
+  semantics won't change. (For built-ins, "codepoint" means Unicode
+  since 1.1.0 — what it was always documented to mean; the 1.0.x
+  cell-reading was a bug, see above.)
 - The "bit 7 = leftmost pixel" convention is frozen across all
   read accessors.
 
@@ -237,7 +256,9 @@ consumer.
 See [`docs/benchmarks.md`](../benchmarks.md). At a glance (x86_64 0.8.0):
 
 - Hot path (`kashi_font_ptr` then `load8`): ~7 ns + ~1 ns/row.
-- `kashi_font_row` (built-in): ~20 ns/call.
+- `kashi_font_row` (built-in): ~20 ns/call; 1.1.0 adds the mapping —
+  +3 ns for ASCII, ~43 ns/call for a high-half codepoint (measured
+  2026-10-09, `docs/benchmarks.md`).
 - `kashi_font_row` (runtime, no map): ~43 ns/call.
 - `kashi_font_row` (runtime, with codepoint map): ~65 ns/call.
 

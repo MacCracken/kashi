@@ -10,9 +10,10 @@ fonts at runtime. Written in
 
 **Status**: 1.x — public API frozen since 1.0.0 (the current
 version is in [`VERSION`](VERSION); 1.0.x releases are toolchain
-bumps, test, packaging and docs work). The full surface is documented
-in [`docs/api/`](docs/api/); stability promise is in
-[`docs/api/README.md`](docs/api/README.md).
+bumps, test, packaging and docs work; 1.1.0 added the Unicode → CP437
+mapping and two extension glyphs, changing nothing that existed). The
+full surface is documented in [`docs/api/`](docs/api/); stability
+promise is in [`docs/api/README.md`](docs/api/README.md).
 
 ## The two faces
 
@@ -40,7 +41,8 @@ itself only resolves inside this repo.
 
 ## Built-in fonts
 
-All cover the codepoint range `0x20..0xFF` (full CP437, 224 glyphs):
+All cover the CP437 cells `0x20..0xFF` (224 glyphs) plus two
+kashi-drawn extension cells after them (1.1.0):
 
 | id | Constant | Cell | Source |
 |----|----------|------|--------|
@@ -50,6 +52,24 @@ All cover the codepoint range `0x20..0xFF` (full CP437, 224 glyphs):
 
 Each glyph row is one byte for the 8-wide fonts (two bytes for 9×16);
 bit 7 of each byte is the leftmost pixel.
+
+### Unicode text (1.1.0)
+
+The core's accessors take a **cell**: `0x20..0xFF` is CP437 (cell `0xE7`
+is 'τ', not 'ç'), and the extension block `KASHI_EXT_FIRST..KASHI_EXT_LAST`
+(`0x100` = U+2026 '…', `0x101` = U+FFFD '�') holds glyphs CP437 has no
+cell for. Unicode text maps to cells through the freestanding core:
+
+| API | |
+|-----|---|
+| `kashi_cp437_from_unicode(cp)` | Cell for codepoint `cp`, or `0` (no built-in glyph): ASCII → itself, the 128 CP437 high-half characters → `0x80..0xFF` (U+00E7 'ç' → `0x87`), U+2302 '⌂' → `0x7F`, U+2026 / U+FFFD → the extension cells; everything else (controls, U+007F DELETE included) → `0`. Allocation-free; call after `kashi_font_init`. |
+| `KASHI_EXT_FIRST` / `KASHI_EXT_LAST` / `KASHI_EXT_COUNT` | The extension block's bounds (`0x100` / `0x101` / `2`). `KASHI_GLYPH_*` and `kashi_font_first` / `_count` still describe the CP437 range only. |
+
+The library face's `kashi_font_row` / `_ptr` / `_row_byte` do this mapping
+for you on built-in ids (through 1.0.10 they took the raw cell, so 'ç'
+drew 'τ'). Byte-indexed consumers see no change: every byte of
+`0x20..0xFF` is what 1.0.x shipped. See
+[ADR 0011](docs/adr/0011-unicode-to-cp437-and-extension-glyphs.md).
 
 Runtime-loaded fonts get ids `≥ KASHI_RT_FONT_BASE` (= 3 as of 1.0.0),
 assigned in load order.
@@ -87,6 +107,10 @@ if (p != 0) {
 }
 ```
 
+For **Unicode** text, map each decoded scalar to its cell first —
+`kashi_glyph_ptr(KASHI_FONT_VGA_8X16, kashi_cp437_from_unicode(u))` — and
+draw a truncated title's '…' with `kashi_cp437_from_unicode(0x2026)`.
+
 All accessors are **bounds-safe** for the full `i64` input domain
 — out-of-range inputs return safe sentinels (`0` row byte, `0`/null
 ptr), never a wild dereference. Fuzzed (`tests/kashi.fcyr`) over the
@@ -100,7 +124,7 @@ Declare the bundle as a dep and `cyrius deps` vendors it as
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.0.10"
+tag     = "1.1.0"
 modules = ["dist/kashi.cyr"]
 ```
 
@@ -142,8 +166,9 @@ uses `kashi_glyph_ptr` + `load8`.
 ```sh
 cyrius deps                                # resolve stdlib deps
 cyrius build src/lib.cyr build/kashi       # build the library
-cyrius run   src/main.cyr                  # demo: render 'A' in both 8-wide built-ins
-cyrius test                                # unit (src/test.cyr) + integration (tests/kashi.tcyr)
+cyrius run   src/main.cyr                  # demo: 'A' in both 8-wide built-ins, then '…' and '�'
+cyrius test                                # integration (tests/*.tcyr) — on the 6.6.6 pin, only that
+cyrius test  src/test.cyr                  # unit suite (a bare run reaches it only from cyrius 6.6.17)
 cyrius fuzz  tests/kashi.fcyr              # parser fuzz + the accessor bounds contract
 cyrius bench tests/kashi.bcyr              # accessor benchmarks
 cyrius vet   src/font_data.cyr             # proves freestanding core has zero deps
@@ -157,17 +182,18 @@ land unnoticed. See [`docs/guides/getting-started.md`](docs/guides/getting-start
 
 ## Documentation
 
-- **[`docs/api/`](docs/api/)** — public API reference (frozen 1.0).
-  6 files covering all 43 public functions and 20 enum groups, with
-  signature, params, return convention, code example, stability
-  note per symbol.
+- **[`docs/api/`](docs/api/)** — public API reference (frozen 1.0,
+  extended additively in 1.1). 6 files covering all 44 public functions
+  and 21 enum groups, with signature, params, return convention, code
+  example, stability note per symbol.
 - [`docs/guides/`](docs/guides/) — task-oriented how-tos: getting
   started, loading [PSF](docs/guides/loading-psf-fonts.md),
   [BDF](docs/guides/loading-bdf-fonts.md),
   [PCF](docs/guides/loading-pcf-fonts.md).
-- [`docs/adr/`](docs/adr/) — 10 architecture decisions, *why* each
+- [`docs/adr/`](docs/adr/) — 11 architecture decisions, *why* each
   major choice (the freestanding split, codepoint addressing,
-  wide-glyph rows, BDF / PCF / PSF u-variant scope).
+  wide-glyph rows, BDF / PCF / PSF u-variant scope, the Unicode → CP437
+  map and the extension glyphs).
 - [`docs/architecture/`](docs/architecture/) — non-obvious invariants
   (the u64-unit BSS byte-addressing quirk).
 - [`docs/examples/`](docs/examples/) — runnable examples against the
@@ -187,7 +213,8 @@ land unnoticed. See [`docs/guides/getting-started.md`](docs/guides/getting-start
 - **API frozen** as of 0.9.0; locked-in at 1.0.0.
 - Within the 1.x line: no signature changes, no removals, no
   semantic changes to documented behavior. New functions and new
-  enum members are additive.
+  enum members are additive (1.1.0: `kashi_cp437_from_unicode`,
+  `KashiExtRange`).
 - Anything prefixed with `_kashi_` is internal and may change at
   any time.
 - See [`docs/api/README.md`](docs/api/README.md) for the full
