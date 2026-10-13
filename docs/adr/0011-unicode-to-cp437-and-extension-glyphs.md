@@ -320,7 +320,9 @@ redrawing it is a stated exception to that promise, not a tweak.
   by its `scripts/build.sh` on 6.6.6 keeps less headroom under the 0x390000
   BSP-boot-stack ceiling: 99,336 → 93,592 B (−5,744 B) plain, 45,600 →
   39,840 B (−5,760 B) with `TEST=1 KTEST=1`. Both still pass its image-layout
-  gate.
+  gate. *(1.1.1: the glyph buffers now reserve only the bytes they use, so the
+  two extension cells cost 112 B of storage rather than the 896 B in that
+  1,928 — and the whole core 88,576 B less — architecture note 001.)*
 - **Negative** — two numbering spaces to keep straight: **cells** (core
   accessors, `0x20..0x101`) and **codepoints** (`kashi_cp437_from_unicode`,
   the library face). Documented at the top of `src/font_data.cyr` and in

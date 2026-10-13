@@ -70,7 +70,7 @@ outside them return safe sentinels from the accessors (row `0`, ptr `0`).
 fn kashi_font_init();
 ```
 
-Packs the built-in glyph tables into BSS, derives the VGA 9×16
+Packs the built-in glyph tables into their (zero-filled) buffers, derives the VGA 9×16
 table from the 8×16 table, and builds the 128-entry Unicode reverse
 index `kashi_cp437_from_unicode` searches. **Must run once at boot**,
 before the first call to any accessor. Idempotent — calling twice is

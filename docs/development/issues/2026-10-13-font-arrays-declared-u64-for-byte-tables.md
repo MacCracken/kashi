@@ -1,6 +1,6 @@
-# The three glyph tables reserve 8× the bytes they use — 88,592 B of every consumer's image, 7/8 never written — OPEN
+# The three glyph tables reserve 8× the bytes they use — 88,592 B of every consumer's image, 7/8 never written — RESOLVED (1.1.1)
 
-**Status:** 🟡 **OPEN** — filed 2026-10-13 by agnos (1.57.12, the ZFS write path's ROOM step: agnos spec
+**Status:** ✅ **RESOLVED in kashi 1.1.1** (2026-10-13) — see *Resolution* at the end. Filed 2026-10-13 by agnos (1.57.12, the ZFS write path's ROOM step: agnos spec
 `docs/development/proposals/2026-10-09-zfs-write.md` § k.74 (e)). Measured against kashi **1.1.0** (`93909d0`,
 `src/font_data.cyr`), built into the agnos kernel with cyrius **6.6.6**. No kashi code was changed by agnos (sibling
 rule: filed here, fixed here).
@@ -69,3 +69,50 @@ was not booted (the glyph bytes are written and read only through the offsets ab
 
 The fonts' bytes, the glyph offsets, the 9×16 derivation and every accessor's results are unchanged by the fix — only
 the reservation shrinks.
+
+## Resolution (kashi 1.1.1, 2026-10-13)
+
+Fixed as suggested, with two differences (steps 1 and 2). Verified on cyrius 6.6.20 (kashi's new pin) and on
+agnos's 6.6.6.
+
+1. **Declarations** — `var kashi_font16[_KASHI_FONT16_SLOTS]` / `kashi_font8[_KASHI_FONT8_SLOTS]` /
+   `kashi_font9_16[_KASHI_FONT9_16_SLOTS]`, with `enum _KashiFontStore { 452; 226; 904 }` and comments giving the
+   bytes (`3,616 B = 226 glyphs x 16 rows`, …). *Difference:* the sizes are named **slot** counts, not byte counts
+   divided by 8. On 6.6.20 an array size takes a literal or an enum constant, never an expression (`[X / 8]` is a parse
+   error; expressions arrive in 6.7.2), and enum values are literal-only. Naming them still matters: the test reads the
+   same symbol as the declaration. The `_` prefix keeps the enum out of the public API (`docs/api/README.md`).
+   **Measured:** library 288,528 → 199,952 B and DCE'd demo 145,376 → 56,800 B on 6.6.20. A freestanding
+   `--no-deps` program that includes only `src/font_data.cyr` went 127,312 → 38,736 B on 6.6.6. Each shrank by
+   **88,576 B**, 16 B less than 7/8 of 101,248. Alignment explains the gap: 6.6.13 aligns globals, to 16 bytes on x86
+   for anything over 8. 1.1.1 also declares the reverse index before the glyph buffers (see 2), which packs one
+   alignment gap tighter: 88,560 B without the reorder, 88,576 B with it. Your figure of 88,592 B in the kernel image
+   is what agnos's own layout gives.
+2. **The padding test** — replaced, as suggested, with a layout-independent check (`src/test.cyr`):
+   - **"fset guard"** now checksums every byte the core owns (FNV-1a over the three used spans, the reverse index,
+     its count and the ready flag) before and after the out-of-range barrage. It no longer reads a padding byte.
+   - **New "storage" group.** Its static half asserts `_KASHI_FONT16_SLOTS * 8 == 226 * 16` and its twins, using
+     `==` rather than `<=` so that the 8× over-reservation would fail too. Its measured half asserts that each last
+     cell's last row ends its buffer's span, and that the core's six variables are pairwise disjoint, read from the
+     compiled addresses (order-free).
+
+   *Difference:* the guard test was reworked rather than dropped. While reworking it, a pre-existing blind spot showed
+   up: nothing kashi owns sat below `kashi_font16`, so removing `kashi_fset16`'s *lower* guard went unnoticed (it
+   still did after the right-sizing). The reverse index is now declared first, and with cycc's declaration-order layout
+   all four guards' writes land on checksummed bytes. **Mutation-tested**, 12 mutants, all caught:
+   - each of the four guards removed;
+   - the upper guard off by one;
+   - each slot count one less, and `_KASHI_FONT8_SLOTS` one more;
+   - `_KASHI_FONT16_SLOTS` back to 3616;
+   - an extension cell added without growing the buffers;
+   - a declaration bypassing the enum.
+
+   Unit suite 448 → 454.
+3. **Docs** — `docs/architecture/001-module-scope-var-array-byte-addressing.md` is rewritten: N counts u64 slots,
+   each buffer declares bytes ÷ 8, it explains why the "mirrors agnos / would under-allocate" reasoning did not hold,
+   and it notes that the storage sits in the file image, not BSS. Also updated: the storage-model note at the top of
+   `src/font_data.cyr`, `SECURITY.md`, the getting-started add-a-font checklist, `state.md` and `CHANGELOG.md`
+   *1.1.1*.
+4. **Consumers** — no change needed: same symbols, offsets and accessor results. The 678-line glyph sheet hashes to
+   the 1.1.0 pin `5544d63f…`, and the demo's output is byte-identical. On agnos's 6.6.6 pin the 1.1.1 core compiles
+   freestanding, passes kashi's 454 + 145 assertions, and renders the identical sheet. kashi did not build agnos itself
+   (sibling rule). Your `KASHI_REF` bump to 1.1.1 and the console smokes are agnos-side.

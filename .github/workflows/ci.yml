@@ -29,6 +29,9 @@ jobs:
             CYRIUS_VERSION="$CYRIUS_VERSION" sh
           echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
       - name: Resolve deps
+        # cyrius.lock (tracked since 1.1.1) pins the sha256 of every vendored
+        # stdlib file: `cyrius deps` refuses to vendor, and exits non-zero on,
+        # any file the installed toolchain's snapshot carries differently.
         run: cyrius deps
       - name: Build library
         run: |
@@ -77,21 +80,16 @@ jobs:
           echo "$HOME/.cyrius/bin" >> "$GITHUB_PATH"
       - name: Resolve deps
         run: cyrius deps
-      - name: Test (integration)
-        # On the pinned cyrius 6.6.6 a bare `cyrius test` runs only the
-        # auto-discovered tests/*.tcyr (tests/kashi.tcyr). It does NOT run
-        # the [build].test entry, src/test.cyr — measured: one file, 0 of
-        # the unit assertions. Per the roadmap's 6.6.17 pin note, a bare
-        # run picks src/test.cyr up from 6.6.17.
+      - name: Test (unit + integration)
+        # From cyrius 6.6.17 a bare `cyrius test` runs the [build].test
+        # entry, src/test.cyr (the unit suite: the built-in tables'
+        # byte-fidelity pins, accessor bounds, storage sizing, the audit
+        # regressions), then every tests/*.tcyr — two files, each graded on
+        # its "N passed, 0 failed" summary (6.6.11). Until 1.1.1 (pin 6.6.6)
+        # the bare run reached only tests/kashi.tcyr, so a separate
+        # `cyrius test src/test.cyr` step ran the unit suite; it would only
+        # repeat it now.
         run: cyrius test
-      - name: Test (unit)
-        # The unit suite (src/test.cyr: the built-in tables' byte-fidelity
-        # pins, accessor bounds, the audit regressions), named explicitly
-        # because the bare run above does not reach it on this pin. It
-        # exits non-zero on any failed assertion. Once the pin is >= 6.6.17
-        # the bare run covers it and this step only repeats it — drop it in
-        # that pin move.
-        run: cyrius test src/test.cyr
 
   # ── Lint / format / freestanding boundary ──
   lint:
@@ -114,8 +112,16 @@ jobs:
             cyrius fmt "$f" --check
           done
       - name: Lint
+        # `cyrius lint` exits 0 on warnings by default, so until 1.1.1 this
+        # step printed them and passed (checked on 6.6.20: a 140-column line
+        # -> "1 warnings", rc 0). --exit-with-count fails on any warning,
+        # --strict-deferrals on an untracked TODO/FIXME — the two counts the
+        # gate is meant to hold at zero. tests/ joined the walk in 1.1.1
+        # (already clean; CONTRIBUTING.md said CI covered it).
         run: |
-          for f in src/*.cyr docs/examples/*.cyr; do cyrius lint "$f"; done
+          for f in src/*.cyr tests/*.tcyr tests/*.bcyr tests/*.fcyr docs/examples/*.cyr; do
+            cyrius lint --exit-with-count --strict-deferrals "$f"
+          done
       - name: Vet — freestanding core must have ZERO deps
         # Load-bearing invariant (ADR 0001): src/font_data.cyr is what the
         # agnos kernel includes; it must never gain a dependency. This step

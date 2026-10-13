@@ -21,15 +21,20 @@ Security-relevant areas:
   safe sentinels (`0` row byte, `0`/null ptr). This is the kernel's
   trust boundary; it is fuzzed (`tests/kashi.fcyr`) over the full
   integer range of each argument.
-- **Buffer sizing** — the freestanding core's module-scope BSS
-  buffers (`var kashi_font16[3616]`, `var kashi_font8[1808]`,
-  `var kashi_font9_16[7232]` — 224 CP437 + 2 extension glyphs each,
-  since 1.1.0) reserve 8× their byte count (Cyrius module-scope u64
-  units; see
+- **Buffer sizing** — the freestanding core's module-scope glyph
+  buffers (`kashi_font16` 452 / `kashi_font8` 226 / `kashi_font9_16`
+  904 u64 slots = 3,616 / 1,808 / 7,232 bytes — 224 CP437 + 2
+  extension glyphs each) hold **exactly** the bytes used since 1.1.1
+  (until then they reserved 8× — see
   `docs/architecture/001-module-scope-var-array-byte-addressing.md`).
-  All byte access is bounded to the used region; the table-builder
-  helpers (`kashi_fset16`, `kashi_fset8`) reject cells outside
-  `[0x20, KASHI_EXT_LAST]` (audit 2026-05-27 F1).
+  With no slack, a write past a buffer's end lands on the next
+  variable, so the bounds below are the only thing between a
+  table-authoring slip and corruption: all byte access is bounded to
+  the used region; the table-builder helpers (`kashi_fset16`,
+  `kashi_fset8`) reject cells outside `[0x20, KASHI_EXT_LAST]` (audit
+  2026-05-27 F1), and since 1.1.1 a test sees each of those four
+  guards fail (`src/test.cyr` "fset guard"), and the "storage" group
+  fails if a cell is added without growing the buffers.
 - **Unicode → cell mapping** (1.1.0) — `kashi_cp437_from_unicode` is
   total over the `i64` domain (anything unmapped → `0`, which every
   accessor treats as out of range) and only ever answers `0` or an

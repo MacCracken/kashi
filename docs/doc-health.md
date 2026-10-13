@@ -6,7 +6,11 @@ type: state
 
 # Documentation Health — kashi
 
-> **Last refresh**: 2026-10-09 (**1.1.0** — every doc the Unicode → CP437
+> **Last refresh**: 2026-10-13 (**1.1.1** — the pin move to cyrius 6.6.20 and
+> the glyph-storage fix: architecture note 001 rewritten, every doc that
+> quoted the old sizes or called the storage "BSS" corrected, the issue
+> resolved, `CLAUDE.md` Fresh again without an edit).
+> Previous: 2026-10-09 (**1.1.0** — every doc the Unicode → CP437
 > map and the extension glyphs touched re-graded in the same change: ADR
 > 0011 added, 0003 / 0004 / 0010 forward-pointed, the API reference,
 > guides, architecture note, SECURITY, state, roadmap, benchmarks).
@@ -24,7 +28,7 @@ type: state
 > matches the scope.
 
 This is a **ledger**, not a one-time audit. Rewrite-in-place as docs change.
-`docs/` is now 34 files — at the ~30-file threshold where the agnosticos
+`docs/` is now 37 files (2026-10-13) — at the ~30-file threshold where the agnosticos
 pattern switches to tier roll-ups. Per-file rows are kept this sweep
 because the API is frozen and churn since 1.0.0 has been toolchain-only;
 revisit if the tree grows again.
@@ -50,8 +54,8 @@ the rows 1.1.0 did not touch keep their 1.0.10 grading.
 
 | Bucket | Count | What it means |
 |---|---|---|
-| ✅ **Fresh** | 42 | Everything with a date except `CLAUDE.md`: the other root files, all 13 `adr/`, `architecture/`, `development/`, the 4 guides, the example pair, the 3 audits, benchmarks, all 7 `api/`, this ledger. |
-| 🟡 **Stale** | 1 | `CLAUDE.md` — one false Quick Start comment about bare `cyrius test`, left for the operator (row below). (10 at the 1.0.9 sweep; all fixed in 1.0.10.) |
+| ✅ **Fresh** | 44 | Everything with a date: the root files (`CLAUDE.md` again since 1.1.1 — the pin move made its Quick Start true), all 13 `adr/`, `architecture/`, `development/` (incl. the one issue, resolved), the 4 guides, the example pair, the 3 audits, benchmarks, all 7 `api/`, this ledger. |
+| 🟡 **Stale** | 0 | — (1 at 1.1.0: `CLAUDE.md`'s bare-`cyrius test` comment, false on 6.6.6, true on the 6.6.20 pin; 10 at the 1.0.9 sweep, all fixed in 1.0.10.) |
 | 🟠 **Read-through outstanding** | 0 | — |
 | 🔵 **Probably evergreen** | 2 | `CODE_OF_CONDUCT.md`, `LICENSE` — standard; re-read annually. |
 | 📦 **Archive** | 0 | — |
@@ -63,15 +67,15 @@ the rows 1.1.0 did not touch keep their 1.0.10 grading.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `README.md` | 2026-10-09 | ✅ Fresh | 1.1.0: status line names the additive minor; built-in section says CP437 cells + two extension cells, with a "Unicode text (1.1.0)" table (`kashi_cp437_from_unicode`, `KASHI_EXT_*`) and the library-face fix; freestanding quick start shows the Unicode path; `tag = "1.1.0"`; demo line; Build & test block names both suites (a bare `cyrius test` is integration-only on 6.6.6; `cyrius test src/test.cyr` for the unit suite); 44 public functions / 21 enum groups / 11 ADRs. |
-| `CHANGELOG.md` | 2026-10-09 | ✅ Fresh | `[0.1.0]`–`[1.1.0]`. 1.1.0 = Unicode → CP437 map, extension glyphs, library-face built-in fix; byte-identity proof, sizes (incl. agnos image headroom), same-session bench A/B with `font_init` (+1.2 µs; the index is pre-sorted, no sort at init), two mutation rounds, the explicit 0x7F behaviour note, the CI unit-suite step, the deliberate re-pin. The 1.0.10-era `[Unreleased]` `cyrius.cyml` comment item folded into 1.1.0. |
-| `CLAUDE.md` | 2026-09-21 | 🟡 Stale | ⚠ Quick Start's comment `cyrius test  # unit (src/test.cyr) + integration (tests/kashi.tcyr)` is false on the 6.6.6 pin: a bare run executes `tests/*.tcyr` only (measured 2026-10-09; 6.6.17 runs both). Left for the operator — CLAUDE.md is the operator's instruction file; the fix is the two-line form README / getting-started now use. Otherwise: durable-only. "Booked library skeleton" sentence replaced (both faces frozen; bundle tracked since 1.0.10); Quick Start has `cyrius test` (bare), `fuzz`, `distlib`; Work Loop build check includes `distlib`; glyph-fidelity principle names the sheet pin. State still deferred to `state.md`. |
-| `CONTRIBUTING.md` | 2026-10-09 | ✅ Fresh | Step 4 names both suites (`cyrius test src/test.cyr` + bare `cyrius test`; a bare run skips the unit suite below 6.6.17). Eight-step process incl. `cyrius vet`, `distlib` + commit, the pin update; `cyrius vet` leads (parenthetical explains the `cyaudit` dispatch); glyph-fidelity rule names the pin; CI scope (`src/`, `tests/`, `docs/examples/`). |
-| `SECURITY.md` | 2026-10-09 | ✅ Fresh | 1.1.0 buffer sizes (`[3616]` / `[1808]` / `[7232]`), `fset` guard range `[0x20, KASHI_EXT_LAST]`, and a Unicode-mapping bullet (total over i64, only 0 or an encoded cell, bounded index, fuzzed + swept). Audit trail unchanged (no new audit file for 1.1.0). |
+| `README.md` | 2026-10-13 | ✅ Fresh | 1.1.1: status line adds the storage cut (101 KB → 12.7 KB, −88 KB per binary); the bundle paragraph names the four sidecar leaves and the requires block (was "eight leaves"); `tag = "1.1.1"`; quick start's `cyrius test` is one line (both suites from 6.6.17); architecture pointer describes the u64-slot unit (was "u64-unit BSS quirk"). 1.1.0 content (Unicode section, cells + extension) holds. |
+| `CHANGELOG.md` | 2026-10-13 | ✅ Fresh | `[0.1.0]`–`[1.1.1]`. 1.1.1 = cyrius 6.6.6 → 6.6.20, the glyph-storage fix (sizes, the guard-test rework, mutation results, agnos headroom), the tracked lock, distlib's 4-leaf sidecar, the CI lint gate armed, bench three-way A/B. |
+| `CLAUDE.md` | 2026-09-21 | ✅ Fresh | Not edited for 1.1.1: its Quick Start comment `cyrius test  # unit (src/test.cyr) + integration (tests/kashi.tcyr)`, false on the 6.6.6 pin (Stale at 1.1.0), is true on 6.6.20 (measured: 454 + 145, two files). "Every buffer declaration is a contract: module-scope `var X[N]` = N×u64" matches the 1.1.1 sizing. Durable-only; state deferred to `state.md`. |
+| `CONTRIBUTING.md` | 2026-10-13 | ✅ Fresh | 1.1.1: step 4 is a bare `cyrius test` (both suites from 6.6.17); CI paragraph names `cyrius lint --exit-with-count --strict-deferrals` (CI now does lint `tests/`, as this file already said); new `cyrius.lock` paragraph (tracked; regenerate with `cyrius deps` on a `lib/` holding only declared deps); code-style line says "u64-slot unit". |
+| `SECURITY.md` | 2026-10-13 | ✅ Fresh | 1.1.1 buffer sizes (452 / 226 / 904 slots = 3,616 / 1,808 / 7,232 B, exactly the bytes used), why the guards matter more with no slack, and the tests that now see each guard fail; `fset` guard range `[0x20, KASHI_EXT_LAST]`; Unicode-mapping bullet (1.1.0). Audit trail unchanged (no audit file for 1.1.1). |
 | `CODE_OF_CONDUCT.md` | 2026-05-27 | 🔵 Evergreen | Contributor Covenant v2.1 reference + conduct@ address. |
 | `LICENSE` | 2026-05-27 | 🔵 Evergreen | GPL-3.0-only **short notice** pointing at gnu.org for the full text (not the verbatim license — previous row overstated it). |
-| `VERSION` | 2026-10-09 | ✅ Fresh | `1.1.0`; sole source of truth (cyrius.cyml resolves via `${file:VERSION}`). |
-| `cyrius.cyml` | 2026-09-21 | ✅ Fresh | Pin `cyrius = "6.6.6"`; description names all three built-ins + the three formats; `[deps]` comment explains `io` / `alloc` / `vec` in the present tense; `[lib]` comment records the bundle as tracked + gated since 1.0.10. |
+| `VERSION` | 2026-10-13 | ✅ Fresh | `1.1.1`; sole source of truth (cyrius.cyml resolves via `${file:VERSION}`). |
+| `cyrius.cyml` | 2026-10-13 | ✅ Fresh | Pin `cyrius = "6.6.20"` (1.1.1; was 6.6.6); otherwise unchanged since 1.0.10 — description names all three built-ins + the three formats; `[deps]` comment explains `io` / `alloc` / `vec`; `[lib]` comment states distlib's real rule (leaves listed explicitly, aggregator last). |
 
 ## Tier 2 — `docs/adr/`
 
@@ -89,27 +93,28 @@ the rows 1.1.0 did not touch keep their 1.0.10 grading.
 | `adr/0008-bdf-import.md` | 2026-05-28 | ✅ Fresh | *New since last sweep.* 0.7.0: heapless BDF parser (`src/font_bdf.cyr`), strict-BBX, per-glyph cursor, `ENCODING -1` skipped, 4 MiB cap, `KIND=3` in the shared parsed-header struct, no new result codes. Lenient-BBX noted as the unbooked follow-on (roadmap). Accepted. |
 | `adr/0009-pcf-import.md` | 2026-05-28 | ✅ Fresh | *New since last sweep.* 0.7.1: heapless TOC-driven PCF parser (`src/font_pcf.cyr`), strict-uniform metrics, both metric layouts, all four byte×bit-order combos canonicalized on load, required tables METRICS/BITMAPS/BDF_ENCODINGS, `KIND=4`, 4 MiB cap. Accepted. |
 | `adr/0010-psf-u-variant.md` | 2026-10-09 | ✅ Fresh | 0.7.2: four `kashi_attach_unicode_*` APIs (binary PSF1/PSF2 table bytes + `psfgettable` text), replace semantics, runtime ids only, 256 KiB text cap; overlong-UTF-8 rejection per RFC 3629 (closes 0.6.0 audit F2); "larger table-walk caps" roadmap item dropped as a non-issue. Accepted. Uses the `cyaudit vet` name (historical). 1.1.0 note: its built-ins "ASCII codepoint scheme" sentence is superseded by ADR 0011. |
-| `adr/0011-unicode-to-cp437-and-extension-glyphs.md` | 2026-10-09 | ✅ Fresh | *New in 1.1.0.* `kashi_cp437_from_unicode` (ASCII; CP437 high half per the codec / CP437.TXT; U+2302 → `0x7F`, U+007F → 0; 226 mapped), the extension block `0x100..0x101` ('…', '�') reachable only by codepoint, the library face's built-in fix, the index's pre-sorted fixed-slot fill (and why: sorting at init doubled `kashi_font_init`; re-init race-benign), glyph art for all three fonts and the 8-wide ellipsis's no-spacing-column trade-off (kbd oracle, consumer advances), the additive relaxation of the 1.0.0 freeze, costs incl. init time and agnos headroom, alternatives. Accepted. |
+| `adr/0011-unicode-to-cp437-and-extension-glyphs.md` | 2026-10-13 | ✅ Fresh | 1.1.1: the size bullet carries a forward note (the extension cells cost 112 B of storage, not 896 B, once the buffers were right-sized). *New in 1.1.0.* `kashi_cp437_from_unicode` (ASCII; CP437 high half per the codec / CP437.TXT; U+2302 → `0x7F`, U+007F → 0; 226 mapped), the extension block `0x100..0x101` ('…', '�') reachable only by codepoint, the library face's built-in fix, the index's pre-sorted fixed-slot fill (and why: sorting at init doubled `kashi_font_init`; re-init race-benign), glyph art for all three fonts and the 8-wide ellipsis's no-spacing-column trade-off (kbd oracle, consumer advances), the additive relaxation of the 1.0.0 freeze, costs incl. init time and agnos headroom, alternatives. Accepted. |
 
 ## Tier 3 — `docs/architecture/`
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `architecture/README.md` | 2026-10-09 | ✅ Fresh | Index line for 001 cites the 1.1.0 sizes (`[3616]` / 28.25 KiB, `[1808]`, `[7232]` stride 2; 224 CP437 + 2 extension glyphs) and the `kashi_cp437_rev[128]` exception. |
-| `architecture/001-module-scope-var-array-byte-addressing.md` | 2026-10-09 | ✅ Fresh | The invariant (module-scope `var X[N]` = N×u64, byte-addressed) unchanged since 0.1.0; numbers refreshed to `3616` / `1808` / `7232` (226 glyphs: CP437 + the extension, contiguous); the reservation is in every binary; new section: the deliberate exception `kashi_cp437_rev[128]` (N = entries, one u64 slot each). |
+| `architecture/README.md` | 2026-10-13 | ✅ Fresh | Index line for 001 rewritten for 1.1.1: `[452]` / `[226]` / `[904]` u64 slots = the bytes used, named in `_KashiFontStore`, the 8× it replaced (88,576 B per binary, file image not BSS), how a new cell grows N; `kashi_cp437_rev[128]` counts entries. |
+| `architecture/001-module-scope-var-array-byte-addressing.md` | 2026-10-13 | ✅ Fresh | Rewritten for 1.1.1 — the invariant inverted: N counts u64 slots and each buffer declares bytes ÷ 8 (was: N = bytes, 8× reserved "on purpose"). Sections: the invariant + `_KashiFontStore`; adding a cell; the size and who pays it (file image, measured −88,576 B on 6.6.20 and on agnos's 6.6.6); why the old "mirrors agnos / would under-allocate" reasoning did not hold; layout is the compiler's (6.6.13) and the two tests that look at it cannot false-fail; the reverse index (no longer "the exception"); accessors unchanged. |
 
 ## Tier 4 — `docs/development/`
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `development/roadmap.md` | 2026-10-09 | ✅ Fresh | Header 2026-10-09 / No Open Work, with 1.1.0 recorded as the first consumer-driven cut since 1.0; two unbooked additive items (more extension glyphs, mapping aliases) and a reopen trigger (a glyph CP437 lacks); the 6.6.17 bare-`cyrius test` note checked on 6.6.17 (448 + 145) and rewritten for CI's explicit unit-suite step (drop it at that pin move); the pin procedure's gate set names both test commands. |
-| `development/state.md` | 2026-10-09 | ✅ Fresh | 1.1.0 entry; What's implemented (cells + extension, `kashi_cp437_from_unicode`, library-face built-in mapping, bundle 3,985 lines by distlib's count / 4,004 by `wc -l`, demo, sheet pin `5544d63f…`); sizes 262,656 / 144,072 B with hashes (`6ce819b9…` / `74e2ceef…`) and the core's +6,064 B; `kashi_font_init` +1.2 µs; 593 assertions (448 + 145) + the fuzz Unicode contract; the 6.6.6 bare-`cyrius test` caveat and CI's unit step; consumers' 1.1.0 note (per-draw init cost for dhancha, agnos headroom, `KASHI_REF`). |
+| `development/roadmap.md` | 2026-10-13 | ✅ Fresh | Header 2026-10-13 / No Open Work, 1.1.1 recorded (pin + the storage issue). Pin procedure: step 2 = bump + `cyrius deps` (re-vendors and re-locks; commit the tracked lock; no `lib sync --full`), step 3 = bare `cyrius test` + strict lint, step 4 notes distlib can move more than the stamp; the sigil/mabda `lib/` note retired. New precedent 6.6.6 → 6.6.20 (what the 6.6.7–6.6.20 changelog touched, results). The 6.6.17 note marked adopted. |
+| `development/state.md` | 2026-10-13 | ✅ Fresh | 1.1.1 entry; toolchain 6.6.20 + the tracked lock; bundle 4,001 lines by distlib (4,026 by `wc -l`) with the requires block and 4-leaf sidecar; sizes split toolchain vs fix (199,952 / 56,800 B); tests 454 + 145 = 599 from one bare run; strict-lint and `deps --verify` gates; dependencies (lock tracked, sidecar 4 leaves); consumers re-read 2026-10-13 (agnos 6.6.6, aethersafha 1.1.0, agnos `KASHI_REF` 1.1.0) + "1.1.1 for consumers" (incl. agnos's measured headroom). |
+| `development/issues/2026-10-13-font-arrays-declared-u64-for-byte-tables.md` | 2026-10-13 | ✅ Fresh | Filed by agnos against 1.1.0 (the glyph buffers reserved 8× — 88,592 B of its kernel image). **Resolved in 1.1.1**: the resolution section records what landed against each suggested step and where it differs (named slot counts — an array size takes an enum constant, not an expression; the guard test reworked rather than dropped). |
 
 ## Tier 5 — `docs/guides/` + `docs/examples/`
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `guides/getting-started.md` | 2026-10-09 | ✅ Fresh | 1.1.0: "Draw Unicode text" section (cells vs codepoints, `kashi_cp437_from_unicode`, '…' / '�'), layout/demo/example rows, `tag = "1.1.0"`, add-a-font checklist sizes (`[3616]`…) and the `[FIRST, EXT_LAST]` guard + extension glyphs per font, eleven ADRs. Build/test block and its paragraph corrected: on 6.6.6 a bare `cyrius test` runs only `tests/*.tcyr` (~145), the unit suite (~450) needs `cyrius test src/test.cyr`; demo comment names '…' / '�'. |
+| `guides/getting-started.md` | 2026-10-13 | ✅ Fresh | 1.1.1: build/test block is one bare `cyrius test` (both suites, the 6.6.20 pin) and the paragraph says why it was two commands through 1.1.0; CI paragraph mentions the lock check; `tag = "1.1.1"`; "static tables" / "zero-filled" (was "BSS"); add-a-font step 2 sizes a buffer in u64 slots via `_KashiFontStore` and adds it to the storage tests, step 3 says the neighbour sits flush. 1.1.0's "Draw Unicode text" section holds. |
 | `guides/loading-psf-fonts.md` | 2026-10-09 | ✅ Fresh | 0.7.2 content holds; the two "built-ins take an ASCII codepoint" notes now describe the 1.1.0 mapping (and the 1.0.x cell-reading bug). |
 | `guides/loading-bdf-fonts.md` | 2026-09-21 | ✅ Fresh | 0.7.0 content holds; `cyrius vet` naming. |
 | `guides/loading-pcf-fonts.md` | 2026-09-21 | ✅ Fresh | 0.7.1 content holds; `cyrius vet` naming. |
@@ -122,9 +127,9 @@ the rows 1.1.0 did not touch keep their 1.0.10 grading.
 | `audit/2026-05-27-audit.md` | 2026-05-27 | ✅ Fresh | First P(-1) pass on the freestanding-core ASCII surface at 0.1.0 (SECURITY.md / state.md label it "0.2.0 P(-1)" — same pass, opening the post-0.1.0 cycle). 3 fixed (F1 fset guard, F2 ready flag, F3 comment), F4 no-change, F5 mitigated. Historical. |
 | `audit/2026-05-28-audit.md` | 2026-05-28 | ✅ Fresh | 0.6.0 P(-1): PSF parser + library face + 0.4.0–0.5.2 core extensions. F1 `glyph_count` overflow guard, F2 strict UTF-8 cp range, F3 stale comments, F4 perf note. Historical. |
 | `audit/2026-05-28-audit-0.8.0.md` | 2026-05-28 | ✅ Fresh | *New since last sweep.* 0.8.0 hardening: CVE-research-driven 17-point checklist over PSF/BDF/PCF + attach paths. F1–F9 all fixed (format-byte unknown bits, BDF int truncation, PCF duplicate TOC, F9 attach atomic-on-failure per CVE-2015-1803); +13 regression assertions. Followups (dry-run attach API; strictness relaxation if a benign undocumented bit appears) remain unbooked. Most recent audit in the trail; no source change since. |
-| `benchmarks.md` | 2026-10-09 | ✅ Fresh | "Current" at 1.1.0 with the same-session 1.0.10 re-run beside it (quiet host; a loaded second session agreed); four new benches incl. `font_init`; what moved and why (`font_row_builtin` +3 ns = the mapping; `font_init` +1.2 µs = extension glyphs + index fill, attributed; `scan_vga_8x16` +3 % = code placement, shown); trend rows; render-pattern note. |
-| `benchmarks/history.csv` | 2026-10-09 | ✅ Fresh | Rows 0.1.0 → 1.1.0; `1.0.10-rerun` rows (incl. `font_init`) are the same-session baseline for 1.1.0 (documented in the doc). |
-| `doc-health.md` | 2026-10-09 | ✅ Fresh | This ledger. Touched-rows refresh at 1.1.0; last full sweep 2026-09-21 (1.0.9). |
+| `benchmarks.md` | 2026-10-13 | ✅ Fresh | "Current" at 1.1.1: a three-way interleaved A/B (1.1.0 / 6.6.6, 1.1.0 / 6.6.20, 1.1.1 / 6.6.20), all ten benches flat within ±2 %; 1.1.0's section kept as "Previous"; Trend gains the three 2026-10-13 rows; Updating says measure old and new in one session. |
+| `benchmarks/history.csv` | 2026-10-13 | ✅ Fresh | Rows 0.1.0 → 1.1.1; the 2026-10-13 session is `1.1.0-rerun` / `1.1.0-on-6.6.20` / `1.1.1` (ten benches each, medians of nine interleaved runs; min / max across the runs). |
+| `doc-health.md` | 2026-10-13 | ✅ Fresh | This ledger. Touched-rows refresh at 1.1.1; last full sweep 2026-09-21 (1.0.9). |
 
 ## Tier 7 — `docs/api/` (new since last sweep — frozen 0.9.0, sealed 1.0.0)
 
@@ -136,8 +141,8 @@ internal; the `_kashi_cp437_*` index builders are underscore-internal.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `api/README.md` | 2026-10-09 | ✅ Fresh | 44 public functions (46 declared − 2 internal `fset`), 21 enum groups, core row = 12 functions + 3 + 3 + 3 constants; the 1.1.0 internals (`_kashi_cp437_*`, `kashi_cp437_rev` / `_n`) and the extension cell numbers listed as not-API. |
-| `api/core.md` | 2026-10-09 | ✅ Fresh | Freestanding core: 3 font ids; "Cells vs codepoints"; CP437 range + `KashiExtRange` constants; `kashi_font_init` (re-init race-benign, first-init ordering, ~22 µs cost — boot work) / `is_ready`, `kashi_glyph_row` / `row_byte` / `ptr` / `encoded` (the two-input change noted), `kashi_cp437_from_unicode` (table, init note, example, perf), `kashi_font_{width,height,first,count,stride}`; stability note for the extension's growth. Matches `src/font_data.cyr`. |
+| `api/README.md` | 2026-10-13 | ✅ Fresh | 1.1.1: header notes no public symbol changed; "What's NOT public API" lists the internal `_KashiFontStore` slot sizes (not counted in the 21 groups). 44 public functions (46 declared − 2 internal `fset`), 21 enum groups, core row = 12 functions + 3 + 3 + 3 constants; the 1.1.0 internals (`_kashi_cp437_*`, `kashi_cp437_rev` / `_n`) and the extension cell numbers listed as not-API. |
+| `api/core.md` | 2026-10-13 | ✅ Fresh | 1.1.1: `kashi_font_init` packs into "zero-filled buffers" (was "BSS"). Freestanding core: 3 font ids; "Cells vs codepoints"; CP437 range + `KashiExtRange` constants; `kashi_font_init` (re-init race-benign, first-init ordering, ~22 µs cost — boot work) / `is_ready`, `kashi_glyph_row` / `row_byte` / `ptr` / `encoded` (the two-input change noted), `kashi_cp437_from_unicode` (table, init note, example, perf), `kashi_font_{width,height,first,count,stride}`; stability note for the extension's growth. Matches `src/font_data.cyr`. |
 | `api/loading.md` | 2026-05-28 | ✅ Fresh | `kashi_load_{psf,bdf,pcf}` + `_file` variants, `kashi_register_font`; return convention; what's not in the surface. Caps match README (256 KiB / 4 MiB / 4 MiB). |
 | `api/accessors.md` | 2026-10-09 | ✅ Fresh | Unified `kashi_font_{ptr,row,row_byte}` — `cp` is Unicode for every font, built-ins via `kashi_cp437_from_unicode` (1.0.x bug + migration noted); raw `kashi_rt_glyph_*`, `kashi_rt_font_*`, `kashi_font_total`, active-font pair, `kashi_font_seq_glyph`; perf notes incl. the mapping cost. |
 | `api/attach.md` | 2026-10-09 | ✅ Fresh | Four sidecar attach functions; replace semantics + atomic failure (audit 0.8.0 F9); binary vs text format choice; built-in rejection now cites the fixed `kashi_cp437_from_unicode` mapping. |

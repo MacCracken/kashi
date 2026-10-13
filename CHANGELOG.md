@@ -7,6 +7,147 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-13 — cyrius 6.6.20, and 88 KB back
+
+Patch. The pin moves cyrius 6.6.6 → 6.6.20, and the one issue filed against 1.1.0 is fixed
+([`docs/development/issues/2026-10-13-font-arrays-declared-u64-for-byte-tables.md`](docs/development/issues/2026-10-13-font-arrays-declared-u64-for-byte-tables.md),
+filed by agnos). The glyph buffers reserved 8× the bytes they use, and that was **88,576 B of zeros in every
+binary that links the core**. **No glyph, symbol, signature, offset or accessor result changed.**
+- The 678-line glyph sheet still hashes to the 1.1.0 pin `5544d63f…`: on 6.6.6, on 6.6.20, and after the fix.
+- The demo's output is byte-identical.
+- Bench is flat. Every row is within ±2 % across 1.1.0 on 6.6.6, 1.1.0 on 6.6.20 and 1.1.1 on 6.6.20.
+
+### Fixed
+
+- **The three glyph buffers reserved 8× the bytes they use.**
+  - **The bug.** `src/font_data.cyr` declared `var kashi_font16[3616]` / `kashi_font8[1808]` /
+    `kashi_font9_16[7232]`, which are the *byte* counts. A module-scope `var X[N]` is N **u64 slots** = 8N bytes,
+    so the three reserved 101,248 B for the 12,656 B any code touches.
+  - **Why it cost image size.** cycc writes module-scope storage into the file image as zeros, so the slack was
+    not free BSS. It was image size in every consumer: in agnos's kernel, 88,592 B of the room under its 0x400000
+    ceiling.
+  - **The old rationale was wrong.** Architecture note 001 had kept the 8× on purpose: it "mirrors agnos" and
+    "`[452]` would under-allocate". At module scope `[452]` *is* 3,616 bytes, and agnos's mirrored declaration was
+    gone since its 1.38.0.
+  - **Now.** `[452]` / `[226]` / `[904]` slots, exactly the bytes used, named in the internal
+    `_KashiFontStore` (`_KASHI_FONT16_SLOTS` …) so the tests check the same numbers the declarations use. An array
+    size takes a literal or an enum constant on 6.6.20, not an expression, so `[3616 / 8]` was not an option.
+  - **Size** (same toolchain, 1.1.0 → 1.1.1):
+
+    | Build | Toolchain | 1.1.0 | 1.1.1 | Δ |
+    |---|---|---|---|---|
+    | Library (`src/lib.cyr`) | 6.6.20 | 288,528 B | **199,952 B** | −88,576 B |
+    | `CYRIUS_DCE=1` demo | 6.6.20 | 145,376 B | **56,800 B** | −88,576 B |
+    | Freestanding `--no-deps` program, core only | agnos's 6.6.6 | 127,312 B | **38,736 B** | −88,576 B |
+
+    agnos measured the same change in its own image: headroom under 0x400000 went 325,952 → 414,544 B
+    (+88,592 B). The 16 B difference is alignment (cyrius 6.6.13 aligns globals; see the next item).
+  - **For consumers.** Nothing to change. One edge: the buffers now end flush. Reading past the *last* cell's rows
+    through a raw `kashi_glyph_ptr` reaches the next variable instead of zeros. No consumer in the stack reads more
+    than `height × stride` bytes.
+- **A packer guard that no test could see fail.**
+  - **The gap.** `src/test.cyr`'s "fset guard" group proved the high-side guards by reading the first *padding*
+    byte past each buffer. With no padding that byte is the next variable, so the check is replaced. Rebuilding it
+    showed a pre-existing blind spot: nothing kashi owns sat *below* `kashi_font16`. Removing `kashi_fset16`'s lower
+    guard (`ch < KASHI_GLYPH_FIRST`) therefore failed nothing, before 1.1.1 and after the right-sizing alike.
+  - **The fix.** The guard group now takes one FNV-1a checksum over every byte the core owns, before and after the
+    out-of-range barrage: the three used spans, the reverse index, its count and the ready flag. `kashi_cp437_rev`
+    is now declared *before* the glyph buffers. Under cycc's declaration-order layout, all four guards' writes then
+    land on checksummed bytes. Layout is the compiler's (6.6.13); a different one could blind the check but never
+    false-fail it.
+  - **New "storage" group** (7 assertions):
+    - declared slots × 8 == bytes used, for each buffer. This is `==`, not `<=`, so the old 8× fails too;
+    - each buffer's last cell ends its span;
+    - the core's six variables are pairwise disjoint, read from the compiled addresses (order-free).
+  - **Mutation-tested: 12 mutants, all caught.**
+    - each of the four guards removed;
+    - the upper guard off by one;
+    - each slot count one less;
+    - `_KASHI_FONT8_SLOTS` one more;
+    - `_KASHI_FONT16_SLOTS` back to 3616;
+    - an extension cell added without growing the buffers (four assertions fail);
+    - a declaration bypassing the enum.
+
+    Every restore was verified by sha256. Unit suite 448 → **454**.
+- **CI's lint step could never fail.** `cyrius lint` exits 0 when it reports warnings. On 6.6.20 a 140-column
+  line gives "1 warnings" and rc 0. The step therefore printed findings and passed.
+  - It now runs `cyrius lint --exit-with-count --strict-deferrals`, which fails on any warning or untracked
+    TODO/FIXME.
+  - It walks `tests/` too, as `CONTRIBUTING.md` already claimed it did.
+  - Every file was already clean.
+
+### Changed
+
+- **Toolchain: cyrius 6.6.6 → 6.6.20.** The 6.6.7 – 6.6.20 changelog was read for consumer-visible changes. None of
+  the new compiler refusals has a shape in `src/`, `tests/` or `docs/examples/`; every file compiles and lints clean
+  on 6.6.20. Before the fix, on unchanged source:
+  - the glyph sheet was **byte-identical** to 6.6.6's;
+  - 448 + 145 assertions passed;
+  - `cyrius vet` reported "no dependencies" for all four freestanding files;
+  - fuzz was clean;
+  - the library grew 262,656 → 288,528 B (+25,872) and the demo 144,072 → 145,376 B (+1,304), from stdlib growth.
+
+  What reached kashi:
+  - **6.6.17: a bare `cyrius test` runs `[build].test` (`src/test.cyr`) before `tests/`.** One command now runs
+    both suites, 454 + 145. CI's separate `cyrius test src/test.cyr` step is dropped, as the roadmap's 6.6.17 note
+    asked.
+  - **6.6.9: `cyrius deps` writes a `cyrius.lock` for a stdlib-only project too** ("commit it"). It is now
+    **tracked**; until 1.1.1 kashi's policy omitted it.
+    - It holds the sha256 of the 24 stdlib files `cyrius deps` vendors.
+    - At an unchanged pin, `cyrius deps` refuses a file that differs, with exit 1 (checked with a tampered hash).
+      That gives CI an integrity check on the toolchain it fetches with `curl | sh`.
+    - After a pin bump it re-locks by itself (checked).
+    - dhancha, crab, puka, jalwa, aethersafha and rekha all track theirs.
+    - `lib/` is now exactly what `cyrius deps` vendors, byte-identical to the 6.6.20 snapshot. The roadmap's old
+      "`cyrius lib sync --full` on the dev box" advice is retired: it vendors all 113 snapshot files, and the next
+      `cyrius deps` locks them all — a lock a CI checkout cannot `--verify` (89 failed).
+  - **6.6.18: distlib's requires block and compile-verified sidecar.**
+    - `dist/kashi.deps` drops from eight leaves to four: `vec`, `alloc`, `string`, `io`. `fmt`, `syscalls`,
+      `assert` and `bench` were never the library face's.
+    - `dist/kashi.cyr` now opens with the matching `include "lib/…"` lines.
+    - A scratch consumer declaring `[deps.kashi] path` + `modules = ["dist/kashi.cyr"]` builds and runs (font init,
+      both accessor faces, a loader's error path) on **6.6.20 and on 6.6.6**.
+  - **6.6.13: globals are aligned** (16 on x86 for anything over 8 bytes), and "the gap between two globals is the
+    compiler's". kashi never reached one global from another. The new storage tests are written not to depend on
+    the layout, and architecture note 001 now says so.
+  - **6.6.11: test grading on the "N passed, M failed" summary; lint fails on compiler refusals.** Both suites
+    print the summary.
+- **Bench** (cyrius 6.6.20 vs 6.6.6). Three `CYRIUS_DCE=1` binaries, nine interleaved rounds, medians:
+
+  | Benchmark | 1.1.0 / 6.6.6 | 1.1.0 / 6.6.20 | 1.1.1 / 6.6.20 |
+  |---|---|---|---|
+  | `glyph_row` | 17.8 ns | 18.2 ns | 18.1 ns |
+  | `glyph_ptr` | 7.6 ns | 7.5 ns | 7.5 ns |
+  | `scan_vga_8x16` | 63.3 µs | 62.9 µs | 63.0 µs |
+  | `font_row_builtin` | 23.9 ns | 24.0 ns | 24.0 ns |
+  | `font_row_runtime` | 46.9 ns | 47.1 ns | 47.0 ns |
+  | `font_row_runtime_cp` | 63.1 ns | 62.8 ns | 63.2 ns |
+  | `cp437_from_unicode_ascii` | 3.8 ns | 3.8 ns | 3.8 ns |
+  | `cp437_from_unicode_high` | 26.6 ns | 26.6 ns | 26.7 ns |
+  | `font_row_builtin_cp` | 43.3 ns | 43.2 ns | 43.5 ns |
+  | `font_init` | 22.4 µs | 22.3 µs | 22.5 µs |
+
+  All flat within ±2 %. The fix changes only the reservation; every access is the same load or store.
+  `docs/benchmarks/history.csv` gains the three sessions' rows.
+- **Kernel side.** agnos compiles the core with its own pin, 6.6.6. The 1.1.1 core builds freestanding there
+  (`cyrius build --no-deps`), passes both suites and renders the identical sheet. kashi did not build agnos.
+- **Docs.**
+  - Architecture note 001 is rewritten: the invariant is now "N u64 slots = the bytes used", it covers how a new cell
+    grows N and why the 8× rationale failed, and it states the storage is in the file image (not BSS) and that layout
+    is the compiler's. Its index line is updated.
+  - "BSS" is corrected to the buffers' real placement across `src/font_data.cyr`, `SECURITY.md`, the
+    getting-started guide and `api/core.md`.
+  - Getting started: the add-a-font checklist sizes a new buffer in slots and wires it into the storage tests; the
+    build/test block is one `cyrius test`; `tag = "1.1.1"`.
+  - `README.md`: status line, bundle leaves, quick start, tag.
+  - `CONTRIBUTING.md`: test step, strict lint, the lock.
+  - Roadmap: pin procedure (the lock, no `--full`, strict lint, distlib check), the 6.6.6 → 6.6.20 precedent, the
+    6.6.17 note marked adopted.
+  - Also updated: `api/README.md` (the internal `_KashiFontStore`), ADR 0011's size note, `state.md`, the benchmarks
+    doc, the doc-health ledger (`CLAUDE.md` is Fresh again with no edit: its bare-`cyrius test` comment is true on
+    6.6.20), and `.gitignore`'s lock policy.
+  - The issue file is marked resolved.
+
 ## [1.1.0] - 2026-10-09 — Unicode text, and the ellipsis
 
 Additive minor ([ADR 0011](docs/adr/0011-unicode-to-cp437-and-extension-glyphs.md)). The

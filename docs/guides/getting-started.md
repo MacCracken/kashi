@@ -1,10 +1,12 @@
 # Getting started with kashi
 
-> **Last Updated**: 2026-10-09 (1.1.0 — Unicode text: `kashi_cp437_from_unicode`
-> and the extension glyphs; rewritten for the frozen 1.0 surface at 1.0.9)
+> **Last Updated**: 2026-10-13 (1.1.1 — glyph buffers right-sized, the pin at
+> cyrius 6.6.20 where a bare `cyrius test` runs both suites; 1.1.0 — Unicode
+> text: `kashi_cp437_from_unicode` and the extension glyphs; rewritten for the
+> frozen 1.0 surface at 1.0.9)
 
 kashi is the AGNOS console-font subsystem: three built-in CP437 bitmap fonts
-that a framebuffer console paints straight from BSS, plus runtime loading of
+that a framebuffer console paints straight from static tables, plus runtime loading of
 PSF / BDF / PCF fonts for userland. The public API has been **frozen since
 1.0.0** (1.1.0 added to it, changing nothing) — the reference is
 [`../api/`](../api/), and nothing in this guide goes beyond it.
@@ -36,8 +38,7 @@ that file is the one the kernel takes.
 cyrius deps                              # vendor the stdlib leaves into lib/
 cyrius build src/lib.cyr build/kashi     # the library face
 cyrius run   src/main.cyr                # demo: 'A' in both 8-wide built-ins, then '…' and '�', as ASCII art
-cyrius test                              # integration (tests/*.tcyr) — on the 6.6.6 pin, only that
-cyrius test  src/test.cyr                # unit suite (a bare run reaches it only from cyrius 6.6.17)
+cyrius test                              # unit (src/test.cyr) + integration (tests/*.tcyr)
 cyrius vet   src/font_data.cyr           # MUST print "no dependencies" — the freestanding boundary
 cyrius fuzz  tests/kashi.fcyr            # parser fuzz + accessor bounds contract
 cyrius bench tests/kashi.bcyr            # hot-path timings (CI runs it with CYRIUS_DCE=1)
@@ -48,20 +49,21 @@ cyrius build docs/examples/glyph_sheet.cyr build/glyph_sheet && ./build/glyph_sh
                                          # must equal docs/examples/glyph_sheet.sha256 (CI checks)
 ```
 
-There are two suites, and on the pinned cyrius 6.6.6 `cyrius test` with no
-argument runs only one of them: it auto-discovers `tests/*.tcyr`
-(`tests/kashi.tcyr`, ~145 assertions — structural invariants for all three
-built-ins, the Unicode → cell map, file round-trips) and does **not** run the
-`[build].test` entry. Run the unit suite by name: `cyrius test src/test.cyr`
-(~450 assertions, including the byte-fidelity pins for the built-in tables).
-From cyrius 6.6.17 a bare `cyrius test` runs both; until the pin moves, run
-the two commands. `cyrius test tests/kashi.tcyr` runs the integration suite
-alone.
+There are two suites, and on the pinned cyrius (6.6.20; any pin from 6.6.17)
+a bare `cyrius test` runs both: first the `[build].test` entry, `src/test.cyr`
+(~450 assertions, including the byte-fidelity pins for the built-in tables and
+the storage-sizing checks), then every `tests/*.tcyr` (`tests/kashi.tcyr`,
+~145 — structural invariants for all three built-ins, the Unicode → cell map,
+file round-trips). Each file must end in an "N passed, 0 failed" summary.
+`cyrius test src/test.cyr` or `cyrius test tests/kashi.tcyr` runs one alone.
+(Below 6.6.17 a bare run skipped the unit suite — kashi's pin was 6.6.6
+through 1.1.0.)
 
 `.github/workflows/ci.yml` runs exactly these — build smoke (library +
-DCE'd demo + the glyph-sheet pin), both test suites (the unit suite as its
-own `cyrius test src/test.cyr` step), fmt/lint/vet + the dist drift gate,
-bench, fuzz — so a green local run is a green CI run.
+DCE'd demo + the glyph-sheet pin), `cyrius test`, fmt/lint/vet + the dist
+drift gate, bench, fuzz — so a green local run is a green CI run.
+`cyrius deps` checks every vendored file against the tracked `cyrius.lock`
+(since 1.1.1) and refuses one the toolchain's snapshot carries differently.
 
 ## Layout
 
@@ -82,7 +84,7 @@ bench, fuzz — so a green local run is a green CI run.
 
 | You want… | Take | Because |
 |---|---|---|
-| Glyph bytes for a console, splash, or BBS-style art — including in a freestanding kernel | **Freestanding core** (`src/font_data.cyr`) | It is the whole built-in font set with no link cost beyond its own BSS. Every current consumer takes this: the agnos kernel, dhancha, crab, puka, aethersafha, jalwa. |
+| Glyph bytes for a console, splash, or BBS-style art — including in a freestanding kernel | **Freestanding core** (`src/font_data.cyr`) | It is the whole built-in font set with no link cost beyond its own tables (13.7 KB of storage since 1.1.1) and accessors. Every current consumer takes this: the agnos kernel, dhancha, crab, puka, aethersafha, jalwa. |
 | To **load fonts at runtime** (PSF / BDF / PCF / raw tables) or attach Unicode sidecar tables | **Library face** (`dist/kashi.cyr`, or `src/lib.cyr` in-repo) | The loaders, the registry, and the codepoint-addressed accessors live here. |
 
 The library face is a measured cost, not a free upgrade: on dhancha the
@@ -101,7 +103,7 @@ and, by stack convention, `path` too so a sibling checkout wins):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.1.0"
+tag     = "1.1.1"
 path    = "../kashi"                  # optional; a sibling checkout overrides the clone
 modules = ["src/font_data.cyr"]       # vendored as lib/kashi_font_data.cyr
 ```
@@ -119,7 +121,7 @@ say so.
 
 ### Render a glyph
 
-Populate the tables once, then read rows. The tables are zeroed BSS until
+Populate the tables once, then read rows. The tables are zero-filled until
 `kashi_font_init()` runs, so an early access renders blank rather than
 crashing; `kashi_font_is_ready()` tells you which state you are in.
 
@@ -209,7 +211,7 @@ amendment):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.1.0"
+tag     = "1.1.1"
 path    = "../kashi"
 modules = ["dist/kashi.cyr"]          # vendored as lib/kashi.cyr
 ```
@@ -273,17 +275,21 @@ precedents; follow their shape.
    `KASHI_RT_FONT_BASE` in `src/lib.cyr` from `3` to `4` — runtime ids start
    above the built-ins, and the constant is referenced symbolically
    everywhere, so this is semver-compatible.
-2. **Buffer.** Add a module-scope BSS buffer sized in **bytes**, for the 224
-   CP437 cells **plus** the `KASHI_EXT_COUNT` extension cells:
-   `var kashi_fontX[(224 + 2) * rows * stride];` (the existing three are
-   `kashi_font16[3616]`, `kashi_font8[1808]`, `kashi_font9_16[7232]`). Mind
-   the u64-unit rule: module-scope `var X[N]` reserves 8N bytes and kashi
-   addresses the first N — see
+2. **Buffer.** Add a module-scope buffer for the 224 CP437 cells **plus**
+   the `KASHI_EXT_COUNT` extension cells, sized in **u64 slots**: module-scope
+   `var X[N]` reserves 8N bytes, so N = `(224 + 2) * rows * stride / 8`. Add
+   the size to `_KashiFontStore` and declare `var kashi_fontX[_KASHI_FONTX_SLOTS];`
+   (the existing three are 452 / 226 / 904 slots = 3,616 / 1,808 / 7,232 bytes),
+   then add the buffer to `src/test.cyr`'s "storage" group (slots × 8 ==
+   bytes used, and its span in the pairwise-disjoint check) and to
+   `_t_core_fnv`. Writing the byte count as N reserves 8× — kashi did that
+   until 1.1.1 — see
    [`../architecture/001-*`](../architecture/001-module-scope-var-array-byte-addressing.md).
 3. **Table.** Add a packer in the shape of `kashi_fset16` / `kashi_fset8`,
    **keeping the `[KASHI_GLYPH_FIRST, KASHI_EXT_LAST]` guard** (audit
    2026-05-27, F1 — it costs nothing at init and stops a table typo from
-   corrupting neighbouring BSS), then the literal wall in
+   corrupting the neighbouring buffer, which sits flush against this one),
+   then the literal wall in
    `kashi_font_init()` — including the extension cells ('…' and '�', drawn
    in the new font's weight; ADR 0011 shows the existing ones).
    `kashi_cp437_from_unicode` needs no change: it names cells, and every

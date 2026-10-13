@@ -37,7 +37,35 @@ few times and take the steady-state figure; sub-microsecond ops use a
 ≥1e6-iteration batch to amortize `clock_gettime` overhead (see the
 `tests/kashi.bcyr` header).
 
-## Current — 1.1.0 (2026-10-09, cyrius 6.6.6)
+## Current — 1.1.1 (2026-10-13, cyrius 6.6.20)
+
+Host: AMD Ryzen 7 5800H, x86_64 Linux (load not recorded; only a read-only
+file search ran alongside). Three binaries, built `CYRIUS_DCE=1` and run
+interleaved, nine rounds; medians of the per-op means. **1.1.0 on 6.6.6**
+is this session's baseline; **1.1.0 on 6.6.20** isolates the toolchain;
+**1.1.1 on 6.6.20** adds the storage fix.
+
+| Benchmark | 1.1.1 / 6.6.20 | 1.1.0 / 6.6.20 | 1.1.0 / 6.6.6 | iters |
+|---|---|---|---|---|
+| `glyph_row` | 18.1 ns | 18.2 ns | 17.8 ns | 1,000,000 |
+| `glyph_ptr` | 7.5 ns | 7.5 ns | 7.6 ns | 1,000,000 |
+| `scan_vga_8x16` | 63.0 µs | 62.9 µs | 63.3 µs | 10,000 |
+| `font_row_builtin` | 24.0 ns | 24.0 ns | 23.9 ns | 1,000,000 |
+| `font_row_runtime` | 47.0 ns | 47.1 ns | 46.9 ns | 1,000,000 |
+| `font_row_runtime_cp` | 63.2 ns | 62.8 ns | 63.1 ns | 1,000,000 |
+| `cp437_from_unicode_ascii` | 3.8 ns | 3.8 ns | 3.8 ns | 1,000,000 |
+| `cp437_from_unicode_high` | 26.7 ns | 26.6 ns | 26.6 ns | 1,000,000 |
+| `font_row_builtin_cp` | 43.5 ns | 43.2 ns | 43.3 ns | 1,000,000 |
+| `font_init` | 22.5 µs | 22.3 µs | 22.4 µs | 10,000 |
+
+**Flat**: every row is within ±2 % across the three — neither the
+fourteen toolchain releases nor the storage fix moved an accessor. The fix
+changes only how much storage is reserved; every access is the same
+`&buffer + offset` load or store, and the bytes used were already
+contiguous at the front of each buffer. What it does move is size —
+−88,576 B per binary (`docs/development/state.md`, *Build & size*).
+
+## Previous — 1.1.0 (2026-10-09, cyrius 6.6.6)
 
 Host: AMD Ryzen 7 5800H, x86_64 Linux, quiet (load average < 1).
 Indicative single-host numbers, not a cross-machine guarantee. Absolute
@@ -112,6 +140,9 @@ noise — only structural shifts are called out below.
 | **1.0.10** | 17 | 7 | 55,900 | 19 | 43 | 58 |
 | 1.0.10 (re-run 2026-10-09) | 17 | 7 | 60,277 | 21 | 47 | 62 |
 | **1.1.0** (2026-10-09) | 18 | 7 | 62,147 | 24 | 46 | 62 |
+| 1.1.0 (re-run 2026-10-13, 6.6.6) | 18 | 8 | 63,253 | 24 | 47 | 63 |
+| 1.1.0 on 6.6.20 (2026-10-13) | 18 | 8 | 62,884 | 24 | 47 | 63 |
+| **1.1.1** (2026-10-13, 6.6.20) | 18 | 8 | 62,962 | 24 | 47 | 63 |
 
 > The 0.7.x cuts (BDF, PCF, sidecar tables) added parsers / load paths
 > but **did not touch the hot accessors**, so they aren't separately
@@ -126,7 +157,11 @@ noise — only structural shifts are called out below.
 > 2026-09-21 record: compare 1.1.0 with that row, not with the 2026-09-21
 > one. 1.1.0's four new benchmarks (`cp437_from_unicode_*`,
 > `font_row_builtin_cp`, `font_init`) are in the Current table and the CSV;
-> `font_init` has a `1.0.10-rerun` row too.
+> `font_init` has a `1.0.10-rerun` row too. The three 2026-10-13 rows are
+> one interleaved session (CSV versions `1.1.0-rerun`, `1.1.0-on-6.6.20`,
+> `1.1.1`, all ten benchmarks): compare them with each other.
+> `glyph_ptr` reads 8 there against 7 before — 7.5–7.6 ns rounding up,
+> the same in all three.
 
 ## Structural shifts called out
 
@@ -193,8 +228,10 @@ Unicode → cell mapping (1.1.0) once per glyph instead of once per row.
 Each release (or whenever an accessor's cost changes), append rows
 to `benchmarks/history.csv` for the new version and refresh the
 "Current" + "Trend" tables above. A pure toolchain bump is still a
-release: record it, because the toolchain is the one thing that has
-moved these numbers since 0.4.0. `scan_vga_8x16` is recorded
+release: record it, because the toolchain is the one thing that had
+moved these numbers since 0.4.0 (1.1.0's mapping cost aside). Measure the
+old and new binaries in one interleaved session — the host's absolute
+figures drift by more than the deltas worth reporting. `scan_vga_8x16` is recorded
 in ns in the CSV (27 µs → 27,000) so all columns share a unit; the
 table renders the natural unit.
 

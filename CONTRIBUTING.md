@@ -10,10 +10,9 @@ and this repo's [`CLAUDE.md`](CLAUDE.md) before making changes.
    `[package].cyrius`).
 2. Resolve deps: `cyrius deps`
 3. Build the library: `cyrius build src/lib.cyr build/kashi`
-4. Run tests: `cyrius test src/test.cyr` (unit) and `cyrius test`
-   (integration, `tests/*.tcyr` — on the pinned 6.6.6 a bare run does not
-   reach the unit suite; from 6.6.17 it runs both), then
-   `cyrius fuzz tests/kashi.fcyr`
+4. Run tests: `cyrius test` (the unit suite `src/test.cyr`, then the
+   integration suite `tests/*.tcyr` — a bare run covers both from cyrius
+   6.6.17; kashi pins 6.6.20), then `cyrius fuzz tests/kashi.fcyr`
 5. Run the demo: `cyrius run src/main.cyr`
 6. Prove the boundary: `cyrius vet src/font_data.cyr` → "no dependencies"
 7. If you touched any `[lib]` module (`src/font_*.cyr`, `src/lib.cyr`):
@@ -23,7 +22,15 @@ and this repo's [`CLAUDE.md`](CLAUDE.md) before making changes.
    (`docs/examples/glyph_sheet.sha256`) deliberately — see the Rules.
 
 The CI workflow runs exactly this set, plus `cyrius fmt --check` and
-`cyrius lint` on every source file (`src/`, `tests/`, `docs/examples/`).
+`cyrius lint --exit-with-count --strict-deferrals` (any warning or
+untracked deferral fails) on every source file (`src/`, `tests/`,
+`docs/examples/`).
+
+`cyrius.lock` is tracked (1.1.1): it pins the sha256 of every stdlib file
+`cyrius deps` vendors, and `cyrius deps` refuses a file that differs. It
+moves only with the toolchain pin — regenerate it with `cyrius deps` on a
+tree whose `lib/` holds only what `cyrius deps` vendors (a
+`cyrius lib sync --full` snapshot would lock 113 files CI never vendors).
 
 ## The two faces — know which one you're touching
 
@@ -68,7 +75,7 @@ the library face.
 
 - Functions / variables: `snake_case`; enum constants: `UPPER_CASE`.
 - Comments explain the *contract* (packing order, the freestanding
-  boundary, the u64-unit quirk), not the obvious.
+  boundary, the u64-slot unit of module-scope arrays), not the obvious.
 - Formatting is enforced by `cyrius fmt --check`. Run `cyrius fmt <file>
   --check` on every source file before pushing.
 - Enum values must be plain non-negative integer literals (Cyrius grammar);

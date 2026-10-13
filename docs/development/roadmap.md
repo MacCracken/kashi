@@ -1,8 +1,15 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-10-09 (1.1.0)
+> **Last Updated**: 2026-10-13 (1.1.1)
 >
 > **Status: No Open Work.**
+>
+> 1.1.1 (2026-10-13) moved the pin 6.6.6 → 6.6.20 and fixed the one issue
+> filed against 1.1.0: the three glyph buffers reserved 8× the bytes they
+> use — 88 KB of zeros in every binary that links the core, found by agnos
+> against its kernel-image ceiling
+> ([issue](issues/2026-10-13-font-arrays-declared-u64-for-byte-tables.md),
+> architecture note 001). No glyph, symbol or accessor result changed.
 >
 > 1.1.0 (2026-10-09) answered the first concrete consumer need since 1.0:
 > the compositor truncates window titles with U+2026 '…', which CP437 has
@@ -119,21 +126,33 @@ gate set. Toolchain bumps are patch releases (1.0.1–1.0.9 were all this).
    `async` / `operator` / SIMD fns, no top-level block `var`s, no file
    writes, and a longest literal of ~17 KB is the standing profile;
    anything the changelog flags outside that profile is not kashi's.
-2. **Bump** `cyrius.cyml [package].cyrius`; `cyrius deps` (6.6.5+ requires
-   a re-vendor at every bump — the syscall peers move). On the dev box
-   `cyrius lib sync --full` refreshes the whole snapshot; `lib/` is
-   ignored, so this is hygiene, not a repo change.
+2. **Bump** `cyrius.cyml [package].cyrius`, then `cyrius deps`: it
+   re-vendors `lib/` from the new pin's snapshot (6.6.5+ requires that at
+   every bump — the syscall peers move) and, because the pin moved,
+   re-locks — commit the rewritten `cyrius.lock` (tracked since 1.1.1; at
+   an unchanged pin it refuses a snapshot file whose hash differs, which is
+   CI's integrity check on the toolchain it downloads). Do **not**
+   `cyrius lib sync --full`: it vendors the whole 113-file snapshot and the
+   next `cyrius deps` locks all of it, a lock CI (which vendors only the
+   ~24 declared files) cannot `--verify`. If `lib/` holds strays, `rm -rf
+   lib && cyrius deps` — `lib/` is generated and ignored. `cyrius deps
+   --verify` must report 0 failed.
 3. **Gate set**: `cyrius build` (library + `CYRIUS_DCE=1` demo; record
-   both sizes), `cyrius test` and `cyrius test src/test.cyr` (record
-   both assertion counts — below 6.6.17 a bare run skips the unit suite),
-   `cyrius fuzz tests/kashi.fcyr`, `cyrius vet src/font_data.cyr` →
-   "no dependencies", `cyrius fmt --check` and `cyrius lint` on every
-   source file, `CYRIUS_DCE=1 cyrius bench tests/kashi.bcyr` (append the
-   rows to `docs/benchmarks/history.csv` — the toolchain is the only
-   thing that has moved those numbers since 0.4.0).
+   both sizes), `cyrius test` (runs both suites from 6.6.17 — record both
+   assertion counts), `cyrius fuzz tests/kashi.fcyr`, `cyrius vet
+   src/font_data.cyr` → "no dependencies", `cyrius fmt --check` and
+   `cyrius lint --exit-with-count --strict-deferrals` on every source file
+   (a bare `cyrius lint` exits 0 on warnings), `CYRIUS_DCE=1 cyrius bench
+   tests/kashi.bcyr` (append the rows to `docs/benchmarks/history.csv` —
+   until 1.1.1's storage fix the toolchain was the only thing that had
+   moved those numbers since 0.4.0; build the old pin's binary in a
+   scratch copy and interleave the runs).
 4. **Regenerate the tracked bundle**: `cyrius distlib`, commit
    `dist/kashi.cyr` + `dist/kashi.deps` (the version stamp moves; CI
-   fails on drift).
+   fails on drift). A distlib change can move more than the stamp — 6.6.18
+   added the requires block and shrank the sidecar to the leaves the
+   compile-verify needs; check a scratch consumer still builds against the
+   bundle on the oldest pin a consumer uses.
 5. **The glyph sheet**: `cyrius build docs/examples/glyph_sheet.cyr
    build/glyph_sheet && ./build/glyph_sheet | sha256sum` must equal
    `docs/examples/glyph_sheet.sha256`. CI does this on every push, so a
@@ -146,10 +165,51 @@ gate set. Toolchain bumps are patch releases (1.0.1–1.0.9 were all this).
    assertion counts and the sheet result; `state.md` Version entry;
    `VERSION`.
 
-⚠ A refreshed `lib/` carries the toolchain's `sigil.cyr` and `mabda.cyr`
-folds, which do not pass `cyrfmt --check`. Harmless here — kashi's format
-gate never walks `lib/` — and not ours to fix: the repair belongs in the
-sigil and mabda source repos.
+(Through 1.1.0 step 2 said to `cyrius lib sync --full` on the dev box, and a
+note here warned that the full snapshot's `sigil.cyr` / `mabda.cyr` folds fail
+`cyrfmt --check`. With `lib/` holding only what `cyrius deps` vendors, neither
+file is there.)
+
+### Precedent — 6.6.6 → 6.6.20 (1.1.1, 2026-10-13)
+
+Fourteen toolchain releases at once. **Checked against the cyrius changelog
+6.6.7 – 6.6.20** (the per-release consumer notes, and every mention of
+kashi in the cyrius tree): none of the new compiler refusals has a shape in
+`src/`, `tests/` or `docs/examples/` — no top-level `defer`, `#define` /
+`#if`, string escapes outside the known set, `sizeof` / `mulh64` /
+`fncall*` identifiers, array initializer lists, typed array elements,
+nested fns, redefined fns, `syscall()` with more than 6 arguments, or
+stray `@`. What did reach kashi, each handled in 1.1.1:
+
+- **6.6.17 — a bare `cyrius test` runs `[build].test` first.** 448 + 145
+  in two files before the fix (454 + 145 after); CI's separate unit step
+  dropped, as the 6.6.17 note below asked.
+- **6.6.9 — `cyrius deps` writes a `cyrius.lock` for a stdlib-only project**
+  ("commit it"). kashi's policy had been to omit one; every stdlib-only
+  sibling (dhancha, crab, puka, jalwa, aethersafha, rekha) tracks it, and a
+  tampered hash makes `cyrius deps` exit 1. Tracked now — step 2.
+- **6.6.18 — distlib's requires block and compile-verified sidecar.**
+  `dist/kashi.deps` 8 leaves → 4 (`vec alloc string io`; `fmt`,
+  `syscalls`, `assert`, `bench` were never the library face's), and the
+  bundle opens with the four `include "lib/…"` lines. A scratch consumer
+  (`[deps.kashi] path` + `modules = ["dist/kashi.cyr"]`) builds and runs on
+  6.6.20 **and** 6.6.6.
+- **6.6.13 — globals are aligned (16 on x86 for anything over 8 bytes),
+  and the gap between two globals is the compiler's.** kashi never reached
+  one global from another; the 1.1.1 storage tests are written not to
+  depend on it.
+- **6.6.11 — test grading on the assert summary; lint fails on compiler
+  refusals.** Both suites print the summary; lint clean.
+
+**Result:** the glyph sheet was **byte-identical** — 1.1.0 rendered by 6.6.6
+and by 6.6.20 both hash to the pin `5544d63f…`, and so does 1.1.1;
+`cyrius vet` "no dependencies" for all four freestanding files; fuzz clean;
+bench flat (every row within ±2 % across 1.1.0/6.6.6, 1.1.0/6.6.20 and
+1.1.1/6.6.20, nine interleaved runs each). The library grew 262,656 →
+288,528 B and the DCE'd demo 144,072 → 145,376 B on the toolchain alone
+(stdlib growth), before the storage fix took 88,576 B off each. Kernel
+side: the 1.1.1 core compiles freestanding (`--no-deps`) on agnos's 6.6.6
+pin and passes both suites there. Full numbers in `CHANGELOG.md` *1.1.1*.
 
 ### Precedent — 6.6.4 → 6.6.6 (1.0.9, 2026-09-21)
 
@@ -185,8 +245,8 @@ codegen, not source). Full numbers in `CHANGELOG.md` *1.0.9*.
 
 ## Recorded by cyrius 6.6.17 (2026-10-05) — for the next cyrius pin move
 
-⛔ **Nothing to do until cyrius 6.6.17 is tagged and out.** Docs-only note from the cyrius 6.6.17 lanes; each item
-is this repo's to adopt when it pins ≥ 6.6.17. Nothing here gates a cyrius release.
+✅ **Adopted in 1.1.1** (pin 6.6.20): the bare run covers both suites and CI's separate unit step is gone. Kept for
+the record. Docs-only note from the cyrius 6.6.17 lanes; each item was this repo's to adopt when it pinned ≥ 6.6.17.
 
 - **Bare `cyrius test` runs `[build] test = "src/test.cyr"` from 6.6.17** (cyrius m5), BEFORE the `tests/`
   walk. Checked 2026-10-09 in a scratch copy pinned to 6.6.17: a bare run reports 448 + 145 passed, two files.

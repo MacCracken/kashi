@@ -22,8 +22,13 @@ cyrius-*.tar.gz
 *.tar.gz
 SHA256SUMS
 
-# Lockfile policy: track when git-deps are present, otherwise omit.
-# (kashi has no git-deps yet; cyrius.lock is omitted.)
+# Lockfile policy: cyrius.lock is TRACKED (1.1.1). It pins the sha256 of
+# every stdlib file `cyrius deps` vendors into lib/, and `cyrius deps`
+# refuses (exit 1) a file the installed toolchain carries differently — CI's
+# integrity check on the toolchain it downloads. cyrius 6.6.9+ writes it for
+# a stdlib-only project too and asks that it be committed (until 1.1.1 the
+# policy was "omit unless git-deps"). It moves with the pin: `cyrius deps`
+# re-locks after a pin bump; commit the result.
 
 # Claude Code
 .claude/

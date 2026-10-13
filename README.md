@@ -11,7 +11,9 @@ fonts at runtime. Written in
 **Status**: 1.x — public API frozen since 1.0.0 (the current
 version is in [`VERSION`](VERSION); 1.0.x releases are toolchain
 bumps, test, packaging and docs work; 1.1.0 added the Unicode → CP437
-mapping and two extension glyphs, changing nothing that existed). The
+mapping and two extension glyphs, changing nothing that existed; 1.1.1
+cut the core's glyph storage from 101 KB to 12.7 KB — 88 KB off every
+binary that links it — with no glyph, symbol or result changed). The
 full surface is documented in [`docs/api/`](docs/api/); stability
 promise is in [`docs/api/README.md`](docs/api/README.md).
 
@@ -119,12 +121,14 @@ full integer range of each argument.
 ## Quick start (userland — load a PSF font)
 
 Declare the bundle as a dep and `cyrius deps` vendors it as
-`lib/kashi.cyr`, pulling the eight stdlib leaves its sidecar names:
+`lib/kashi.cyr`, pulling the four stdlib leaves its sidecar names
+(`vec`, `alloc`, `string`, `io` — since 1.1.1 the bundle also opens with
+the matching `include "lib/…"` lines, cyrius 6.6.18's requires block):
 
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.1.0"
+tag     = "1.1.1"
 modules = ["dist/kashi.cyr"]
 ```
 
@@ -167,8 +171,7 @@ uses `kashi_glyph_ptr` + `load8`.
 cyrius deps                                # resolve stdlib deps
 cyrius build src/lib.cyr build/kashi       # build the library
 cyrius run   src/main.cyr                  # demo: 'A' in both 8-wide built-ins, then '…' and '�'
-cyrius test                                # integration (tests/*.tcyr) — on the 6.6.6 pin, only that
-cyrius test  src/test.cyr                  # unit suite (a bare run reaches it only from cyrius 6.6.17)
+cyrius test                                # unit (src/test.cyr) + integration (tests/*.tcyr)
 cyrius fuzz  tests/kashi.fcyr              # parser fuzz + the accessor bounds contract
 cyrius bench tests/kashi.bcyr              # accessor benchmarks
 cyrius vet   src/font_data.cyr             # proves freestanding core has zero deps
@@ -195,7 +198,8 @@ land unnoticed. See [`docs/guides/getting-started.md`](docs/guides/getting-start
   wide-glyph rows, BDF / PCF / PSF u-variant scope, the Unicode → CP437
   map and the extension glyphs).
 - [`docs/architecture/`](docs/architecture/) — non-obvious invariants
-  (the u64-unit BSS byte-addressing quirk).
+  (module-scope `var X[N]` is N u64 slots: the glyph buffers are
+  byte-addressed and sized bytes ÷ 8).
 - [`docs/examples/`](docs/examples/) — runnable examples against the
   freestanding core (`glyph_sheet.cyr`, also the toolchain-bump
   verification tool).

@@ -5,6 +5,8 @@
 > release and beyond. Breaking changes after 1.0.0 require a major
 > version bump. 1.1.0 (2026-10-09) added one function and one enum
 > group, changing none ([ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md)).
+> 1.1.1 (2026-10-13) changed no public symbol: it right-sized the glyph
+> buffers' storage (an internal enum, below).
 
 This is the full reference for kashi's public surface — 44 public
 functions and 21 enum groups across two faces (freestanding + library).
@@ -78,6 +80,12 @@ programs (the demo binary does it) — just don't try to call
   convention as an oversight; treat them as internal. (The 1.1.0
   index builders `_kashi_cp437_ent` / `_kashi_cp437_rev8` and the
   `kashi_cp437_rev` / `kashi_cp437_n` globals are internal too.)
+- `_KashiFontStore` (`_KASHI_FONT16_SLOTS` / `_KASHI_FONT8_SLOTS` /
+  `_KASHI_FONT9_16_SLOTS`, 1.1.1) in `src/font_data.cyr`: the glyph
+  buffers' declared sizes in u64 slots, named so the tests check the same
+  numbers the declarations use. They change whenever a cell is added; for
+  a glyph's size use `kashi_font_height` × `kashi_font_stride`. Not
+  counted among the 21 enum groups.
 - The extension **cell numbers** themselves (`0x100`, `0x101`): get a
   cell from `kashi_cp437_from_unicode`, or enumerate
   `KASHI_EXT_FIRST..KASHI_EXT_LAST`; the block may grow.
