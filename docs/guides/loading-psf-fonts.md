@@ -191,7 +191,16 @@ var rc2 = kashi_attach_unicode_text_file(id, "/path/to/font.tab");
   (`src/font_psf.cyr`) is fuzzed in `tests/kashi.fcyr`.
 - **Strict UTF-8**: the PSF2 Unicode decoder rejects codepoints
   > U+10FFFF, the surrogate range U+D800..DFFF (audit F2, 0.6.0),
-  and overlong sequences per RFC 3629 (audit F3, 0.7.2 — e.g.,
-  `0xC1 0x81` "encoding" U+0041 is rejected).
+  and overlong sequences per RFC 3629 (ADR 0010, 0.7.2 — e.g.,
+  `0xC1 0x81` "encoding" U+0041 is rejected). A PSF1 table's u16
+  surrogates end the table as well (1.3.0), and the text attach refuses
+  them and anything past U+10FFFF.
+- **Duplicates and empty tables** (1.3.0): a codepoint listed for several
+  glyphs resolves to the highest glyph index, as on the Linux console. A
+  font whose table maps no single codepoint misses every codepoint rather
+  than falling back to raw glyph indices.
+- **Files**: `kashi_load_psf_file` takes a regular file of at most
+  256 KiB. A larger file, or a FIFO / tty / device, is refused rather than
+  truncated or waited on ([`../api/loading.md`](../api/loading.md#reading-font-files)).
 - Loaded fonts own a copy of their glyph bytes, so you may free the source
   buffer after loading. Stores are not individually freed (bump allocator).

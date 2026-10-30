@@ -204,7 +204,15 @@ fn kashi_psf_parse(buf, len, out) {
 # returns KASHI_TOK_END (with next = end) so a caller's walk terminates
 # rather than reading past the buffer. Pure — load8 + arithmetic, writing only `out`.
 fn kashi_psf_uni_token(buf, pos, end, kind, out) {
+    # 1.3.0 (audit 2026-10-30, P2): a null `out` has nowhere to report to, and
+    # a null `buf` is an empty table — neither may be dereferenced.
+    if (out == 0) { return 0; }
     store64(out + KASHI_UT_CP, 0);
+    if (buf == 0) {
+        store64(out + KASHI_UT_TYPE, KASHI_TOK_END);
+        store64(out + KASHI_UT_NEXT, end);
+        return 0;
+    }
     if (pos < 0) {
         store64(out + KASHI_UT_TYPE, KASHI_TOK_END);
         store64(out + KASHI_UT_NEXT, end);
@@ -226,6 +234,16 @@ fn kashi_psf_uni_token(buf, pos, end, kind, out) {
         store64(out + KASHI_UT_NEXT, pos + 2);
         if (u == 0xFFFF) { store64(out + KASHI_UT_TYPE, KASHI_TOK_TERM); return 0; }
         if (u == 0xFFFE) { store64(out + KASHI_UT_TYPE, KASHI_TOK_SEQ); return 0; }
+        # 1.3.0 (audit 2026-10-30, P1): a UTF-16 surrogate is not a
+        # codepoint. PSF2's UTF-8 decoder has rejected them since 0.6.0
+        # (audit F2); PSF1's u16 path now matches it.
+        if (u >= 0xD800) {
+            if (u <= 0xDFFF) {
+                store64(out + KASHI_UT_TYPE, KASHI_TOK_END);
+                store64(out + KASHI_UT_NEXT, end);
+                return 0;
+            }
+        }
         store64(out + KASHI_UT_TYPE, KASHI_TOK_CP);
         store64(out + KASHI_UT_CP, u);
         return 0;

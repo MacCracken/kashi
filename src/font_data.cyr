@@ -995,8 +995,12 @@ fn kashi_cp437_from_unicode(cp) {
     # SQUARE); outside that only the cases above can match.
     if (cp < 0xA0) { return 0; }
     if (cp > 0x25A0) { return 0; }
+    # 1.3.0 (audit 2026-10-30, C1): the count is a mutable global, so clamp
+    # it to the index's 128 slots — every load in the core is then bounded by
+    # a constant. Before init the zero-filled index answers 0 anyway.
     var lo = 0;
     var hi = kashi_cp437_n - 1;
+    if (hi > 127) { hi = 127; }
     while (lo <= hi) {
         var mid = (lo + hi) / 2;
         var e = &kashi_cp437_rev + mid * 8;

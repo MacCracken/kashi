@@ -1,13 +1,52 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-10-29 (**1.2.2** — the `kashi_pcf_cp_to_idx`
-> fix and the stale source comments; cyrius 6.7.18) |
+> **Last refresh**: 2026-10-30 (**1.3.0** — the P(-1) hardening pass,
+> audit 2026-10-30; cyrius 6.7.18) |
 > **Refresh cadence**: bumped every release.
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
+
+**1.3.0** — Minor: the P(-1) hardening pass
+([audit](../audit/2026-10-30-audit.md), [ADR 0012](../adr/0012-loader-hardening-maps-and-file-reading.md)).
+No public symbol, signature or glyph byte changed. The toolchain is
+unchanged (cyrius 6.7.18).
+- **Audit.** A multi-agent review with every finding reproduced or
+  refuted: 34 findings (1 high, 5 medium), none exploitable for code
+  execution. All fixed except thread safety (L12, documented).
+- **The high.** Quadratic map construction: a 256 KiB PSF took 204 s to
+  load, now 69 ms. One O(n log n) builder serves every map; duplicates
+  resolve to the highest glyph (the Linux rule); sequence lookups binary
+  search (153 ns).
+- **Files.** The `*_file` loaders take only a regular file of at most their
+  cap. On Linux they open non-blocking with `O_NOCTTY` and fstat the
+  descriptor. A larger file is refused, not truncated; nothing is allocated
+  for a missing path.
+- **Correctness.**
+  - Complete records only: no half-built font on an allocation failure, no
+    `vec_push` abort.
+  - A table that maps nothing misses rather than falling back to identity.
+  - Attach builds aside.
+  - Stricter BDF (`ENDFONT`, nothing after the rows, clean numbers, no
+    repeated header keys).
+  - PSF1 surrogates end the table.
+  - A failed PCF parse leaves an inert ctx.
+  - The core's reverse search is clamped.
+  - Internal names are prefixed (`_KASHI_RT_*`).
+- **Tests.**
+  - Unit 464 + integration **925** = **1,389** assertions in six files (was
+    609 in two).
+  - Round-trip fuzz oracles; `fuzz_psf` accepts fonts at last.
+  - CI runs everything under `CYRIUS_POISON=1` too. All six suites pass
+    under qemu-aarch64.
+  - Mutation testing: the audit's 57 mutants are all killed or equivalent
+    (1.2.2 killed 11). Of 106 new ones, 98 are killed, 4 equivalent and 4
+    untestable without a pty, a signal or a racing writer.
+- **Cost.** Hot accessors are flat. Typical loads are 1 – 7 % slower. A
+  4,096-entry reverse-ordered table loads 40× faster. Library 204,088 B,
+  demo 56,840 B.
 
 **1.2.2** — Patch. Fixes the bug the 1.2.1 sweep found, plus its list of
 stale source comments. The toolchain is unchanged (cyrius 6.7.18).
@@ -320,11 +359,11 @@ out-of-scope; none are booked.
 
 ## Build & size
 
-- Library build (`cyrius build src/lib.cyr build/kashi`): clean, **199,968 B**
-  (sha256 `55b2766a…`; the same size since 1.2.0). 1.1.1: 199,952 B on 6.6.20. 1.1.0: 262,656 B on
+- Library build (`cyrius build src/lib.cyr build/kashi`): clean, **204,088 B**
+  (1.3.0; 199,968 B from 1.2.0 to 1.2.2). 1.1.1: 199,952 B on 6.6.20. 1.1.0: 262,656 B on
   6.6.6, 288,528 B on 6.6.20.
-- Demo (`CYRIUS_DCE=1 cyrius build src/main.cyr`): **56,816 B**
-  (sha256 `b7ab70cb…`, unchanged by 1.2.2; the same size since 1.2.0). 1.1.1: 56,800 B on 6.6.20. 1.1.0: 144,072 B on
+- Demo (`CYRIUS_DCE=1 cyrius build src/main.cyr`): **56,840 B**
+  (1.3.0, +24 B for the C1 clamp; 56,816 B from 1.2.0 to 1.2.2). 1.1.1: 56,800 B on 6.6.20. 1.1.0: 144,072 B on
   6.6.6, 145,376 B on 6.6.20.
 - 1.2.0's toolchain move (6.6.20 → 6.7.9, no source change) added 16 B to
   each; 1.2.1's (6.7.9 → 6.7.18) added nothing.
@@ -362,7 +401,16 @@ out-of-scope; none are booked.
   FNV-1a proof that `0x20..0xFF` is byte-for-byte 1.0.10; PSF + BDF + PCF
   file round-trips, PSF + sidecar tab file round-trip, missing-file
   negative cases).
-- **609 assertions total, 0 failed** (two files, one bare `cyrius test`).
+- **1.3.0's hardening suites** (audit 2026-10-30):
+  - `tests/maps.tcyr`, 208 assertions: map sorting and duplicates, empty
+    maps, sequences, attach, allocation failure, registry edges;
+  - `tests/parsers.tcyr`, 273: the BDF / PSF / PCF / core fixes and
+    validation boundaries;
+  - `tests/pcf_formats.tcyr`, 92: a 320-font PCF decode matrix against a
+    reference decoder in the test, and BDF at widths 1 – 32;
+  - `tests/files.tcyr`, 207: the file reader on all five APIs.
+- **1,389 assertions total, 0 failed** (six files, one bare `cyrius test`;
+  also under `CYRIUS_POISON=1` and under qemu-aarch64).
 - `tests/kashi.fcyr` — the core-accessor bounds contract (three canned
   seeds + 200,000 random `(font, ch, row)` triples across small (9-bit
   cells, so the extension is reached), full-width i64 and near-edge
@@ -434,9 +482,11 @@ and `io` (`file_read_all` for the three `kashi_load_*_file` and the two
 omitted by policy; cyrius 6.6.9+ writes one for a stdlib-only project and
 asks that it be committed — dhancha, crab, puka, jalwa, aethersafha and
 rekha all track theirs). `dist/kashi.deps` names
-the four leaves the bundle needs — `vec`, `alloc`, `string`, `io` (eight,
-the whole list, through 1.1.0; 6.6.18's distlib derives it from a
-compile-verify).
+the five leaves the bundle needs — `syscalls`, `vec`, `alloc`, `string`,
+`io` (`syscalls` since 1.3.0, for the file reader's `fstat`; four from 1.1.1;
+eight, the whole list, through 1.1.0; 6.6.18's distlib derives it from a
+compile-verify). A scratch consumer builds and runs the 1.3.0 bundle on
+6.6.3, 6.6.6 and 6.7.18.
 
 ## Consumers
 

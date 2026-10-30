@@ -7,6 +7,205 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-30 — the P(-1) hardening pass
+
+Minor. The security & hardening audit the 1.x minors had skipped since 0.8.0
+([`docs/audit/2026-10-30-audit.md`](docs/audit/2026-10-30-audit.md)), and the
+fixes and tests it called for.
+- **The audit.** A multi-agent review of the whole 1.2.2 surface (188 agents),
+  with every finding independently reproduced or refuted. 86 kept findings
+  deduplicate to 34:
+  - **1 high:** one 256 KiB font stalled a load for **204 s**.
+  - **5 medium.**
+  - **the rest low or info.**
+  - Nothing is exploitable for code execution.
+- **The new decisions** are recorded in
+  [ADR 0012](docs/adr/0012-loader-hardening-maps-and-file-reading.md): how
+  codepoint maps are built, and how font files are read.
+- **Compatibility.** No public symbol, signature or glyph byte changed; the
+  glyph sheet still hashes to `5544d63f…`. What changed is how loads treat
+  hostile or malformed input (see *Changed*).
+- **Tests.** Unit + integration assertions went from 609 to **1,389**. Of the
+  audit's 57 plausible mutants, 1.2.2's suites killed 11; 1.3.0's kill all 52
+  that change behaviour.
+- **Toolchain** unchanged (cyrius 6.7.18).
+
+### Security
+
+- **Quadratic map construction (audit L1, high).**
+  - **The bug.** The four codepoint-map builders insertion-sorted their
+    pairs: the PSF inline table, the BDF loader, the PCF loader and the
+    text-table attach. A table in reverse order is the worst case, and it
+    fits inside every cap.
+  - **The fix.** They now share one builder (`_kashi_pairs_finish`). It
+    checks whether the pairs are already in order (real tables usually are)
+    and otherwise heapsorts them: O(n log n), in place, no allocation.
+
+  Measured on the audit's worst-case inputs:
+
+  | Input (within its cap) | 1.2.2 | 1.3.0 |
+  |---|---|---|
+  | PSF2, 256 KiB table | 204 s | **69 ms** |
+  | PSF1, 256 KiB table | 52 s | **4 ms** |
+  | binary table attach, 256 KiB | 204 s | **69 ms** |
+  | text table attach, 256 KiB | 22.6 s | **26 ms** |
+  | BDF, 65,536 glyphs in descending order | 13.3 s | **51 ms** |
+- **`kashi_font_seq_glyph` was a linear scan (L2).** The sequence records
+  are now sorted and binary-searched: 153 ns per lookup over 53,248
+  sequences, against ~0.8 ms.
+- **File loaders hung on a FIFO or a tty, and a tty became the caller's
+  controlling terminal (L5, the CVE-2017-16611 pattern).** All five
+  `*_file` entry points now read through `_kashi_read_file`. On Linux it:
+  - opens with `O_NONBLOCK | O_NOCTTY | O_CLOEXEC`;
+  - fstats the open descriptor;
+  - takes only a regular file, so a FIFO, tty, device or directory is
+    `0 - KASHI_EINVAL` at once.
+
+  agnos, Windows and macOS read through the stdlib with the same cap rule
+  (ADR 0012).
+- **Over-cap files were cut at the cap and loaded (L4).** They are now
+  refused (`0 - KASHI_EINVAL`).
+- **Staging buffers were allocated before opening and never released (L3).**
+  The reader now allocates after `fstat`, sized to the file; a missing path
+  allocates nothing (until now each call reserved up to 4 MiB).
+- **A forged BDF ctx could make `kashi_bdf_next_glyph` write past `dest`
+  (B6).** The ctx's width and height must now be in 1..32.
+- **`decode_glyph` on a failed parse read past the buffer (F1).** A failed
+  `kashi_pcf_parse_header` now leaves a zero glyph count, so `decode_glyph`
+  and `cp_to_idx` refuse that ctx.
+
+### Fixed
+
+- **L6: a load could succeed with a half-built font.**
+  - Maps are now built before registration, and the complete record is
+    published at once.
+  - An allocation failure fails the load (`0 - KASHI_EFORMAT`).
+  - `vec_new` is checked.
+  - Registration uses `vec_push_a`, so a refused registry growth fails the
+    registration instead of aborting the process (`vec_push` called
+    `exit`).
+- **L7: a font whose table mapped no single codepoint fell back to identity
+  addressing,** and U+00E7 drew glyph 0xE7. It now gets an empty map and
+  misses every codepoint. Only fonts with no table at all are
+  identity-addressed.
+- **L8: attach cleared the live map before parsing.** New maps are built
+  aside and stored only on success.
+- **L10: a codepoint listed for several glyphs resolved to whichever the map
+  size happened to favour.** The highest glyph index now wins. That is the
+  Linux console's rule: `con_insert_unipair` overwrites, applied in table
+  order.
+- **L9: the text-table attach accepted surrogates and values up to
+  2^48 − 1.** Those are now `0 - KASHI_EFORMAT`, as in the binary tables.
+- **L13: `-EINTR` failed a load.** The Linux reader now retries it.
+- **L14: `attach_*_file` opened the path before validating the font id.**
+  The id is now checked first.
+- **B1: a BDF cut before `ENDFONT` loaded as a partial font.**
+  `kashi_load_bdf` now requires `ENDFONT`.
+- **B2: the BDF glyph store was sized from the declared `CHARS` alone.** A
+  400-byte file reserved 9 MiB. The size is now bounded by what the input
+  can hold.
+- **B3: lines after a glyph's `BITMAP` rows (extra rows, junk, a late
+  `ENCODING`) were skipped or parsed.** Only `ENDCHAR` may follow now.
+- **B4: `ENCODING 0x41` loaded as U+0000.** A number must now end at a field
+  boundary.
+- **B5: a repeated `STARTFONT` / `FONTBOUNDINGBOX` / `CHARS` meant "last
+  one wins".** It is now malformed.
+- **P1: PSF1 tables accepted surrogate codepoints.** A surrogate now ends the
+  table, as in PSF2.
+- **P2: `kashi_psf_uni_token` dereferenced a null `out` / `buf`.**
+- **C1: `kashi_cp437_from_unicode`'s search was bounded by a mutable
+  global.** It is now clamped to the index's 128 slots.
+- **L11: internal names that a consumer could collide with in the published
+  bundle.** `_rt_registry` is now `_kashi_rt_registry`, and `KashiRtRec` /
+  `RT_*` are now `_KashiRtRec` / `_KASHI_RT_*`. These were documented as
+  internal layout. The parser struct constants are public API and keep
+  their names (roadmap).
+
+### Changed (behaviour)
+
+These change what some inputs do; no signature changes. Each case was
+malformed or hostile input, or an accident of implementation:
+- **Files over their cap fail** instead of loading truncated.
+- **A non-regular path fails on Linux.**
+- **Stricter BDF:** `ENDFONT` required; nothing but `ENDCHAR` after the
+  rows; numbers must end cleanly; no repeated header keywords.
+- **Duplicate codepoints:** the highest glyph wins.
+- **A table that maps no single codepoint** misses rather than falling back
+  to identity.
+
+### Added
+
+- **Tests.** Four new integration files (1,389 assertions in all, from 609):
+  - `tests/maps.tcyr` (208): sorting, duplicates, empty maps, sequences,
+    attach, allocation failure, registry edges.
+  - `tests/parsers.tcyr` (273): the BDF, PSF, PCF and core fixes, plus
+    validation boundaries that had no test.
+  - `tests/pcf_formats.tcyr` (92): a PCF decode matrix over every byte ×
+    bit order, scan unit, pad and width up to 32, checked against a reference
+    decoder written in the test; BDF at every width.
+  - `tests/files.tcyr` (207): the file reader on all five APIs, covering
+    caps, empty, missing, directory, FIFO, `/dev/null`, refusals that touch
+    no path, and descriptor hygiene.
+
+  `tests/kashi.tcyr` now uses per-process temp names under `build/` and the
+  portable unlink, so it compiles for aarch64 and no longer races
+  concurrent runs. All six files pass under qemu-aarch64.
+- **Fuzz.** `tests/kashi.fcyr` now checks answers, not only ranges:
+  - round-trip oracles that generate valid PSF, BDF and PCF fonts and compare
+    every glyph byte, codepoint and sequence;
+  - a text-table oracle;
+  - `fuzz_core` against an independent cell-range model;
+  - a unified-accessor contract over full-width ids, codepoints, rows and
+    byte indices;
+  - a sort-cost guard.
+
+  `fuzz_psf` used to accept 0 of its 4,000 inputs; it now accepts 1,627.
+- **CI.**
+  - `CYRIUS_POISON=1 cyrius test` and `cyrius fuzz --poison`: the audit
+    found a heap overflow only poison catches.
+  - The fuzz step fails on any non-zero exit, a timeout included, and builds
+    to `build/fz_*`, so it no longer clobbers `build/kashi`.
+- **Load-path benchmarks** in `tests/kashi.bcyr`: `load_psf2_512`,
+  `load_psf2_rev_4096`, `load_bdf_256` and `load_pcf_256`.
+- **Docs.**
+  - ADR 0012 and the audit record.
+  - A *Thread safety* section in `docs/api/README.md`: the library face is
+    not thread-safe (audit L12, documented rather than fixed).
+  - *Reading font files* and *Codepoint maps* in `docs/api/loading.md`.
+
+### Bench (cyrius 6.7.18, nine interleaved rounds, medians, `CYRIUS_DCE=1`)
+
+| Benchmark | 1.2.2 | 1.3.0 | Δ |
+|---|---|---|---|
+| `glyph_row` | 17.7 ns | 17.5 ns | −1.0 % |
+| `glyph_ptr` | 6.9 ns | 7.0 ns | +0.5 % |
+| `scan_vga_8x16` | 58.1 µs | 57.7 µs | −0.7 % |
+| `font_row_builtin` | 22.6 ns | 22.4 ns | −0.7 % |
+| `font_row_runtime` | 44.0 ns | 43.9 ns | −0.3 % |
+| `font_row_runtime_cp` | 59.0 ns | 58.9 ns | −0.1 % |
+| `cp437_from_unicode_ascii` | 3.5 ns | 3.5 ns | +0.3 % |
+| `cp437_from_unicode_high` | 24.6 ns | 25.2 ns | +2.4 % |
+| `font_row_builtin_cp` | 40.3 ns | 41.0 ns | +1.7 % |
+| `font_init` | 20.9 µs | 20.9 µs | 0.0 % |
+| `load_psf2_512` (new) | 60.7 µs | 63.2 µs | +4.0 % |
+| `load_psf2_rev_4096` (new) | 44.2 ms | **1.10 ms** | **−97.5 %** |
+| `load_bdf_256` (new) | 252 µs | 270 µs | +6.8 % |
+| `load_pcf_256` (new) | 41.8 µs | 42.3 µs | +1.3 % |
+
+- **Hot accessors:** flat. `cp437_from_unicode_high` +2.4 % is the C1 clamp's
+  compare.
+- **Typical loads:** 1 – 7 % slower. That is the price of the
+  already-sorted check, building maps before registering, and BDF's
+  stricter parsing.
+- **Worst-case loads:** 40× faster at 4,096 reverse-ordered entries, and
+  ~3,000× faster at the 256 KiB caps.
+- **Sizes:** library 199,968 → 204,088 B; DCE'd demo 56,816 → 56,840 B
+  (+24 B, the C1 clamp in the core). A freestanding core-only program is
+  unchanged at 38,736 B on every consumer pin (6.6.3 – 6.6.20).
+- **Bundle.** `dist/kashi.deps` names five leaves: `syscalls` joins, for the
+  file reader's `fstat`. A scratch consumer builds and runs the 1.3.0
+  bundle on cyrius 6.6.3, 6.6.6 and 6.7.18.
+
 ## [1.2.2] - 2026-10-29 — PCF codepoints above U+FFFF, and the stale source comments
 
 Patch. Fixes the one bug the 1.2.1 doc sweep found, plus the stale `src/` comments it listed. The toolchain is

@@ -16,7 +16,9 @@ cut the core's glyph storage from 101 KB to 12.7 KB — 88 KB off every
 binary that links it — with no glyph, symbol or result changed; 1.2.0
 moved to the cyrius 6.7 language line, changing no source; 1.2.1 is a
 toolchain bump plus a documentation sweep; 1.2.2 fixed a PCF parser
-lookup that wrapped codepoints above U+FFFF). The
+lookup that wrapped codepoints above U+FFFF; 1.3.0 is the P(-1) hardening
+pass — bounded load cost, safe file reading, stricter BDF, deterministic
+duplicate codepoints, 1,389 test assertions). The
 full surface is documented in [`docs/api/`](docs/api/); stability
 promise is in [`docs/api/README.md`](docs/api/README.md).
 
@@ -124,14 +126,15 @@ full integer range of each argument.
 ## Quick start (userland — load a PSF font)
 
 Declare the bundle as a dep and `cyrius deps` vendors it as
-`lib/kashi.cyr`, pulling the four stdlib leaves its sidecar names
-(`vec`, `alloc`, `string`, `io` — since 1.1.1 the bundle also opens with
+`lib/kashi.cyr`, pulling the five stdlib leaves its sidecar names
+(`syscalls`, `vec`, `alloc`, `string`, `io` — `syscalls` since 1.3.0, for
+the file reader's `fstat`; since 1.1.1 the bundle also opens with
 the matching `include "lib/…"` lines, cyrius 6.6.18's requires block):
 
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.2.2"
+tag     = "1.3.0"
 modules = ["dist/kashi.cyr"]
 ```
 

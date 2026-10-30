@@ -26,8 +26,12 @@ library-face registry. `cp` is a **Unicode codepoint** for every font:
   bytes here on purpose, call the core's `kashi_glyph_*` instead: they
   take the cell, unchanged.
 - **Runtime fonts** resolve it via the font's codepoint→glyph map
-  (built at load time) or fall back to identity for fonts loaded
-  without a map (e.g., raw `kashi_register_font`).
+  (built at load time or by attach) or fall back to identity for fonts
+  with no Unicode table at all (e.g., raw `kashi_register_font`). A font
+  that carries a table is addressed by it even if the table maps no single
+  codepoint: every codepoint then misses (1.3.0; it used to fall back to
+  identity). When a table lists a codepoint for several glyphs, the
+  highest glyph index wins ([loading.md, Codepoint maps](loading.md#codepoint-maps)).
 
 An unmapped codepoint is `0` / null for both kinds.
 
@@ -215,8 +219,9 @@ fn kashi_font_seq_glyph(font_id, cps_ptr, len);
 
 PSF Unicode tables may record multi-codepoint→single-glyph
 mappings (e.g., an "fi" ligature: `f, i` → ligature glyph). This
-function looks them up. Linear scan over the font's sequence list
-(typically few per font, so no hot-path concern).
+function looks them up. Binary search over the font's sorted sequence
+list since 1.3.0 (a linear scan before, ~0.8 ms a call on a hostile
+font); a sequence listed twice resolves to its highest glyph.
 
 Returns `0 - 1` for any miss: no match, built-in id, font without
 a sequence table (BDF / PCF / raw-registered fonts, unless a binary

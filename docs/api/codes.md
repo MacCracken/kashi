@@ -290,26 +290,26 @@ PCF context struct (144 bytes; caller allocates `var ctx[144]`).
 
 ## Runtime registry
 
-### `KashiRtRec` (`src/lib.cyr`)
+### `_KashiRtRec` (`src/lib.cyr`)
 
 The runtime-font record byte offsets (88 bytes per font). **Internal
 layout** — these constants are exported for tooling but consumers
 should never write to the record directly; use the documented
-accessors instead. Documented here for completeness.
+accessors instead. Documented here for completeness. Renamed from `KashiRtRec` / `RT_*` in 1.3.0 so the published bundle no longer exports unprefixed names a consumer can collide with (audit 2026-10-30, L11).
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `RT_WIDTH` | `0` | |
-| `RT_HEIGHT` | `8` | |
-| `RT_COUNT` | `16` | |
-| `RT_CHARSIZE` | `24` | |
-| `RT_DATA` | `32` | Ptr to owned glyph bytes. |
-| `RT_UMAP` | `40` | Ptr to sorted (cp, glyph) pairs, 0 if none. |
-| `RT_UCOUNT` | `48` | Number of cp→glyph pairs. |
-| `RT_STRIDE` | `56` | Bytes per row. |
-| `RT_SEQS` | `64` | Ptr to sequence records, 0 if none. |
-| `RT_SEQCOUNT` | `72` | Sequence count. |
-| `RT_SEQDATA` | `80` | Ptr to flat codepoint backing store. |
+| `_KASHI_RT_WIDTH` | `0` | |
+| `_KASHI_RT_HEIGHT` | `8` | |
+| `_KASHI_RT_COUNT` | `16` | |
+| `_KASHI_RT_CHARSIZE` | `24` | |
+| `_KASHI_RT_DATA` | `32` | Ptr to owned glyph bytes. |
+| `_KASHI_RT_UMAP` | `40` | Ptr to sorted (cp, glyph) pairs; 0 if the font has no table (identity addressing), the shared empty map if its table maps no single codepoint. |
+| `_KASHI_RT_UCOUNT` | `48` | Number of cp→glyph pairs. |
+| `_KASHI_RT_STRIDE` | `56` | Bytes per row. |
+| `_KASHI_RT_SEQS` | `64` | Ptr to sequence records, 0 if none. |
+| `_KASHI_RT_SEQCOUNT` | `72` | Sequence count. |
+| `_KASHI_RT_SEQDATA` | `80` | Ptr to flat codepoint backing store. |
 
 ### `KashiTabCap` (`src/lib.cyr`)
 

@@ -99,8 +99,9 @@ programs (the demo binary does it) — just don't try to call
 - The bench / test entry points (`tests/kashi.bcyr`,
   `tests/kashi.tcyr`, `tests/kashi.fcyr`).
 - Struct field offsets when not specifically listed (e.g.,
-  `KashiRtRec` — the runtime registry record fields — are an
-  internal layout consumers should not read directly).
+  `_KashiRtRec` — the runtime registry record fields, `_KASHI_RT_*` since
+  1.3.0 (until then `KashiRtRec` / `RT_*`) — are an internal layout
+  consumers should not read directly).
 
 ## Return-value conventions
 
@@ -128,6 +129,29 @@ The exceptions:
   returns 0.
 
 See each function's entry for which convention applies.
+
+## Thread safety
+
+The **freestanding core** is safe to read from any number of threads once
+the first `kashi_font_init()` has returned (its tables are never written
+again; a re-init rewrites them with the same bytes).
+
+The **library face is not thread-safe.** The runtime registry, the
+loaders, `kashi_register_font` and the attach calls keep shared state with
+no synchronisation. Measured by the 2026-10-30 audit (L12):
+- concurrent registrations lose fonts and hand back ids that address
+  another caller's font;
+- a reader enumerating fonts while another thread registers can abort the
+  process;
+- a reader of a font while another thread attaches a table to it can read
+  a torn map.
+
+Callers must therefore:
+- serialize every registry, load, register and attach call;
+- not read a font (`kashi_font_*`, `kashi_rt_*`) while it is being attached
+  to.
+
+Reading fonts from several threads with no writer running is safe.
 
 ## Cross-references
 

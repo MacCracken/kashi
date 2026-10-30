@@ -538,9 +538,12 @@ fn kashi_pcf_parse_header(buf, len, hdr, ctx) {
     store64(ctx + PCF_CTX_GLYPH_COUNT, glyph_count);
 
     # METRICS: dimensions + uniformity check.
+    # 1.3.0 (audit 2026-10-30, F1): every failure from here on clears the
+    # count again, so a ctx from a FAILED parse makes decode_glyph and
+    # cp_to_idx answer EINVAL / 0 - 1 instead of reading with half-set fields.
     var dims[16];
     var rc = _kashi_pcf_parse_metrics(buf, len, m_off, m_size, m_fmt, glyph_count, &dims);
-    if (rc != KASHI_PCF_OK) { return rc; }
+    if (rc != KASHI_PCF_OK) { store64(ctx + PCF_CTX_GLYPH_COUNT, 0); return rc; }
     var width = load64(&dims + 0);
     var height = load64(&dims + 8);
     store64(ctx + PCF_CTX_WIDTH, width);
@@ -548,11 +551,11 @@ fn kashi_pcf_parse_header(buf, len, hdr, ctx) {
 
     # BITMAPS: offsets + data layout.
     rc = _kashi_pcf_parse_bitmaps(buf, len, b_off, b_size, b_fmt, glyph_count, ctx);
-    if (rc != KASHI_PCF_OK) { return rc; }
+    if (rc != KASHI_PCF_OK) { store64(ctx + PCF_CTX_GLYPH_COUNT, 0); return rc; }
 
     # BDF_ENCODINGS: codepoint range.
     rc = _kashi_pcf_parse_encodings(buf, len, e_off, e_size, e_fmt, glyph_count, ctx);
-    if (rc != KASHI_PCF_OK) { return rc; }
+    if (rc != KASHI_PCF_OK) { store64(ctx + PCF_CTX_GLYPH_COUNT, 0); return rc; }
 
     # Fill the parsed-header struct (same shape PSF / BDF use).
     var our_stride = (width + 7) / 8;
@@ -671,6 +674,8 @@ fn kashi_pcf_cp_to_idx(buf, ctx, cp) {
     if (ctx == 0) { return 0 - 1; }
     if (cp < 0) { return 0 - 1; }
     if (cp > 0xFFFF) { return 0 - 1; }
+    # A ctx from a failed parse has a zero count (1.3.0): read nothing else.
+    if (load64(ctx + PCF_CTX_GLYPH_COUNT) < 1) { return 0 - 1; }
     var min_b1 = load64(ctx + PCF_CTX_MIN_B1);
     var max_b1 = load64(ctx + PCF_CTX_MAX_B1);
     var min_b2 = load64(ctx + PCF_CTX_MIN_B2);

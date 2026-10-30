@@ -80,7 +80,8 @@ reset and refilled), so a reader racing a *re*-init never sees a wrong
 value. The *first* call must finish before another CPU reads — kashi
 has no synchronisation of its own.
 
-**Cost**: ~21 µs per call (1.2.1, cyrius 6.7.18; 1.1.0: +1.2 µs over 1.0.10 for the extension
+**Cost**: ~21 µs per call warm (1.2.1, cyrius 6.7.18; the process's
+first call costs ~30 – 38 µs, cold caches; 1.1.0: +1.2 µs over 1.0.10 for the extension
 glyphs and the index fill; `font_init` in
 [`docs/benchmarks.md`](../benchmarks.md)). It is boot work: a consumer
 that calls it on every draw pays that per draw — check
@@ -266,9 +267,13 @@ var p = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, cell);           # resolve once per
 var ell = kashi_cp437_from_unicode(0x2026);
 ```
 
-**Performance**: ~4 ns for ASCII, ~25 ns for a high-half codepoint
-(see [`docs/benchmarks.md`](../benchmarks.md)) — once per glyph, not
-per row.
+**Performance**: ~4 ns for ASCII; a high-half codepoint costs
+~9 – 33 ns by how deep the binary search goes (1 – 8 probes over the
+128-entry index; the bench's ~25 ns is one 6-probe hit, and a miss inside
+U+00A0..U+25A0 costs ~31 – 35 ns) — see
+[`docs/benchmarks.md`](../benchmarks.md). Once per glyph, not per row.
+The search is bounded by the index's 128 slots whatever the count global
+holds (1.3.0, audit 2026-10-30 C1).
 
 ## Per-font metadata
 

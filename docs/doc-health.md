@@ -6,7 +6,10 @@ type: state
 
 # Documentation Health — kashi
 
-> **Last refresh**: 2026-10-29 (roadmap cleanup after 1.2.2 — the roadmap
+> **Last refresh**: 2026-10-30 (**1.3.0** — the audit-driven hardening
+> release: ADR 0012 and the 2026-10-30 audit added; the API reference,
+> guides, SECURITY, state, roadmap and benchmarks re-graded for it).
+> Previous: 2026-10-29 (roadmap cleanup after 1.2.2 — the roadmap
 > rewritten as 1.3.x – 1.x.x milestones; state, SECURITY and benchmarks
 > point at the bookings).
 > Previous: 2026-10-29 (**1.2.2** — touched rows for the PCF fix:
@@ -83,21 +86,21 @@ Left open on purpose:
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `README.md` | 2026-10-29 | ✅ Fresh | 1.2.2: `tag = "1.2.2"`; the status line names the fix. Re-read in full at the 1.2.1 sweep. |
-| `CHANGELOG.md` | 2026-10-29 | ✅ Fresh | `[0.1.0]`–`[1.2.2]`. History; 1.2.2 records the PCF fix, its tests and mutation result, and the comment fixes. |
+| `README.md` | 2026-10-30 | ✅ Fresh | 1.3.0: status line names the hardening pass; `tag = "1.3.0"`; the bundle's five sidecar leaves (`syscalls` joined). |
+| `CHANGELOG.md` | 2026-10-30 | ✅ Fresh | `[0.1.0]`–`[1.3.0]`. 1.3.0 = the audit-driven hardening release: Security / Fixed / Changed (behaviour) / Added, bench table with the load paths. |
 | `CLAUDE.md` | 2026-09-21 | 🟡 Stale | Operator-owned, so it was not edited. Five statements are stale: (1) :39-40 "`src/lib.cyr` + future modules … PSF1/PSF2 import" — the parser modules exist and import covers BDF / PCF; (2) :76 "renders 'A' in both fonts" — three built-ins; the demo draws 'A' in the two 8-wide ones, then '…' / '�'; (3) :109 "dep symlinks" — `lib/` holds copies (a symlinked `lib/` is refused); (4) :156 roadmap "Milestones through v1.0" — it now holds the 1.3.x – 1.x.x milestones, the non-goals and the pin procedure; (5) :53-54 "complete and frozen since 1.0.0" — additive since (1.1.0). |
-| `CONTRIBUTING.md` | 2026-10-29 | ✅ Fresh | Sweep: the pin is 6.7.18. Rest current. |
-| `SECURITY.md` | 2026-10-29 | ✅ Fresh | Sweep: fuzz rounds corrected (~8,500: PSF 4,000 / BDF 2,000 / PCF 1,500 / text-tab 1,000; it said ~7,500 across "four parsers"). The audit paragraph now says the P(-1) pass is at minor / v1.0 cuts and that 1.1.0 / 1.2.0 have no audit file (open item below). Roadmap cleanup: the audit line names its 1.3.x booking. |
+| `CONTRIBUTING.md` | 2026-10-30 | ✅ Fresh | 1.3.0: step 4 names the poison runs CI added. |
+| `SECURITY.md` | 2026-10-30 | ✅ Fresh | 1.3.0: accessor fuzz claim now true (unified accessors fuzzed); C1 clamp; load-cost, font-file and thread-safety bullets; the text tab's range rule; the 2026-10-30 audit in the trail (the 'no audit since 0.8.0' warning retired). |
 | `CODE_OF_CONDUCT.md` | 2026-05-27 | 🔵 Evergreen | Contributor Covenant v2.1 reference + conduct@ address. Re-read: current. |
 | `LICENSE` | 2026-05-27 | 🔵 Evergreen | GPL-3.0-only short notice pointing at gnu.org. Re-read: current. |
-| `VERSION` | 2026-10-29 | ✅ Fresh | `1.2.2`; sole source of truth (`cyrius.cyml` resolves `${file:VERSION}`). |
+| `VERSION` | 2026-10-30 | ✅ Fresh | `1.3.0`; sole source of truth (`cyrius.cyml` resolves `${file:VERSION}`). |
 | `cyrius.cyml` | 2026-10-29 | ✅ Fresh | Pin `6.7.18`. Sweep: the `[lib]` comment said agnos "cannot link the stdlib the other three modules use" — only `src/lib.cyr` uses it; corrected. |
 
 ## Tier 2 — `docs/adr/`
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `adr/README.md` | 2026-10-29 | ✅ Fresh | Sweep: index entries for 0001 / 0002 / 0003 / 0004 / 0008 / 0010 carry their later pointers (0005 width, 0006 ids, 0007 CGA, the BDF API note, `attach_unicode_*` naming). |
+| `adr/README.md` | 2026-10-30 | ✅ Fresh | Index covers 0001–0012; 0012 added for 1.3.0. |
 | `adr/template.md` | 2026-05-27 | ✅ Fresh | Re-read: current. |
 | `adr/0001-freestanding-font-data-core.md` | 2026-10-29 | ✅ Fresh | Sweep: the status line names the amendments, the built-in set's later ADRs and the 1.1.1 sizing; body as decided. |
 | `adr/0002-runtime-font-registry.md` | 2026-10-29 | ✅ Fresh | Sweep: status adds the 0005 width cap (8 → 32) and the BDF / PCF include chain. |
@@ -110,6 +113,7 @@ Left open on purpose:
 | `adr/0009-pcf-import.md` | 2026-10-29 | ✅ Fresh | Sweep: ctx is 144 bytes (136 used), not 128 — wrong since 0.7.1. |
 | `adr/0010-psf-u-variant.md` | 2026-10-29 | ✅ Fresh | Sweep: replace semantics note the 0.8.0 F9 rollback on a failed attach. |
 | `adr/0011-unicode-to-cp437-and-extension-glyphs.md` | 2026-10-29 | ✅ Fresh | Sweep: the reverse index is no longer "the one buffer not sized in bytes" (since 1.1.1); the pre-tag "decide before tagging" note is past tense. |
+| `adr/0012-loader-hardening-maps-and-file-reading.md` | 2026-10-30 | ✅ Fresh | New in 1.3.0. Map construction (O(n log n), highest-glyph duplicates per the kernel's con_insert_unipair, a table always addresses its font, complete records), file reading (regular files only, non-blocking + fstat on Linux, sized to the file, over-cap refused). Claims checked: the kernel rule against drivers/tty/vt/consolemap.c; the numbers against the final 1.3.0 measurements. |
 
 ## Tier 3 — `docs/architecture/`
 
@@ -122,8 +126,8 @@ Left open on purpose:
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `development/roadmap.md` | 2026-10-29 | ✅ Fresh | Rewritten to face forward. Milestones: 1.3.x hardening (next: the owed audit, worst-case load cost, round-trip fuzz, load benches, docs); 1.4.x Unicode coverage; 1.5.x loader breadth; 1.x.x gated items. Then reactive patches and non-goals. The pin procedure absorbs the precedents' lessons, and the precedent sections and the adopted 6.6.17 note are gone; each move's record is its CHANGELOG entry. |
-| `development/state.md` | 2026-10-29 | ✅ Fresh | 1.2.2 entry; unit 464 / total 609; the PCF fuzz contract; hashes; bench line. Roadmap cleanup: "What's booked" lists the 1.3.x – 1.x.x milestones. |
+| `development/roadmap.md` | 2026-10-30 | ✅ Fresh | After 1.3.0: the 1.3.x hardening milestone is done; three follow-ups remain (aarch64 CI leg, ledger roll-up, CLAUDE.md). New: a thread-safe library face (1.x.x, gated) and a 2.0-candidates section (prefixing the parser struct constants). The pin procedure's gate adds the poison runs and the aarch64 check. |
+| `development/state.md` | 2026-10-30 | ✅ Fresh | 1.3.0 entry; sizes 204,088 / 56,840 B; six test files, 1,389 assertions; the bundle's five leaves. |
 | `development/issues/2026-10-13-font-arrays-declared-u64-for-byte-tables.md` | 2026-10-13 | ✅ Fresh | Resolved in 1.1.1; re-read — its 454 + 145 and `5544d63f…` still match. |
 | `development/issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md` | 2026-10-29 | ✅ Fresh | RESOLVED in 1.2.2, with a Resolution section: the guard, the unit group, the fuzz probe built from the encoded range, and the mutation result. |
 
@@ -131,10 +135,10 @@ Left open on purpose:
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `guides/getting-started.md` | 2026-10-29 | ✅ Fresh | 1.2.2: `tag = "1.2.2"`. Re-read in full at the 1.2.1 sweep. |
-| `guides/loading-psf-fonts.md` | 2026-10-29 | ✅ Fresh | Sweep: success is `font_id ≥ KASHI_RT_FONT_BASE` (3), not ≥ 2; `kashi_rt_font_stride` is runtime-only (0 for built-ins); attach on a built-in returns `0 - KASHI_EINVAL`; the snippet includes `lib/kashi.cyr` (the consumer path). |
-| `guides/loading-bdf-fonts.md` | 2026-10-29 | ✅ Fresh | Sweep: the consumer include (`lib/kashi.cyr`). The minimal-BDF example's rows were re-checked by a probe. |
-| `guides/loading-pcf-fonts.md` | 2026-10-29 | ✅ Fresh | Sweep: the consumer include. |
+| `guides/getting-started.md` | 2026-10-30 | ✅ Fresh | 1.3.0: `tag = "1.3.0"`; the suites paragraph names the hardening files and the poison runs; the bundle's five leaves. |
+| `guides/loading-psf-fonts.md` | 2026-10-30 | ✅ Fresh | 1.3.0: the PSF1 surrogate and text-tab range rules, duplicates and empty tables, file refusals (ADR 0010 credited for overlong UTF-8, not 'audit F3'). |
+| `guides/loading-bdf-fonts.md` | 2026-10-30 | ✅ Fresh | 1.3.0: the file cap refuses rather than truncates; a *Strictness* section (ENDFONT, after-BITMAP, numbers, repeated header keys, duplicate ENCODING rule). |
+| `guides/loading-pcf-fonts.md` | 2026-10-30 | ✅ Fresh | 1.3.0: the file cap refuses rather than truncates; non-regular paths refused. |
 | `examples/glyph_sheet.cyr` + `.sha256` | 2026-10-09 | ✅ Fresh | Re-read: 678 lines, `5544d63f…`; `head -672` hashes to `b68ca4d9…`, as the header says. |
 
 ## Tier 6 — `docs/audit/` + `docs/benchmarks*` + this ledger
@@ -144,9 +148,10 @@ Left open on purpose:
 | `audit/2026-05-27-audit.md` | 2026-10-29 | ✅ Fresh | Sweep: forward notes on the 8× reservation (removed in 1.1.1; the guard test now checksums every core byte) and the `cyaudit` workaround (retired at 1.0.1). |
 | `audit/2026-05-28-audit.md` | 2026-05-28 | ✅ Fresh | 0.6.0 P(-1). Re-read: current as a record. |
 | `audit/2026-05-28-audit-0.8.0.md` | 2026-10-29 | ✅ Fresh | Sweep: "422 assertions total" corrected to 442 (393 + 49, as its own lines and the CHANGELOG say). |
-| `benchmarks.md` | 2026-10-29 | ✅ Fresh | "Current" at 1.2.2 (1.2.1 vs 1.2.2 on 6.7.18, flat); 1.2.1 Previous, 1.2.0 and older Earlier; Trend rows. Roadmap cleanup: the load-path note points at its 1.3.x booking. |
-| `benchmarks/history.csv` | 2026-10-29 | ✅ Fresh | Rows 0.1.0 → 1.2.2; 2026-10-29 has three interleaved sessions (`1.1.1-on-6.6.20` / `1.2.0`, `1.2.0-on-6.7.9` / `1.2.1`, `1.2.1-rerun` / `1.2.2`). |
-| `doc-health.md` | 2026-10-29 | ✅ Fresh | This ledger: a 1.2.2 touched-rows refresh on top of the 1.2.1 full sweep. |
+| `audit/2026-10-30-audit.md` | 2026-10-30 | ✅ Fresh | New in 1.3.0: the P(-1) pass over the 1.2.2 surface. 34 findings with fixes and regression tests, *Found clean*, *Open after 1.3.0*, *Verification* (suites, mutation, bench). |
+| `benchmarks.md` | 2026-10-30 | ✅ Fresh | "Current" at 1.3.0 with the four new load-path benches (1.2.2 vs 1.3.0, nine interleaved rounds); 1.2.2 Previous; Trend rows; the load-path note updated. |
+| `benchmarks/history.csv` | 2026-10-30 | ✅ Fresh | Rows 0.1.0 → 1.3.0; 2026-10-30 adds `1.2.2-rerun` / `1.3.0` with the `load_*` benches. |
+| `doc-health.md` | 2026-10-30 | ✅ Fresh | This ledger: a 1.3.0 touched-rows refresh on top of the 1.2.1 full sweep. |
 
 ## Tier 7 — `docs/api/` (frozen 0.9.0, sealed 1.0.0)
 
@@ -158,13 +163,13 @@ internal. All 44 signatures and the 21 enum groups match `src/`.
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `api/README.md` | 2026-10-29 | ✅ Fresh | 1.2.2: the header names the one changed result (`kashi_pcf_cp_to_idx` above U+FFFF). Re-read in full at the 1.2.1 sweep: the return shapes, the parser codes and the 44 public functions. |
-| `api/core.md` | 2026-10-29 | ✅ Fresh | Sweep: `kashi_glyph_row`'s font id is 0..2 only (runtime ids → 0); 226 cells per buffer; costs at 1.2.1 (~18 ns row, ~21 µs init, ~25 ns high-half map); the hot path is ~7 ns per glyph + ~1 ns per row. |
-| `api/loading.md` | 2026-10-29 | ✅ Fresh | Sweep: PCF rows are unpadded `ceil(width / 8)` bytes, not "1-byte-stride". |
-| `api/accessors.md` | 2026-10-29 | ✅ Fresh | Sweep: the perf block was labelled 0.8.0; now 1.2.1 figures, and the 7 ns is attributed to `kashi_glyph_ptr`. `kashi_font_seq_glyph` can hit on a BDF / PCF font with an attached binary table. |
-| `api/attach.md` | 2026-10-29 | ✅ Fresh | Sweep: an oversized file is truncated to 256 KiB, not an error; the text-table example's `tab_len` is 39, not 35. |
-| `api/parsers.md` | 2026-10-29 | ✅ Fresh | 1.2.2: the `kashi_pcf_cp_to_idx` caveat is now a note on the fix. The rest is as corrected at the 1.2.1 sweep. |
-| `api/codes.md` | 2026-10-29 | ✅ Fresh | Sweep: the header notes the 1.1.0 `KashiExtRange` and that `KASHI_EXT_LAST` / `_COUNT` may rise. |
+| `api/README.md` | 2026-10-30 | ✅ Fresh | 1.3.0: a *Thread safety* section (audit L12); `_KashiRtRec` internal naming. |
+| `api/core.md` | 2026-10-30 | ✅ Fresh | 1.3.0: `kashi_font_init` warm vs first-call cost; the high-half lookup's per-depth cost; the C1 clamp. |
+| `api/loading.md` | 2026-10-30 | ✅ Fresh | 1.3.0: *Reading font files* (the reader's contract table) and *Codepoint maps* (cost, duplicates, empty maps, allocation failure); BDF strictness; caps refuse. |
+| `api/accessors.md` | 2026-10-30 | ✅ Fresh | 1.3.0: runtime addressing (a table always addresses its font, the duplicate rule); `kashi_font_seq_glyph` is a binary search. |
+| `api/attach.md` | 2026-10-30 | ✅ Fresh | 1.3.0: attach builds aside; file companions validate first, take regular files only and refuse over-cap. |
+| `api/parsers.md` | 2026-10-30 | ✅ Fresh | 1.3.0: `kashi_psf_uni_token` nulls and PSF1 surrogates; BDF header uniqueness and number boundaries, after-BITMAP and ctx validation, the loader's ENDFONT rule; PCF's inert ctx after a failed parse. |
+| `api/codes.md` | 2026-10-30 | ✅ Fresh | 1.3.0: `_KashiRtRec` / `_KASHI_RT_*` (renamed from `KashiRtRec` / `RT_*`), the empty-map meaning of `_KASHI_RT_UMAP`. |
 
 ---
 
@@ -204,9 +209,7 @@ Open at 1.2.2:
 
 - **`CLAUDE.md`** — five stale statements (its row). Operator-owned: for
   the maintainer to edit.
-- **Security audit record** — no `docs/audit/` file since 0.8.0. The P(-1)
-  pass is due at minor cuts and 1.1.0 / 1.2.0 have none (`SECURITY.md` says
-  so). Booked as roadmap 1.3.x.
+- ~~**Security audit record**~~ ✅ — `audit/2026-10-30-audit.md` (1.3.0).
 
 Open at 1.1.0:
 

@@ -97,11 +97,14 @@ Token struct:
 Always bounds-safe — at/over `end`, or on a malformed/truncated
 unit, returns `KASHI_TOK_END` with `next = end` so the caller's
 walk terminates rather than reading past the buffer. Pure: only
-`load8` + arithmetic.
+`load8` + arithmetic, writing only `out`. Since 1.3.0 a null `out` returns
+without writing, and a null `buf` reports `KASHI_TOK_END` (audit
+2026-10-30, P2).
 
-**Strict UTF-8 (PSF2 only)**: rejects codepoints > U+10FFFF, the
+**Strict UTF-8 (PSF2)**: rejects codepoints > U+10FFFF, the
 UTF-16 surrogate range U+D800..U+DFFF (audit F2, 0.6.0), and
-overlong sequences per RFC 3629 (ADR 0010, 0.7.2).
+overlong sequences per RFC 3629 (ADR 0010, 0.7.2). **PSF1** u16 entries in
+U+D800..U+DFFF end the table too since 1.3.0 (audit 2026-10-30, P1).
 
 ```cyrius
 # Walk a PSF Unicode table glyph by glyph.
@@ -134,9 +137,10 @@ fn kashi_bdf_parse_header(buf, len, hdr, ctx);
 #   -> KASHI_BDF_OK / KASHI_BDF_EINVAL / KASHI_BDF_EFORMAT
 ```
 
-Validates `STARTFONT` / `FONTBOUNDINGBOX` / `CHARS`, skips
-`STARTPROPERTIES..ENDPROPERTIES` if present, locates the first
-`STARTCHAR`. Fills both structs:
+Validates `STARTFONT` / `FONTBOUNDINGBOX` / `CHARS` (each at most once
+since 1.3.0, and every number must end at a field boundary: audit
+2026-10-30, B4 / B5), skips `STARTPROPERTIES..ENDPROPERTIES` if present,
+locates the first `STARTCHAR`. Fills both structs:
 
 - `hdr` (56 bytes): `KIND = 3`, `WIDTH`, `HEIGHT`, declared `COUNT`,
   `CHARSIZE`, `DATAOFF` (offset of first STARTCHAR), `UNIOFF = 0`
@@ -171,12 +175,15 @@ fn kashi_bdf_next_glyph(buf, pos, end, ctx, dest, dest_size, gout);
 
 Cursor: from `pos`, scans to the next `STARTCHAR`, reads `ENCODING`
 + `BBX` (strict-match validated against `ctx`) + `BITMAP` hex rows,
-decodes into `dest`, advances past `ENDCHAR`. Writes the result kind,
-codepoint, and next-position into `gout`:
+decodes into `dest`, advances past `ENDCHAR`. After the declared rows only
+`ENDCHAR` may follow; an extra row is `KASHI_BDF_EFORMAT` (1.3.0, B3). A
+`ctx` whose width or height is outside 1..32 (a zeroed ctx from a failed
+parse, or a forged one) is `KASHI_BDF_EINVAL` (1.3.0, B6). Writes the
+result kind, codepoint, and next-position into `gout`:
 
 | Offset | Field | Meaning |
 |---|---|---|
-| 0 | `BG_KIND` | `BG_KIND_OK` (0) = bitmap in dest, cp in CP. `BG_KIND_SKIP` (1) = `ENCODING -1` or out-of-range cp, skip. `BG_KIND_END` (2) = reached `ENDFONT` or buffer end. |
+| 0 | `BG_KIND` | `BG_KIND_OK` (0) = bitmap in dest, cp in CP. `BG_KIND_SKIP` (1) = `ENCODING -1` or out-of-range cp, skip. `BG_KIND_END` (2) = reached `ENDFONT` or buffer end (the cursor serves partial buffers; `kashi_load_bdf` additionally requires an `ENDFONT` line since 1.3.0, B1). |
 | 8 | `BG_CP` | Codepoint (valid when KIND = OK). |
 | 16 | `BG_NEXT` | Byte offset to resume scanning. |
 
@@ -229,7 +236,10 @@ Fills:
 Rejects: bad magic, table_count > 64, missing required tables,
 duplicate TOC types (audit F8), non-uniform metrics, unknown
 format-byte bits (audit F5/F6/F7), out-of-range
-width/height/glyph_count.
+width/height/glyph_count. On any failure the ctx's glyph count is 0
+(since 1.3.0, audit 2026-10-30 F1), so `kashi_pcf_decode_glyph` on it
+returns `KASHI_PCF_EINVAL` and `kashi_pcf_cp_to_idx` returns `0 - 1`
+instead of reading with half-set fields.
 
 ```cyrius
 var hdr[56];

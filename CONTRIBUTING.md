@@ -10,9 +10,12 @@ and this repo's [`CLAUDE.md`](CLAUDE.md) before making changes.
    `[package].cyrius`).
 2. Resolve deps: `cyrius deps`
 3. Build the library: `cyrius build src/lib.cyr build/kashi`
-4. Run tests: `cyrius test` (the unit suite `src/test.cyr`, then the
+4. Run tests: `cyrius test` (the unit suite `src/test.cyr`, then every
    integration suite `tests/*.tcyr` — a bare run covers both from cyrius
-   6.6.17; kashi pins 6.7.18), then `cyrius fuzz tests/kashi.fcyr`
+   6.6.17; kashi pins 6.7.18), then `cyrius fuzz tests/kashi.fcyr`. CI
+   repeats both under the allocator poison mode (`CYRIUS_POISON=1 cyrius
+   test`, `cyrius fuzz --poison tests/kashi.fcyr`); run them before a PR
+   that touches a loader
 5. Run the demo: `cyrius run src/main.cyr`
 6. Prove the boundary: `cyrius vet src/font_data.cyr` → "no dependencies"
 7. If you touched any `[lib]` module (`src/font_*.cyr`, `src/lib.cyr`):

@@ -1,0 +1,1428 @@
+# kashi — parser regression suite for the 1.3.0 hardening release.
+# Stdlib auto-included via cyrius.cyml.
+#
+# Pins the parser-side fixes of the 2026-10-30 audit (BDF B1..B6, PSF P1 /
+# P2, PCF F1, the core's C1) and the validation boundaries its T4 found
+# untested: guards that could be loosened by one with every suite still
+# green (the length guards at their exact boundary, the PSF / BDF caps, the
+# PCF structural checks, the reverse-index packer's guards), plus the PCF
+# loader's refused map allocation (L6). Each group names the finding it
+# pins. Each fix was reverted in a scratch copy and this suite failed.
+# Where the 1.2.2 code faulted, the probes make it answer a wrong VALUE
+# first wherever that is possible (noted at each); a null `out`, a dead PCF
+# ctx's unread buffer and a write through a refused (null) map can only
+# show as a fault.
+#
+# No temp files: every input is built in memory, so two runs never collide.
+
+include "src/lib.cyr"
+
+# --- helpers ---------------------------------------------------------------
+
+# Copy the null-terminated string `s` into `buf + p`; returns the new end.
+fn _tp_str(buf, p, s) {
+    var i = 0;
+    var done = 0;
+    while (done == 0) {
+        var c = load8(s + i);
+        if (c == 0) { done = 1; }
+        if (done == 0) {
+            store8(buf + p + i, c);
+            i = i + 1;
+        }
+    }
+    return p + i;
+}
+
+fn _tp_fill(buf, n, v) {
+    var i = 0;
+    while (i < n) {
+        store8(buf + i, v);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# 16- / 32-bit stores in either byte order (be == 1: big-endian).
+fn _tp_put16(buf, off, v, be) {
+    if (be == 1) {
+        store8(buf + off, (v >> 8) & 0xFF);
+        store8(buf + off + 1, v & 0xFF);
+        return 0;
+    }
+    store8(buf + off, v & 0xFF);
+    store8(buf + off + 1, (v >> 8) & 0xFF);
+    return 0;
+}
+
+fn _tp_put32(buf, off, v, be) {
+    if (be == 1) {
+        store8(buf + off, (v >> 24) & 0xFF);
+        store8(buf + off + 1, (v >> 16) & 0xFF);
+        store8(buf + off + 2, (v >> 8) & 0xFF);
+        store8(buf + off + 3, v & 0xFF);
+        return 0;
+    }
+    store8(buf + off, v & 0xFF);
+    store8(buf + off + 1, (v >> 8) & 0xFF);
+    store8(buf + off + 2, (v >> 16) & 0xFF);
+    store8(buf + off + 3, (v >> 24) & 0xFF);
+    return 0;
+}
+
+# FNV-1a 64 continued from `h` over `n` bytes at `p`.
+fn _tp_fnv(h, p, n) {
+    var i = 0;
+    while (i < n) {
+        h = h ^ load8(p + i);
+        h = h * 0x100000001B3;
+        i = i + 1;
+    }
+    return h;
+}
+
+# Zero-filled PSF1 of the given mode / charsize; returns where its glyph
+# data ends (4 + count * charsize).
+fn _tp_psf1(buf, mode, charsize) {
+    var count = 256;
+    if ((mode & 1) != 0) { count = 512; }
+    var dataend = 4 + count * charsize;
+    _tp_fill(buf, dataend, 0);
+    store8(buf + 0, 0x36);
+    store8(buf + 1, 0x04);
+    store8(buf + 2, mode);
+    store8(buf + 3, charsize);
+    return dataend;
+}
+
+# Zero-filled PSF2 header (32 bytes) + glyphs; returns where the glyph data
+# ends. charsize is height * ceil(width / 8), as a valid PSF2 declares it.
+fn _tp_psf2(buf, count, height, width, flags) {
+    var charsize = height * ((width + 7) / 8);
+    _tp_fill(buf, 32 + count * charsize, 0);
+    _tp_put32(buf, 0, 0x864AB572, 0);
+    _tp_put32(buf, 4, 0, 0);
+    _tp_put32(buf, 8, 32, 0);
+    _tp_put32(buf, 12, flags, 0);
+    _tp_put32(buf, 16, count, 0);
+    _tp_put32(buf, 20, charsize, 0);
+    _tp_put32(buf, 24, height, 0);
+    _tp_put32(buf, 28, width, 0);
+    return 32 + count * charsize;
+}
+
+# A BDF: "STARTFONT 2.1" + `head` (the header lines after it) + the glyph
+# records `g1` and `g2` (either may be "") + ENDFONT. Returns the length.
+fn _tp_bdf(buf, head, g1, g2) {
+    var p = _tp_str(buf, 0, "STARTFONT 2.1\n");
+    p = _tp_str(buf, p, head);
+    p = _tp_str(buf, p, g1);
+    p = _tp_str(buf, p, g2);
+    return _tp_str(buf, p, "ENDFONT\n");
+}
+
+# The usual 8x2 header and its glyph record for 'A'.
+fn _tp_h82() { return "FONTBOUNDINGBOX 8 2 0 0\nCHARS 1\n"; }
+fn _tp_ga() { return "STARTCHAR A\nENCODING 65\nBBX 8 2 0 0\nBITMAP\nA5\n3C\nENDCHAR\n"; }
+
+# kashi_load_bdf on `_tp_bdf(head, g1, g2)`.
+fn _tp_load_bdf(head, g1, g2) {
+    var buf = alloc(1024);
+    var len = _tp_bdf(buf, head, g1, g2);
+    return kashi_load_bdf(buf, len);
+}
+
+# kashi_load_bdf on the one-glyph 8x2 font whose glyph record is `g`.
+fn _tp_load1(g) { return _tp_load_bdf(_tp_h82(), g, ""); }
+
+# kashi_bdf_parse_header's rc on `_tp_bdf(head, g, "")`.
+fn _tp_parse_bdf(head, g) {
+    var buf = alloc(1024);
+    var len = _tp_bdf(buf, head, g, "");
+    var hdr[56];
+    var ctx[32];
+    return kashi_bdf_parse_header(buf, len, &hdr, &ctx);
+}
+
+# --- PCF writer ---
+#
+# An 8-wide PCF with N glyphs of H rows, the three required tables in the
+# order METRICS, BITMAPS, BDF_ENCODINGS (so ENCODINGS ends the file), MSB
+# bit order, either byte order, either metrics form, any glyph pad. Glyph g
+# row r is (g * 0x10 + r + 1). Encoding cell i maps glyph i % N. The
+# writer leaves the table offsets in the _tp_pcf_* layout vars below so a
+# test can corrupt one field of an otherwise valid font.
+var _tp_pcf_n = 3;
+var _tp_pcf_h = 4;
+var _tp_pcf_be = 0;
+var _tp_pcf_comp = 1;
+var _tp_pcf_pad = 0;
+var _tp_pcf_scan = 0;
+var _tp_pcf_nmet = 3;      # METRICS entries; == N in a valid font
+var _tp_pcf_minb1 = 0;
+var _tp_pcf_maxb1 = 0;
+var _tp_pcf_minb2 = 0x41;
+var _tp_pcf_maxb2 = 0x43;
+var _tp_pcf_moff = 0;      # layout written by _tp_pcf_build
+var _tp_pcf_boff = 0;
+var _tp_pcf_eoff = 0;
+var _tp_pcf_per = 0;
+var _tp_pcf_cntb = 0;
+var _tp_pcf_gsize = 0;
+
+fn _tp_pcf_defaults() {
+    _tp_pcf_n = 3;
+    _tp_pcf_h = 4;
+    _tp_pcf_be = 0;
+    _tp_pcf_comp = 1;
+    _tp_pcf_pad = 0;
+    _tp_pcf_scan = 0;
+    _tp_pcf_nmet = 3;
+    _tp_pcf_minb1 = 0;
+    _tp_pcf_maxb1 = 0;
+    _tp_pcf_minb2 = 0x41;
+    _tp_pcf_maxb2 = 0x43;
+    return 0;
+}
+
+# One metrics entry at `s`: left 0, right 8, width 8, ascent H - 1,
+# descent 1.
+fn _tp_pcf_metric(buf, s) {
+    var be = _tp_pcf_be;
+    if (_tp_pcf_comp == 1) {
+        store8(buf + s + 0, 0x80);
+        store8(buf + s + 1, 0x88);
+        store8(buf + s + 2, 0x88);
+        store8(buf + s + 3, 0x80 + _tp_pcf_h - 1);
+        store8(buf + s + 4, 0x81);
+        return 0;
+    }
+    _tp_put16(buf, s + 0, 0, be);
+    _tp_put16(buf, s + 2, 8, be);
+    _tp_put16(buf, s + 4, 8, be);
+    _tp_put16(buf, s + 6, _tp_pcf_h - 1, be);
+    _tp_put16(buf, s + 8, 1, be);
+    _tp_put16(buf, s + 10, 0, be);
+    return 0;
+}
+
+# Write the font into `buf` (zero-filled first); returns its length.
+fn _tp_pcf_build(buf) {
+    var be = _tp_pcf_be;
+    var n = _tp_pcf_n;
+    var fmt = _tp_pcf_pad | (be << 2) | 0x08 | (_tp_pcf_scan << 4);
+    var mfmt = fmt | (_tp_pcf_comp << 8);
+    var per = 12;
+    var cntb = 4;
+    if (_tp_pcf_comp == 1) {
+        per = 5;
+        cntb = 2;
+    }
+    var rowbytes = 1 << _tp_pcf_pad;
+    var gsize = _tp_pcf_h * rowbytes;
+    var moff = 56;
+    var msize = 4 + cntb + _tp_pcf_nmet * per;
+    var boff = moff + msize;
+    var bsize = 8 + 4 * n + 16 + n * gsize;
+    var eoff = boff + bsize;
+    var ncell = (_tp_pcf_maxb1 - _tp_pcf_minb1 + 1) * (_tp_pcf_maxb2 - _tp_pcf_minb2 + 1);
+    var esize = 14 + 2 * ncell;
+    var total = eoff + esize;
+    _tp_fill(buf, total, 0);
+    store8(buf + 0, 0x01);
+    store8(buf + 1, 0x66);
+    store8(buf + 2, 0x63);
+    store8(buf + 3, 0x70);
+    _tp_put32(buf, 4, 3, 0);
+    # TOC (always little-endian).
+    _tp_put32(buf, 8, 0x04, 0);
+    _tp_put32(buf, 12, mfmt, 0);
+    _tp_put32(buf, 16, msize, 0);
+    _tp_put32(buf, 20, moff, 0);
+    _tp_put32(buf, 24, 0x08, 0);
+    _tp_put32(buf, 28, fmt, 0);
+    _tp_put32(buf, 32, bsize, 0);
+    _tp_put32(buf, 36, boff, 0);
+    _tp_put32(buf, 40, 0x20, 0);
+    _tp_put32(buf, 44, fmt, 0);
+    _tp_put32(buf, 48, esize, 0);
+    _tp_put32(buf, 52, eoff, 0);
+    # METRICS: format word (LE), count, entries.
+    _tp_put32(buf, moff, mfmt, 0);
+    if (_tp_pcf_comp == 1) { _tp_put16(buf, moff + 4, _tp_pcf_nmet, be); }
+    if (_tp_pcf_comp == 0) { _tp_put32(buf, moff + 4, _tp_pcf_nmet, be); }
+    var gi = 0;
+    while (gi < _tp_pcf_nmet) {
+        _tp_pcf_metric(buf, moff + 4 + cntb + gi * per);
+        gi = gi + 1;
+    }
+    # BITMAPS: format word, count, offsets, 4 pad sizes (unused), data.
+    _tp_put32(buf, boff, fmt, 0);
+    _tp_put32(buf, boff + 4, n, be);
+    var g = 0;
+    while (g < n) {
+        _tp_put32(buf, boff + 8 + g * 4, g * gsize, be);
+        g = g + 1;
+    }
+    var data = boff + 8 + 4 * n + 16;
+    g = 0;
+    while (g < n) {
+        var r = 0;
+        while (r < _tp_pcf_h) {
+            store8(buf + data + g * gsize + r * rowbytes, (g * 0x10 + r + 1) & 0xFF);
+            r = r + 1;
+        }
+        g = g + 1;
+    }
+    # BDF_ENCODINGS: format word, byte2 / byte1 range, default, cells.
+    _tp_put32(buf, eoff, fmt, 0);
+    _tp_put16(buf, eoff + 4, _tp_pcf_minb2, be);
+    _tp_put16(buf, eoff + 6, _tp_pcf_maxb2, be);
+    _tp_put16(buf, eoff + 8, _tp_pcf_minb1, be);
+    _tp_put16(buf, eoff + 10, _tp_pcf_maxb1, be);
+    _tp_put16(buf, eoff + 12, 0, be);
+    var ci = 0;
+    while (ci < ncell) {
+        _tp_put16(buf, eoff + 14 + ci * 2, ci % n, be);
+        ci = ci + 1;
+    }
+    _tp_pcf_moff = moff;
+    _tp_pcf_boff = boff;
+    _tp_pcf_eoff = eoff;
+    _tp_pcf_per = per;
+    _tp_pcf_cntb = cntb;
+    _tp_pcf_gsize = gsize;
+    return total;
+}
+
+fn _tp_pcf_parse(buf, len) {
+    var hdr[56];
+    var ctx[144];
+    return kashi_pcf_parse_header(buf, len, &hdr, &ctx);
+}
+
+# Offset of field `f` (0 left .. 4 descent) of metrics entry `gi`.
+fn _tp_pcf_mfield(gi, f) {
+    var w = 1;
+    if (_tp_pcf_comp == 0) { w = 2; }
+    return _tp_pcf_moff + 4 + _tp_pcf_cntb + gi * _tp_pcf_per + f * w;
+}
+
+# --- B1: a BDF must end in ENDFONT ------------------------------------------
+
+# audit 2026-10-30, B1: the glyph cursor reports END at the end of the
+# buffer as well as at ENDFONT, and kashi_load_bdf took either as success —
+# a font cut after any ENDCHAR (or inside the next STARTCHAR keyword)
+# loaded as a partial font, every later codepoint silently missing.
+fn test_b1_bdf_endfont() {
+    test_group("B1: BDF must end in ENDFONT");
+    var buf = alloc(1024);
+    var p = _tp_str(buf, 0, "STARTFONT 2.1\nFONTBOUNDINGBOX 8 2 0 0\nCHARS 3\n");
+    p = _tp_str(buf, p, _tp_ga());
+    var cut1 = p;
+    p = _tp_str(buf, p, "STARTCHAR B\nENCODING 66\nBBX 8 2 0 0\nBITMAP\n5A\nC3\nENDCHAR\n");
+    p = _tp_str(buf, p, "STARTCHAR C\nENCODING 67\nBBX 8 2 0 0\nBITMAP\n0F\nF0\nENDCHAR\n");
+    var cut3 = p;
+    p = _tp_str(buf, p, "ENDFONT\n");
+    var full = p;
+
+    var id = kashi_load_bdf(buf, full);
+    assert_gte(id, KASHI_RT_FONT_BASE, "complete BDF loads");
+    assert_eq(kashi_rt_font_count(id), 3, "complete BDF: 3 glyphs");
+    assert_eq(kashi_font_row(id, 0x43, 1), 0xF0, "complete BDF: last glyph present");
+    assert_eq(kashi_load_bdf(buf, cut1), 0 - KASHI_EFORMAT,
+      "cut right after glyph 1's ENDCHAR -> EFORMAT (was a 1-glyph font)");
+    assert_eq(kashi_load_bdf(buf, cut1 + 6), 0 - KASHI_EFORMAT,
+      "cut inside the next 'STARTCHAR' keyword -> EFORMAT");
+    assert_eq(kashi_load_bdf(buf, cut3), 0 - KASHI_EFORMAT,
+      "every glyph but no ENDFONT -> EFORMAT");
+    assert_eq(kashi_load_bdf(buf, full - 2), 0 - KASHI_EFORMAT,
+      "cut inside 'ENDFONT' (buffer ends 'ENDFON') -> EFORMAT");
+    # Exactly the keyword at the end of the buffer, no newline: complete.
+    var id2 = kashi_load_bdf(buf, full - 1);
+    assert_gte(id2, KASHI_RT_FONT_BASE, "'ENDFONT' at EOF without a newline loads");
+    assert_eq(kashi_rt_font_count(id2), 3, "'ENDFONT' at EOF: 3 glyphs");
+
+    # Lines between the last ENDCHAR and ENDFONT, and text after ENDFONT,
+    # are not truncation.
+    var b2 = alloc(512);
+    var q = _tp_str(b2, 0, "STARTFONT 2.1\nFONTBOUNDINGBOX 8 2 0 0\nCHARS 1\n");
+    q = _tp_str(b2, q, _tp_ga());
+    q = _tp_str(b2, q, "COMMENT trailer\n\n  ENDFONT\nCOMMENT after the font\n");
+    assert_gte(kashi_load_bdf(b2, q), KASHI_RT_FONT_BASE,
+      "comment + blank line before an indented ENDFONT, text after: loads");
+
+    # The parser's cursor stays lenient (it serves partial buffers); only
+    # the loader demands ENDFONT.
+    var hdr[56];
+    var ctx[32];
+    var dest[8];
+    var gout[24];
+    assert_eq(kashi_bdf_parse_header(buf, cut1, &hdr, &ctx), KASHI_BDF_OK, "cut buffer: header parses");
+    assert_eq(kashi_bdf_next_glyph(buf, cut1, cut1, &ctx, &dest, 8, &gout), KASHI_BDF_OK,
+      "cut buffer: cursor at the cut -> OK");
+    assert_eq(load64(&gout + BG_KIND), BG_KIND_END, "cut buffer: cursor reports END");
+    return 0;
+}
+
+# --- B2: BDF allocation bounded by the input -------------------------------
+
+# Write one 32x32 glyph record (`by` is its BBX y offset) after a header
+# declaring CHARS 65536; returns the length.
+fn _tp_bdf_amp(buf, by) {
+    var p = _tp_str(buf, 0, "STARTFONT 2.1\nFONTBOUNDINGBOX 32 32 0 0\nCHARS 65536\n");
+    p = _tp_str(buf, p, "STARTCHAR A\nENCODING 65\nBBX 32 32 0 ");
+    if (by == 0) { p = _tp_str(buf, p, "0\nBITMAP\n"); }
+    if (by != 0) { p = _tp_str(buf, p, "1\nBITMAP\n"); }
+    var r = 0;
+    while (r < 32) {
+        p = _tp_str(buf, p, "F00F0FF0\n");
+        r = r + 1;
+    }
+    return _tp_str(buf, p, "ENDCHAR\nENDFONT\n");
+}
+
+# audit 2026-10-30, B2: kashi_load_bdf sized its glyph store and map from
+# the declared CHARS before reading a glyph — a ~400-byte file declaring
+# CHARS 65536 reserved 65536 x (128 + 16) = 9 MiB per load, kept even when
+# the load failed (the bump allocator frees nothing).
+fn test_b2_bdf_alloc_bound() {
+    test_group("B2: BDF allocation bounded by the input");
+    var buf = alloc(1024);
+    var len = _tp_bdf_amp(buf, 0);
+    assert_lt(len, 512, "amplifier input is under 512 bytes");
+    var used0 = alloc_used();
+    var id = kashi_load_bdf(buf, len);
+    var spent = alloc_used() - used0;
+    assert_gte(id, KASHI_RT_FONT_BASE, "CHARS 65536 with one glyph loads");
+    assert_eq(kashi_rt_font_count(id), 1, "CHARS 65536 with one glyph: count 1");
+    assert_eq(kashi_font_row(id, 0x41, 31), 0xF0, "CHARS 65536 with one glyph: rows intact");
+    assert_lt(spent, 65536, "load spends < 64 KiB of heap (was 9 MiB)");
+    # Same header, glyph BBX wrong: the load fails, and keeps as little.
+    len = _tp_bdf_amp(buf, 1);
+    used0 = alloc_used();
+    assert_eq(kashi_load_bdf(buf, len), 0 - KASHI_EFORMAT, "CHARS 65536, bad BBX -> EFORMAT");
+    assert_lt(alloc_used() - used0, 65536, "failed load keeps < 64 KiB of heap (was 9 MiB)");
+
+    # The bound does not cut a real font: 200 near-minimum records (~54
+    # bytes, one 1x1 row each) under CHARS 200 all load. A divisor much
+    # above the 33 keyword bytes per record would drop some.
+    var big = alloc(16384);
+    var p = _tp_str(big, 0, "STARTFONT 2.1\nFONTBOUNDINGBOX 1 1 0 0\nCHARS 200\n");
+    var i = 0;
+    while (i < 200) {
+        p = _tp_str(big, p, "STARTCHAR\nENCODING ");
+        var cp = 1000 + i;
+        store8(big + p + 0, 0x30 + cp / 1000);
+        store8(big + p + 1, 0x30 + (cp / 100) % 10);
+        store8(big + p + 2, 0x30 + (cp / 10) % 10);
+        store8(big + p + 3, 0x30 + cp % 10);
+        p = p + 4;
+        p = _tp_str(big, p, "\nBBX 1 1 0 0\nBITMAP\n80\nENDCHAR\n");
+        i = i + 1;
+    }
+    p = _tp_str(big, p, "ENDFONT\n");
+    var did = kashi_load_bdf(big, p);
+    assert_gte(did, KASHI_RT_FONT_BASE, "dense font of minimum-size records loads");
+    assert_eq(kashi_rt_font_count(did), 200, "dense font: all 200 glyphs kept");
+    assert_eq(kashi_font_row(did, 1199, 0), 0x80, "dense font: last glyph addressable");
+
+    # Those records are 54 bytes, so they pinned the divisor only up to 54.
+    # The smallest legal record is 51 bytes (a one-digit ENCODING, no SWIDTH
+    # / DWIDTH, one 1x1 row): 100 of them + ENDFONT are 5108 bytes, which the
+    # bound turns into 5108 / 33 + 1 = 155 slots. A divisor of 52 or more
+    # (5108 / 52 + 1 = 99) would run out of slots on the last glyph and fail
+    # the load of a valid font.
+    var mbuf = alloc(8192);
+    p = _tp_str(mbuf, 0, "STARTFONT 2.1\nFONTBOUNDINGBOX 1 1 0 0\nCHARS 100\n");
+    var rec0 = p;
+    i = 0;
+    while (i < 100) {
+        p = _tp_str(mbuf, p, "STARTCHAR\nENCODING ");
+        store8(mbuf + p, 0x30 + i % 10);
+        p = _tp_str(mbuf, p + 1, "\nBBX 1 1 0 0\nBITMAP\n80\nENDCHAR\n");
+        i = i + 1;
+    }
+    assert_eq(p - rec0, 100 * 51, "smallest records: 51 bytes each");
+    p = _tp_str(mbuf, p, "ENDFONT\n");
+    var mfid = kashi_load_bdf(mbuf, p);
+    assert_gte(mfid, KASHI_RT_FONT_BASE, "100 smallest (51-byte) records load");
+    assert_eq(kashi_rt_font_count(mfid), 100, "smallest records: all 100 glyphs kept");
+    assert_eq(kashi_font_row(mfid, 9, 0), 0x80, "smallest records: U+0009 addressable");
+
+    # The bound counts only the bytes from the first STARTCHAR on: header
+    # lines hold no glyph. Taken over the whole buffer (len / 33 + 1), it
+    # would let COMMENT padding buy slots again — 56 KB of comments ahead of
+    # CHARS 65536 and one 8x32 glyph would reserve ~1,700 slots (~82 KB)
+    # where the glyph bytes alone allow 5 (240 bytes).
+    var pad = alloc(65536);
+    p = _tp_str(pad, 0, "STARTFONT 2.1\n");
+    i = 0;
+    while (i < 1000) {
+        p = _tp_str(pad, p, "COMMENT padding padding padding padding padding padding\n");
+        i = i + 1;
+    }
+    p = _tp_str(pad, p, "FONTBOUNDINGBOX 8 32 0 0\nCHARS 65536\n");
+    assert_gte(p, 56000, "padded header is over 56 KB");
+    p = _tp_str(pad, p, "STARTCHAR A\nENCODING 65\nBBX 8 32 0 0\nBITMAP\n");
+    i = 0;
+    while (i < 32) {
+        p = _tp_str(pad, p, "5A\n");
+        i = i + 1;
+    }
+    p = _tp_str(pad, p, "ENDCHAR\nENDFONT\n");
+    used0 = alloc_used();
+    var hid = kashi_load_bdf(pad, p);
+    spent = alloc_used() - used0;
+    assert_gte(hid, KASHI_RT_FONT_BASE, "56 KB of COMMENT header + one glyph loads");
+    assert_eq(kashi_font_row(hid, 0x41, 31), 0x5A, "padded header: last row intact");
+    assert_lt(spent, 4096, "padded header buys no slots: load spends < 4 KiB (not ~82 KB)");
+    return 0;
+}
+
+# --- B3: nothing but ENDCHAR after the BITMAP rows -------------------------
+
+# audit 2026-10-30, B3: rows past the BBX height fell into the "unknown
+# line" skip, so a glyph whose BITMAP disagreed with its BBX loaded
+# truncated, while too FEW rows were rejected.
+fn test_b3_bdf_extra_rows() {
+    test_group("B3: BDF rows past the BBX height rejected");
+    var buf = alloc(512);
+    var len = _tp_bdf(buf, _tp_h82(), "STARTCHAR A\nENCODING 65\nBBX 8 2 0 0\nBITMAP\n11\n22\n33\n44\n55\n",
+      "ENDCHAR\n");
+    var hdr[56];
+    var ctx[32];
+    var dest[8];
+    var gout[24];
+    assert_eq(kashi_bdf_parse_header(buf, len, &hdr, &ctx), KASHI_BDF_OK, "5-row glyph: header parses");
+    assert_eq(kashi_bdf_next_glyph(buf, load64(&hdr + BDF_PH_DATAOFF), len, &ctx, &dest, 8, &gout),
+      KASHI_BDF_EFORMAT, "next_glyph: 5 rows for height 2 -> EFORMAT");
+    assert_eq(kashi_load_bdf(buf, len), 0 - KASHI_EFORMAT, "load: 5 rows for height 2 -> EFORMAT");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 65\nBBX 8 2 0 0\nBITMAP\nA5\n3C\n00\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "one extra row -> EFORMAT");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 65\nBBX 8 2 0 0\nBITMAP\nA5\n3C\nZZ\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "junk line after the rows -> EFORMAT");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 65\nBBX 8 2 0 0\nBITMAP\nA5\n3C\nCOMMENT x\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "keyword line after the rows -> EFORMAT");
+    # A recognised keyword after the rows used to be parsed, not refused: a
+    # glyph with no ENCODING before its BITMAP took one from after it.
+    assert_eq(_tp_load1("STARTCHAR A\nBBX 8 2 0 0\nBITMAP\nA5\n3C\nENCODING 65\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "late ENCODING after the rows -> EFORMAT");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 65\nBBX 8 2 0 0\nBITMAP\nA5\n3C\n1\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "odd-digit extra row -> EFORMAT");
+    # Still accepted: blank lines before ENDCHAR, an indented ENDCHAR, CRLF
+    # line ends, and unknown lines BEFORE the BITMAP.
+    var id = _tp_load1("STARTCHAR A\nENCODING 65\nBBX 8 2 0 0\nBITMAP\nA5\n3C\n\n\r\n  ENDCHAR\n");
+    assert_gte(id, KASHI_RT_FONT_BASE, "blank lines + indented ENDCHAR after the rows load");
+    assert_eq(kashi_font_row(id, 0x41, 1), 0x3C, "blank lines after the rows: row 1 intact");
+    id = _tp_load_bdf("FONTBOUNDINGBOX 8 2 0 0\r\nCHARS 1\r\n",
+      "STARTCHAR A\r\nENCODING 65\r\nBBX 8 2 0 0\r\nBITMAP\r\nA5\r\n3C\r\nENDCHAR\r\n", "");
+    assert_gte(id, KASHI_RT_FONT_BASE, "CRLF BDF loads");
+    assert_eq(kashi_font_row(id, 0x41, 0), 0xA5, "CRLF BDF: row 0");
+    id = _tp_load_bdf(_tp_h82(), "STARTCHAR A\nENCODING 65\nSWIDTH 500 0\nDWIDTH 8 0\nBBX 8 2 0 0\n",
+      "COMMENT pre\nBITMAP\nA5\n3C\nENDCHAR\n");
+    assert_gte(id, KASHI_RT_FONT_BASE, "unknown lines before BITMAP still skipped");
+    return 0;
+}
+
+# --- B4: integers end at a field boundary ----------------------------------
+
+# audit 2026-10-30, B4: _kashi_bdf_int stopped at the first non-digit and
+# reported success, so `ENCODING 0x41` mapped the glyph to U+0000 and
+# `CHARS 1xyz` read as 1. Only BITMAP rows were strict.
+fn test_b4_bdf_int_boundary() {
+    test_group("B4: BDF integers end at a field boundary");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 0x41\nBBX 8 2 0 0\nBITMAP\nA5\n3C\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "ENCODING 0x41 -> EFORMAT (was U+0000)");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 6.6e1\nBBX 8 2 0 0\nBITMAP\nA5\n3C\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "ENCODING 6.6e1 -> EFORMAT (was U+0006)");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 65abc\nBBX 8 2 0 0\nBITMAP\nA5\n3C\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "ENCODING 65abc -> EFORMAT");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 65\nBBX 8 2 0 0trailing\nBITMAP\nA5\n3C\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "BBX 8 2 0 0trailing -> EFORMAT");
+    assert_eq(_tp_parse_bdf("FONTBOUNDINGBOX 8 2 0 0\nCHARS 1xyz\n", _tp_ga()),
+      KASHI_BDF_EFORMAT, "CHARS 1xyz -> EFORMAT");
+    assert_eq(_tp_parse_bdf("FONTBOUNDINGBOX 8 2 0 0junk\nCHARS 1\n", _tp_ga()),
+      KASHI_BDF_EFORMAT, "FONTBOUNDINGBOX 8 2 0 0junk -> EFORMAT");
+    # Still accepted: tab, CR and space after a number (the two-int
+    # `ENCODING -1 n` form), and a number that ends the buffer.
+    var id = _tp_load1("STARTCHAR A\nENCODING\t65\t\nBBX 8 2 0 0\nBITMAP\nA5\n3C\nENDCHAR\n");
+    assert_eq(kashi_font_row(id, 0x41, 0), 0xA5, "ENCODING<TAB>65<TAB> maps U+0041");
+    id = _tp_load_bdf("FONTBOUNDINGBOX 8 2 0 0\nCHARS 2\n", _tp_ga(),
+      "STARTCHAR x\nENCODING -1 66\nBBX 8 2 0 0\nBITMAP\nFF\nFF\nENDCHAR\n");
+    assert_gte(id, KASHI_RT_FONT_BASE, "'ENCODING -1 66' (two-int form) parses");
+    assert_eq(kashi_rt_font_count(id), 1, "'ENCODING -1 66' glyph skipped");
+    var num = alloc(8);
+    var nint[16];
+    _tp_str(num, 0, "65x");
+    assert_eq(_kashi_bdf_int(num, 0, 2, &nint), 1, "int ending at the buffer end parses");
+    assert_eq(load64(&nint + 0), 65, "int ending at the buffer end: value");
+    assert_eq(_kashi_bdf_int(num, 0, 3, &nint), 0, "int followed by 'x' fails");
+    _tp_str(num, 0, "65\r");
+    assert_eq(_kashi_bdf_int(num, 0, 3, &nint), 1, "int followed by CR parses");
+    _tp_str(num, 0, "65-");
+    assert_eq(_kashi_bdf_int(num, 0, 3, &nint), 0, "int followed by '-' fails");
+    return 0;
+}
+
+# --- B5: header keywords may not repeat ------------------------------------
+
+# audit 2026-10-30, B5: a repeated STARTFONT, FONTBOUNDINGBOX or CHARS
+# overwrote the earlier value (last one wins), so two readers could
+# disagree on the font's geometry. The 0.8.0 F8 duplicate-table rule now
+# covers BDF as it does PCF.
+fn test_b5_bdf_header_repeats() {
+    test_group("B5: BDF header keywords may not repeat");
+    assert_eq(_tp_parse_bdf("STARTFONT 2.1\nFONTBOUNDINGBOX 8 2 0 0\nCHARS 1\n", _tp_ga()),
+      KASHI_BDF_EFORMAT, "STARTFONT twice -> EFORMAT");
+    assert_eq(_tp_parse_bdf("FONTBOUNDINGBOX 8 2 0 0\nCHARS 1\nSTARTFONT 2.1\n", _tp_ga()),
+      KASHI_BDF_EFORMAT, "STARTFONT again after CHARS -> EFORMAT");
+    assert_eq(_tp_parse_bdf("FONTBOUNDINGBOX 8 2 0 0\nFONTBOUNDINGBOX 8 2 0 0\nCHARS 1\n", _tp_ga()),
+      KASHI_BDF_EFORMAT, "identical FONTBOUNDINGBOX twice -> EFORMAT");
+    assert_eq(_tp_parse_bdf("FONTBOUNDINGBOX 8 2 0 0\nCHARS 1\nCHARS 1\n", _tp_ga()),
+      KASHI_BDF_EFORMAT, "identical CHARS twice -> EFORMAT");
+    # The audit's trigger: every header keyword re-declared with new values.
+    var block = "STARTCHAR A\nENCODING 65\nBBX 16 2 0 0\nBITMAP\nA5A5\n0001\nENDCHAR\n";
+    var head = "FONTBOUNDINGBOX 8 8 0 0\nCHARS 1\nFONTBOUNDINGBOX 16 2 0 0\nCHARS 3\nSTARTFONT 9.9\n";
+    assert_eq(_tp_parse_bdf(head, block), KASHI_BDF_EFORMAT, "re-declared geometry -> parse EFORMAT");
+    assert_eq(_tp_load_bdf(head, block, ""), 0 - KASHI_EFORMAT, "re-declared geometry -> load EFORMAT");
+    assert_eq(_tp_parse_bdf("FONTBOUNDINGBOX 16 2 0 0\nCHARS 1\n", block), KASHI_BDF_OK,
+      "the same font declared once parses");
+    return 0;
+}
+
+# --- B6: kashi_bdf_next_glyph validates its ctx ----------------------------
+
+# Store a forged 32-byte BDF ctx.
+fn _tp_bdf_ctx(ctx, w, h) {
+    store64(ctx + BDF_CTX_W, w);
+    store64(ctx + BDF_CTX_H, h);
+    store64(ctx + BDF_CTX_X, 0);
+    store64(ctx + BDF_CTX_Y, 0);
+    return 0;
+}
+
+# audit 2026-10-30, B6: next_glyph trusted the caller's ctx. With W = H =
+# 9,999,999,999 `need = H * ceil(W / 8)` wrapped negative, passed the
+# dest_size check, and a matching BBX wrote past `dest`. A ctx from a failed
+# parse is zeroed and must be refused too. The probes give each bad ctx a
+# buffer that 1.2.2 answered with OK or EFORMAT without writing (a lone
+# ENDFONT, or a glyph whose BBX does not match), so the old code fails here
+# on the return value rather than by corrupting memory.
+fn test_b6_bdf_ctx_bounds() {
+    test_group("B6: kashi_bdf_next_glyph validates its ctx");
+    var ctx[32];
+    var gout[24];
+    var region = alloc(256);
+    _tp_fill(region, 256, 0xEE);
+    var dest = region + 64;
+    var endf = alloc(16);
+    var elen = _tp_str(endf, 0, "ENDFONT\n");
+    var gbuf = alloc(256);
+    var glen = _tp_str(gbuf, 0, _tp_ga());
+
+    _tp_bdf_ctx(&ctx, 0, 0);
+    assert_eq(kashi_bdf_next_glyph(endf, 0, elen, &ctx, dest, 128, &gout), KASHI_BDF_EINVAL,
+      "zeroed ctx, ENDFONT buffer -> EINVAL (was OK)");
+    assert_eq(kashi_bdf_next_glyph(gbuf, 0, glen, &ctx, dest, 128, &gout), KASHI_BDF_EINVAL,
+      "zeroed ctx, glyph buffer -> EINVAL (was EFORMAT)");
+    # A ctx left by a failed parse is that zeroed ctx.
+    var hdr[56];
+    var bad = alloc(64);
+    var blen = _tp_str(bad, 0, "STARTFONT 2.1\nFONTBOUNDINGBOX 33 2 0 0\nCHARS 1\n");
+    _tp_bdf_ctx(&ctx, 8, 2);
+    assert_eq(kashi_bdf_parse_header(bad, blen, &hdr, &ctx), KASHI_BDF_EFORMAT, "FBB width 33 -> EFORMAT");
+    assert_eq(load64(&ctx + BDF_CTX_W), 0, "failed parse leaves ctx W zeroed");
+    assert_eq(kashi_bdf_next_glyph(endf, 0, elen, &ctx, dest, 128, &gout), KASHI_BDF_EINVAL,
+      "ctx from a failed parse -> EINVAL");
+
+    _tp_bdf_ctx(&ctx, 9999999999, 9999999999);
+    assert_eq(kashi_bdf_next_glyph(endf, 0, elen, &ctx, dest, 16, &gout), KASHI_BDF_EINVAL,
+      "forged W = H = 9999999999 -> EINVAL (need wrapped negative)");
+    assert_eq(kashi_bdf_next_glyph(gbuf, 0, glen, &ctx, dest, 16, &gout), KASHI_BDF_EINVAL,
+      "forged W = H = 9999999999, glyph buffer -> EINVAL");
+    _tp_bdf_ctx(&ctx, 33, 8);
+    assert_eq(kashi_bdf_next_glyph(endf, 0, elen, &ctx, dest, 128, &gout), KASHI_BDF_EINVAL,
+      "ctx W 33 (cap + 1) -> EINVAL");
+    _tp_bdf_ctx(&ctx, 8, 33);
+    assert_eq(kashi_bdf_next_glyph(endf, 0, elen, &ctx, dest, 128, &gout), KASHI_BDF_EINVAL,
+      "ctx H 33 (cap + 1) -> EINVAL");
+    _tp_bdf_ctx(&ctx, 0 - 8, 2);
+    assert_eq(kashi_bdf_next_glyph(endf, 0, elen, &ctx, dest, 128, &gout), KASHI_BDF_EINVAL,
+      "ctx W -8 -> EINVAL");
+    _tp_bdf_ctx(&ctx, 8, 0);
+    assert_eq(kashi_bdf_next_glyph(endf, 0, elen, &ctx, dest, 128, &gout), KASHI_BDF_EINVAL,
+      "ctx H 0 -> EINVAL");
+    var clean = 1;
+    var i = 0;
+    while (i < 256) {
+        if (load8(region + i) != 0xEE) { clean = 0; }
+        i = i + 1;
+    }
+    assert_eq(clean, 1, "no bad ctx wrote a byte");
+
+    # The caps themselves are accepted.
+    _tp_bdf_ctx(&ctx, 32, 32);
+    assert_eq(kashi_bdf_next_glyph(endf, 0, elen, &ctx, dest, 128, &gout), KASHI_BDF_OK,
+      "ctx 32 x 32 (the caps) -> OK");
+    assert_eq(load64(&gout + BG_KIND), BG_KIND_END, "ctx 32 x 32: END at ENDFONT");
+    _tp_bdf_ctx(&ctx, 1, 1);
+    assert_eq(kashi_bdf_next_glyph(endf, 0, elen, &ctx, dest, 1, &gout), KASHI_BDF_OK,
+      "ctx 1 x 1 -> OK");
+
+    # dest_size at the exact boundary (audit 2026-10-30, T4: a check
+    # loosened to `need - 1` wrote one byte past `dest`). 12x3 glyph: stride
+    # 2, need 6.
+    var g12 = alloc(512);
+    var g12len = _tp_str(g12, 0,
+      "STARTCHAR A\nENCODING 65\nBBX 12 3 0 0\nBITMAP\nA5F0\n3C10\n0FF0\nENDCHAR\n");
+    _tp_fill(region, 256, 0xEE);
+    _tp_bdf_ctx(&ctx, 12, 3);
+    assert_eq(kashi_bdf_next_glyph(g12, 0, g12len, &ctx, dest, 5, &gout), KASHI_BDF_EINVAL,
+      "dest_size need - 1 -> EINVAL");
+    assert_eq(load8(dest), 0xEE, "dest_size need - 1: nothing written");
+    assert_eq(kashi_bdf_next_glyph(g12, 0, g12len, &ctx, dest, 6, &gout), KASHI_BDF_OK,
+      "dest_size == need -> OK");
+    assert_eq(load8(dest + 4), 0x0F, "dest_size == need: last row decoded");
+    assert_eq(load8(dest + 5), 0xF0, "dest_size == need: last byte decoded");
+    assert_eq(load8(dest + 6), 0xEE, "dest_size == need: byte past dest untouched");
+    return 0;
+}
+
+# --- BDF hex row cut at the buffer end -------------------------------------
+
+# audit 2026-10-30, T4 (length guards): a BITMAP row whose first hex digit
+# is the buffer's last byte must not read the byte past `end`. A guard
+# loosened by one decoded that byte into `dest`; the result code is EFORMAT
+# either way, so the probe plants a hex digit just past `end` and checks
+# `dest` stayed untouched.
+fn test_bdf_hex_row_at_end() {
+    test_group("BDF hex row cut at the buffer end");
+    var ctx[32];
+    var gout[24];
+    var dest = alloc(16);
+    _tp_fill(dest, 16, 0xEE);
+    var buf = alloc(256);
+    var len = _tp_str(buf, 0, "STARTCHAR A\nENCODING 65\nBBX 8 2 0 0\nBITMAP\n18\n2");
+    store8(buf + len, 0x34);   # '4' just past the end
+    _tp_bdf_ctx(&ctx, 8, 2);
+    assert_eq(kashi_bdf_next_glyph(buf, 0, len, &ctx, dest, 2, &gout), KASHI_BDF_EFORMAT,
+      "row cut after one hex digit -> EFORMAT");
+    assert_eq(load8(dest), 0x18, "row 0 decoded");
+    assert_eq(load8(dest + 1), 0xEE, "row 1 not decoded from the byte past end");
+    return 0;
+}
+
+# --- 0.8.0 F3, made falsifiable --------------------------------------------
+
+# The 0.8.0 F3 test (src/test.cyr) uses `CHARS 99999999999`, which the
+# CHARS <= 65536 cap rejects whether or not the digit cap works. These
+# 11-digit values truncate to a VALID 10-digit prefix, so only the digit
+# cap (with B4's boundary rule behind it) rejects them; the 10-digit forms
+# pin the cap from the other side.
+fn test_bdf_digit_cap() {
+    test_group("BDF 10-digit cap (0.8.0 F3, falsifiable)");
+    assert_eq(_tp_parse_bdf("FONTBOUNDINGBOX 8 2 0 0\nCHARS 0000000001\n", _tp_ga()),
+      KASHI_BDF_OK, "CHARS with 10 digits (value 1) -> OK");
+    assert_eq(_tp_parse_bdf("FONTBOUNDINGBOX 8 2 0 0\nCHARS 00000000012\n", _tp_ga()),
+      KASHI_BDF_EFORMAT, "CHARS with 11 digits (prefix value 1) -> EFORMAT");
+    var id = _tp_load1("STARTCHAR A\nENCODING 0000000065\nBBX 0000000008 2 0 0\nBITMAP\nA5\n3C\nENDCHAR\n");
+    assert_eq(kashi_font_row(id, 0x41, 0), 0xA5, "10-digit ENCODING / BBX fields load");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 00000000065\nBBX 8 2 0 0\nBITMAP\nA5\n3C\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "11-digit ENCODING (prefix U+0006) -> EFORMAT");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 65\nBBX 00000000008 2 0 0\nBITMAP\nA5\n3C\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "11-digit BBX width -> EFORMAT");
+    return 0;
+}
+
+# --- BDF validation boundaries ---------------------------------------------
+
+# audit 2026-10-30, T4: the CHARS cap, the ENCODING > U+10FFFF skip, the
+# BBX offset checks and the "nothing encoded" rejection each survived a
+# mutant with every suite green.
+fn test_bdf_bounds() {
+    test_group("BDF validation boundaries");
+    assert_eq(_tp_parse_bdf("FONTBOUNDINGBOX 8 2 0 0\nCHARS 65536\n", _tp_ga()),
+      KASHI_BDF_OK, "CHARS 65536 (the cap) -> OK");
+    assert_eq(_tp_parse_bdf("FONTBOUNDINGBOX 8 2 0 0\nCHARS 65537\n", _tp_ga()),
+      KASHI_BDF_EFORMAT, "CHARS 65537 -> EFORMAT");
+    assert_eq(_tp_parse_bdf("FONTBOUNDINGBOX 8 2 0 0\nCHARS 0\n", _tp_ga()),
+      KASHI_BDF_EFORMAT, "CHARS 0 -> EFORMAT");
+    var head2 = "FONTBOUNDINGBOX 8 2 0 0\nCHARS 2\n";
+    var id = _tp_load_bdf(head2, _tp_ga(),
+      "STARTCHAR top\nENCODING 1114111\nBBX 8 2 0 0\nBITMAP\n81\n42\nENDCHAR\n");
+    assert_eq(kashi_rt_font_count(id), 2, "ENCODING 1114111 (U+10FFFF) kept");
+    assert_eq(kashi_font_row(id, 0x10FFFF, 1), 0x42, "U+10FFFF addressable");
+    id = _tp_load_bdf(head2, _tp_ga(), "STARTCHAR big\nENCODING 1114112\nBBX 8 2 0 0\nBITMAP\n81\n42\nENDCHAR\n");
+    assert_eq(kashi_rt_font_count(id), 1, "ENCODING 1114112 (U+10FFFF + 1) skipped");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 65\nBBX 8 2 0 1\nBITMAP\nA5\n3C\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "BBX y offset != FONTBOUNDINGBOX -> EFORMAT");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 65\nBBX 8 2 1 0\nBITMAP\nA5\n3C\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "BBX x offset != FONTBOUNDINGBOX -> EFORMAT");
+    assert_eq(_tp_load1("STARTCHAR A\nENCODING 65\nBBX 8 3 0 0\nBITMAP\nA5\n3C\n00\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "BBX height != FONTBOUNDINGBOX -> EFORMAT");
+    assert_eq(_tp_load1("STARTCHAR x\nENCODING -1\nBBX 8 2 0 0\nBITMAP\nFF\nFF\nENDCHAR\n"),
+      0 - KASHI_EFORMAT, "only an unencoded glyph -> EFORMAT");
+    return 0;
+}
+
+# --- P1: PSF1 surrogates ---------------------------------------------------
+
+# Run the PSF1 token reader over the two bytes `lo`, `hi`.
+fn _tp_tok1(tok, lo, hi) {
+    var b = alloc(2);
+    store8(b + 0, lo);
+    store8(b + 1, hi);
+    kashi_psf_uni_token(b, 0, 2, KASHI_PSF_KIND_PSF1, tok);
+    return load64(tok + KASHI_UT_TYPE);
+}
+
+# audit 2026-10-30, P1: PSF2's UTF-8 path has rejected U+D800..U+DFFF since
+# 0.6.0 (audit F2), but PSF1's u16 path returned them as codepoints, so a
+# PSF1 table put surrogates in the map. Now a surrogate is malformed: the
+# reader reports END and the table walk stops there, as for bad UTF-8.
+fn test_p1_psf1_surrogates() {
+    test_group("P1: PSF1 surrogates end the table");
+    var tok[24];
+    assert_eq(_tp_tok1(&tok, 0x00, 0xD8), KASHI_TOK_END, "u16 U+D800 -> END");
+    assert_eq(load64(&tok + KASHI_UT_NEXT), 2, "U+D800: next = end");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0, "U+D800: no codepoint reported");
+    assert_eq(_tp_tok1(&tok, 0xFF, 0xDB), KASHI_TOK_END, "u16 U+DBFF -> END");
+    assert_eq(_tp_tok1(&tok, 0x00, 0xDC), KASHI_TOK_END, "u16 U+DC00 -> END");
+    assert_eq(_tp_tok1(&tok, 0xFF, 0xDF), KASHI_TOK_END, "u16 U+DFFF -> END");
+    assert_eq(_tp_tok1(&tok, 0xFF, 0xD7), KASHI_TOK_CP, "u16 U+D7FF (below) -> CP");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0xD7FF, "U+D7FF value");
+    assert_eq(_tp_tok1(&tok, 0x00, 0xE0), KASHI_TOK_CP, "u16 U+E000 (above) -> CP");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0xE000, "U+E000 value");
+
+    # A PSF1 whose table maps glyph 0 -> 'A', glyph 1 -> U+D800, glyph 2 -> 'B'.
+    var buf = alloc(4 + 256 * 2 + 520);
+    var dataend = _tp_psf1(buf, 0x02, 2);
+    store8(buf + 4 + 0, 0x11);
+    store8(buf + 4 + 2, 0x22);
+    store8(buf + 4 + 4, 0x33);
+    var p = dataend;
+    var g = 0;
+    while (g < 256) {
+        if (g == 0) { store8(buf + p, 0x41); store8(buf + p + 1, 0x00); p = p + 2; }
+        if (g == 1) { store8(buf + p, 0x00); store8(buf + p + 1, 0xD8); p = p + 2; }
+        if (g == 2) { store8(buf + p, 0x42); store8(buf + p + 1, 0x00); p = p + 2; }
+        store8(buf + p, 0xFF);
+        store8(buf + p + 1, 0xFF);
+        p = p + 2;
+        g = g + 1;
+    }
+    var id = kashi_load_psf(buf, p);
+    assert_gte(id, KASHI_RT_FONT_BASE, "PSF1 with a surrogate in its table loads");
+    assert_eq(kashi_font_ptr(id, 0x41), kashi_rt_glyph_ptr(id, 0), "'A' (before the surrogate) maps glyph 0");
+    assert_eq(kashi_font_row(id, 0x41, 0), 0x11, "'A' row 0");
+    assert_eq(kashi_font_ptr(id, 0xD800), 0, "U+D800 not mapped (was glyph 1)");
+    assert_eq(kashi_font_row(id, 0xD800, 0), 0, "U+D800 row -> 0");
+    assert_eq(kashi_font_ptr(id, 0x42), 0, "walk stopped at the surrogate: 'B' not mapped");
+
+    # Same rule through a sidecar attach (kind PSF1): a table of nothing
+    # but surrogates maps nothing, so the attach fails.
+    var tl = alloc(4 + 256 * 2);
+    var tlen = _tp_psf1(tl, 0, 2);
+    var tid = kashi_load_psf(tl, tlen);
+    var sur = alloc(8);
+    store8(sur + 0, 0x00); store8(sur + 1, 0xD8); store8(sur + 2, 0xFF); store8(sur + 3, 0xFF);
+    store8(sur + 4, 0xFF); store8(sur + 5, 0xDF); store8(sur + 6, 0xFF); store8(sur + 7, 0xFF);
+    assert_eq(kashi_attach_unicode_table(tid, sur, 8, KASHI_PSF_KIND_PSF1), 0 - KASHI_EFORMAT,
+      "attach of a surrogates-only PSF1 table -> EFORMAT");
+    assert_eq(kashi_font_ptr(tid, 0xD800), 0, "attach: U+D800 not mapped");
+    return 0;
+}
+
+# --- P2: kashi_psf_uni_token with null arguments ---------------------------
+
+# audit 2026-10-30, P2: the token reader stored into `out` and read `buf`
+# with no null check (kashi_psf_parse has always had one); both faulted.
+# A null `buf` is now an empty table. To make the 1.2.2 behaviour fail on a
+# VALUE instead of a fault, the first probes pass as `pos` the absolute
+# address of a real 'A': with buf == 0 the old reader loaded `0 + pos` and
+# returned CP 0x41.
+fn test_p2_uni_token_null() {
+    test_group("P2: kashi_psf_uni_token null buf / out");
+    var tok[24];
+    var a = alloc(8);
+    store8(a + 0, 0x41);
+    store8(a + 1, 0x00);
+    store64(&tok + KASHI_UT_TYPE, 99);
+    store64(&tok + KASHI_UT_CP, 99);
+    kashi_psf_uni_token(0, a, a + 2, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END, "buf == 0 (PSF2) -> END, nothing read");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0, "buf == 0 (PSF2): cp 0");
+    assert_eq(load64(&tok + KASHI_UT_NEXT), a + 2, "buf == 0 (PSF2): next = end");
+    kashi_psf_uni_token(0, a, a + 2, KASHI_PSF_KIND_PSF1, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END, "buf == 0 (PSF1) -> END, nothing read");
+    kashi_psf_uni_token(0, 0, 4, KASHI_PSF_KIND_PSF2, &tok);
+    assert_eq(load64(&tok + KASHI_UT_TYPE), KASHI_TOK_END, "buf == 0, pos 0 -> END");
+    # out == 0: nowhere to report, so it returns without writing (1.2.2
+    # stored to address 8 first and faulted).
+    assert_eq(kashi_psf_uni_token(a, 0, 1, KASHI_PSF_KIND_PSF2, 0), 0, "out == 0 (PSF2) returns");
+    assert_eq(kashi_psf_uni_token(a, 0, 2, KASHI_PSF_KIND_PSF1, 0), 0, "out == 0 (PSF1) returns");
+    assert_eq(kashi_psf_uni_token(a, 5, 1, KASHI_PSF_KIND_PSF2, 0), 0, "out == 0, pos >= end returns");
+    assert_eq(kashi_psf_uni_token(0, 0, 4, KASHI_PSF_KIND_PSF1, 0), 0, "buf == out == 0 returns");
+    return 0;
+}
+
+# --- PSF validation boundaries ---------------------------------------------
+
+# audit 2026-10-30, T4: the PSF2 count cap, the PSF length guards and the
+# Unicode-table offset were never probed at the exact boundary, so each
+# could be loosened by one with every suite green.
+fn test_psf_bounds() {
+    test_group("PSF count cap + length guards at the boundary");
+    var hdr[56];
+    var big = alloc(32 + 65537 + 8);
+    var blen = _tp_psf2(big, 65536, 1, 1, 0);
+    assert_eq(kashi_psf_parse(big, blen, &hdr), KASHI_OK, "PSF2 count 65536 (the cap) -> OK");
+    assert_eq(load64(&hdr + KASHI_PH_COUNT), 65536, "PSF2 count 65536 read back");
+    blen = _tp_psf2(big, 65537, 1, 1, 0);
+    assert_eq(kashi_psf_parse(big, blen, &hdr), KASHI_EFORMAT, "PSF2 count 65537 -> EFORMAT");
+    blen = _tp_psf2(big, 0, 1, 1, 0);
+    assert_eq(kashi_psf_parse(big, 64, &hdr), KASHI_EFORMAT, "PSF2 count 0 -> EFORMAT");
+
+    # Glyph data: exactly enough vs one byte short (both banks, both kinds).
+    var b1 = alloc(4 + 512 * 3 + 8);
+    var e1 = _tp_psf1(b1, 0, 3);
+    assert_eq(kashi_psf_parse(b1, e1, &hdr), KASHI_OK, "PSF1 256 x 3 at exactly its length -> OK");
+    assert_eq(kashi_psf_parse(b1, e1 - 1, &hdr), KASHI_EFORMAT, "PSF1 256 x 3 one byte short -> EFORMAT");
+    e1 = _tp_psf1(b1, 1, 3);
+    assert_eq(kashi_psf_parse(b1, e1, &hdr), KASHI_OK, "PSF1 512 x 3 at exactly its length -> OK");
+    assert_eq(kashi_psf_parse(b1, e1 - 1, &hdr), KASHI_EFORMAT, "PSF1 512 x 3 one byte short -> EFORMAT");
+    assert_eq(kashi_load_psf(b1, e1 - 1), 0 - KASHI_EFORMAT, "load PSF1 one byte short -> EFORMAT");
+    var b2 = alloc(128);
+    var e2 = _tp_psf2(b2, 3, 5, 12, 0);   # stride 2, charsize 10
+    assert_eq(kashi_psf_parse(b2, e2, &hdr), KASHI_OK, "PSF2 3 x 12x5 at exactly its length -> OK");
+    assert_eq(kashi_psf_parse(b2, e2 - 1, &hdr), KASHI_EFORMAT, "PSF2 one byte short -> EFORMAT");
+    # A longer header moves the data and the length it needs.
+    _tp_fill(b2, 128, 0);
+    _tp_psf2(b2, 3, 5, 12, 0);
+    _tp_put32(b2, 8, 40, 0);
+    assert_eq(kashi_psf_parse(b2, 70, &hdr), KASHI_OK, "PSF2 headersize 40 at exactly 40 + 30 -> OK");
+    assert_eq(load64(&hdr + KASHI_PH_DATAOFF), 40, "PSF2 headersize 40: data at 40");
+    assert_eq(kashi_psf_parse(b2, 69, &hdr), KASHI_EFORMAT, "PSF2 headersize 40, one byte short -> EFORMAT");
+    _tp_put32(b2, 8, 31, 0);
+    assert_eq(kashi_psf_parse(b2, 70, &hdr), KASHI_EFORMAT, "PSF2 headersize 31 -> EFORMAT");
+    _tp_put32(b2, 8, 71, 0);
+    assert_eq(kashi_psf_parse(b2, 70, &hdr), KASHI_EFORMAT, "PSF2 headersize past len -> EFORMAT");
+    # Too short for a header at all.
+    var tiny = alloc(40);
+    _tp_psf2(tiny, 1, 1, 1, 0);
+    assert_eq(kashi_psf_parse(tiny, 31, &hdr), KASHI_EFORMAT, "PSF2 magic in 31 bytes -> EFORMAT");
+    _tp_psf1(b1, 0, 1);
+    assert_eq(kashi_psf_parse(b1, 3, &hdr), KASHI_EFORMAT, "PSF1 magic in 3 bytes -> EFORMAT");
+
+    # The Unicode-table offset: a table flag with no byte after the glyphs
+    # is no table; one byte more is a table at the glyph end.
+    e1 = _tp_psf1(b1, 0x02, 3);
+    store8(b1 + 4 + 0x41 * 3, 0x5A);
+    assert_eq(kashi_psf_parse(b1, e1, &hdr), KASHI_OK, "PSF1 HASTAB, no table bytes -> OK");
+    assert_eq(load64(&hdr + KASHI_PH_UNIOFF), 0, "PSF1 HASTAB at len == data end: no table");
+    assert_eq(kashi_psf_parse(b1, e1 + 1, &hdr), KASHI_OK, "PSF1 HASTAB + 1 byte -> OK");
+    assert_eq(load64(&hdr + KASHI_PH_UNIOFF), e1, "PSF1 HASTAB + 1 byte: table at data end");
+    var id = kashi_load_psf(b1, e1);
+    assert_eq(kashi_font_row(id, 0x41, 0), 0x5A, "PSF1 HASTAB with no table bytes: identity addressing");
+    store8(b1 + 2, 0x04);
+    assert_eq(kashi_psf_parse(b1, e1 + 2, &hdr), KASHI_OK, "PSF1 SEQ-only mode + table -> OK");
+    assert_eq(load64(&hdr + KASHI_PH_UNIOFF), e1, "PSF1 SEQ-only mode: table at data end");
+    store8(b1 + 2, 0x00);
+    assert_eq(kashi_psf_parse(b1, e1 + 2, &hdr), KASHI_OK, "PSF1 mode 0 + trailing bytes -> OK");
+    assert_eq(load64(&hdr + KASHI_PH_UNIOFF), 0, "PSF1 mode 0: trailing bytes are no table");
+    e2 = _tp_psf2(b2, 3, 5, 12, 1);
+    assert_eq(kashi_psf_parse(b2, e2, &hdr), KASHI_OK, "PSF2 HAS_UNICODE, no table bytes -> OK");
+    assert_eq(load64(&hdr + KASHI_PH_UNIOFF), 0, "PSF2 HAS_UNICODE at len == data end: no table");
+    assert_eq(kashi_psf_parse(b2, e2 + 1, &hdr), KASHI_OK, "PSF2 HAS_UNICODE + 1 byte -> OK");
+    assert_eq(load64(&hdr + KASHI_PH_UNIOFF), e2, "PSF2 HAS_UNICODE + 1 byte: table at data end");
+    return 0;
+}
+
+# audit 2026-10-30, T4: PSF1 mode bit 3 was never set by a test (the 0.8.0
+# F1 test sets bit 4 only), and the PSF1 / PSF2 height and width bounds had
+# no probe at the edge.
+fn test_psf_header_fields() {
+    test_group("PSF header field bounds");
+    var hdr[56];
+    var b1 = alloc(4 + 256 * 33 + 8);
+    var e1 = _tp_psf1(b1, 0x08, 8);
+    assert_eq(kashi_psf_parse(b1, e1, &hdr), KASHI_EFORMAT, "PSF1 mode bit 3 (0x08) -> EFORMAT");
+    store8(b1 + 2, 0x80);
+    assert_eq(kashi_psf_parse(b1, e1, &hdr), KASHI_EFORMAT, "PSF1 mode bit 7 (0x80) -> EFORMAT");
+    e1 = _tp_psf1(b1, 0, 0);
+    assert_eq(kashi_psf_parse(b1, 260, &hdr), KASHI_EFORMAT, "PSF1 charsize 0 -> EFORMAT");
+    e1 = _tp_psf1(b1, 0, 32);
+    assert_eq(kashi_psf_parse(b1, e1, &hdr), KASHI_OK, "PSF1 charsize 32 (the cap) -> OK");
+    e1 = _tp_psf1(b1, 0, 33);
+    assert_eq(kashi_psf_parse(b1, e1, &hdr), KASHI_EFORMAT, "PSF1 charsize 33 -> EFORMAT");
+    var b2 = alloc(32 + 2 * 132);
+    var e2 = _tp_psf2(b2, 2, 32, 8, 0);
+    assert_eq(kashi_psf_parse(b2, e2, &hdr), KASHI_OK, "PSF2 height 32 (the cap) -> OK");
+    e2 = _tp_psf2(b2, 2, 33, 8, 0);
+    assert_eq(kashi_psf_parse(b2, e2, &hdr), KASHI_EFORMAT, "PSF2 height 33 -> EFORMAT");
+    e2 = _tp_psf2(b2, 2, 0, 8, 0);
+    assert_eq(kashi_psf_parse(b2, 64, &hdr), KASHI_EFORMAT, "PSF2 height 0 -> EFORMAT");
+    e2 = _tp_psf2(b2, 2, 4, 0, 0);
+    assert_eq(kashi_psf_parse(b2, 64, &hdr), KASHI_EFORMAT, "PSF2 width 0 -> EFORMAT");
+    e2 = _tp_psf2(b2, 2, 4, 1, 0);
+    assert_eq(kashi_psf_parse(b2, e2, &hdr), KASHI_OK, "PSF2 width 1 -> OK");
+    return 0;
+}
+
+# Run the PSF2 (UTF-8) token reader over `n` bytes with `end` = `lim`.
+fn _tp_tok8(tok, b0, b1, b2, b3, lim) {
+    var b = alloc(8);
+    store8(b + 0, b0);
+    store8(b + 1, b1);
+    store8(b + 2, b2);
+    store8(b + 3, b3);
+    kashi_psf_uni_token(b, 0, lim, KASHI_PSF_KIND_PSF2, tok);
+    return load64(tok + KASHI_UT_TYPE);
+}
+
+# audit 2026-10-30, T4: the 3-byte overlong boundary was untested (the
+# overlong tests use U+0000 and U+0080, not U+07FF), and the truncation
+# guard was only probed with an INVALID byte past `end`, so a guard loosened
+# by one still answered END there. Here the byte past `end` is a valid
+# continuation that must not be read.
+fn test_utf8_bounds() {
+    test_group("PSF2 UTF-8 boundaries");
+    var tok[24];
+    assert_eq(_tp_tok8(&tok, 0xE0, 0x9F, 0xBF, 0, 3), KASHI_TOK_END, "E0 9F BF (overlong U+07FF) -> END");
+    assert_eq(_tp_tok8(&tok, 0xC1, 0xBF, 0, 0, 2), KASHI_TOK_END, "C1 BF (overlong U+007F) -> END");
+    assert_eq(_tp_tok8(&tok, 0xDF, 0xBF, 0, 0, 2), KASHI_TOK_CP, "DF BF (U+07FF, 2 bytes) -> CP");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0x7FF, "U+07FF value");
+    assert_eq(_tp_tok8(&tok, 0xC3, 0xA9, 0, 0, 1), KASHI_TOK_END, "C3 | A9: continuation past end not read");
+    assert_eq(load64(&tok + KASHI_UT_NEXT), 1, "C3 | A9: next = end");
+    assert_eq(_tp_tok8(&tok, 0xE2, 0x82, 0xAC, 0, 2), KASHI_TOK_END, "E2 82 | AC: 3-byte cut at end -> END");
+    assert_eq(_tp_tok8(&tok, 0xE2, 0x82, 0xAC, 0, 3), KASHI_TOK_CP, "E2 82 AC whole -> CP");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0x20AC, "U+20AC value");
+    assert_eq(_tp_tok8(&tok, 0xF0, 0x9F, 0x98, 0x80, 3), KASHI_TOK_END, "F0 9F 98 | 80: 4-byte cut at end -> END");
+    assert_eq(_tp_tok8(&tok, 0xF0, 0x9F, 0x98, 0x80, 4), KASHI_TOK_CP, "F0 9F 98 80 whole -> CP");
+    assert_eq(load64(&tok + KASHI_UT_CP), 0x1F600, "U+1F600 value");
+    return 0;
+}
+
+# --- F1: a failed PCF parse leaves a dead ctx ------------------------------
+
+# audit 2026-10-30, F1: kashi_pcf_parse_header stored the glyph count
+# before validating METRICS, BITMAPS and BDF_ENCODINGS, so a failed parse
+# left a ctx with a live count and zero offsets. decode_glyph on it read
+# `buf + 4 * idx` (up to 256 KiB past the buffer) and cp_to_idx read the
+# magic bytes as a glyph index (0x6601 = 26113). Now the count is cleared on
+# every late failure: decode_glyph answers EINVAL and cp_to_idx 0 - 1.
+fn test_f1_pcf_failed_ctx() {
+    test_group("F1: PCF ctx after a failed parse");
+    var hdr[56];
+    var ctx[144];
+    var dest = alloc(64);
+    var buf = alloc(1024);
+
+    # (a) BDF_ENCODINGS fails (min byte2 > max byte2): the bitmaps were
+    # parsed, so 1.2.2 decoded glyph 0 from the stale ctx.
+    _tp_pcf_defaults();
+    var len = _tp_pcf_build(buf);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_OK, "PCF template parses");
+    _tp_put16(buf, _tp_pcf_eoff + 4, 0x44, 0);
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT, "bad ENCODINGS -> EFORMAT");
+    assert_eq(load64(&ctx + PCF_CTX_GLYPH_COUNT), 0, "bad ENCODINGS: ctx count cleared");
+    _tp_fill(dest, 64, 0xEE);
+    assert_eq(kashi_pcf_decode_glyph(buf, &ctx, 0, dest, 64), KASHI_PCF_EINVAL,
+      "bad ENCODINGS: decode_glyph(0) -> EINVAL (was OK)");
+    assert_eq(load8(dest), 0xEE, "bad ENCODINGS: nothing decoded");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0), 0 - 1, "bad ENCODINGS: cp_to_idx(0) -> 0 - 1");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x41), 0 - 1, "bad ENCODINGS: cp_to_idx('A') -> 0 - 1");
+    assert_eq(load64(&hdr + PCF_PH_COUNT), 0, "bad ENCODINGS: hdr untouched");
+
+    # (b) BITMAPS fails (its on-disk format word disagrees with the TOC).
+    len = _tp_pcf_build(buf);
+    store8(buf + _tp_pcf_boff, 0x09);
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT, "bad BITMAPS -> EFORMAT");
+    assert_eq(load64(&ctx + PCF_CTX_GLYPH_COUNT), 0, "bad BITMAPS: ctx count cleared");
+    assert_eq(kashi_pcf_decode_glyph(buf, &ctx, 0, dest, 64), KASHI_PCF_EINVAL,
+      "bad BITMAPS: decode_glyph(0) -> EINVAL (was EFORMAT off the magic)");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x41), 0 - 1, "bad BITMAPS: cp_to_idx -> 0 - 1");
+
+    # (c) METRICS fails (its count disagrees with BITMAPS).
+    len = _tp_pcf_build(buf);
+    _tp_put16(buf, _tp_pcf_moff + 4, 2, 0);
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT, "bad METRICS -> EFORMAT");
+    assert_eq(load64(&ctx + PCF_CTX_GLYPH_COUNT), 0, "bad METRICS: ctx count cleared");
+    assert_eq(kashi_pcf_decode_glyph(buf, &ctx, 2, dest, 64), KASHI_PCF_EINVAL,
+      "bad METRICS: decode_glyph(2) -> EINVAL");
+
+    # (d) The audit's trigger: an 80-byte PCF whose METRICS table is empty
+    # and whose BITMAPS claims 65,536 glyphs. 1.2.2 kept that count:
+    # cp_to_idx(0) answered 26113 and decode_glyph(65535) read buf + 262140.
+    # The buffer is 270,000 zeroed bytes so the old reads stay inside it.
+    var s = alloc(270000);
+    _tp_fill(s, 270000, 0);
+    store8(s + 0, 0x01);
+    store8(s + 1, 0x66);
+    store8(s + 2, 0x63);
+    store8(s + 3, 0x70);
+    _tp_put32(s, 4, 3, 0);
+    _tp_put32(s, 8, 0x04, 0);
+    _tp_put32(s, 16, 0, 0);
+    _tp_put32(s, 20, 56, 0);
+    _tp_put32(s, 24, 0x08, 0);
+    _tp_put32(s, 32, 24, 0);
+    _tp_put32(s, 36, 56, 0);
+    _tp_put32(s, 40, 0x20, 0);
+    _tp_put32(s, 48, 16, 0);
+    _tp_put32(s, 52, 64, 0);
+    _tp_put32(s, 60, 65536, 0);
+    assert_eq(kashi_pcf_parse_header(s, 80, &hdr, &ctx), KASHI_PCF_EFORMAT, "80-byte stale-count PCF -> EFORMAT");
+    assert_eq(load64(&ctx + PCF_CTX_GLYPH_COUNT), 0, "80-byte PCF: ctx count cleared (was 65536)");
+    assert_eq(kashi_pcf_cp_to_idx(s, &ctx, 0), 0 - 1, "80-byte PCF: cp_to_idx(0) -> 0 - 1 (was 26113)");
+    assert_eq(kashi_pcf_decode_glyph(s, &ctx, 65535, dest, 64), KASHI_PCF_EINVAL,
+      "80-byte PCF: decode_glyph(65535) -> EINVAL (read buf + 262140)");
+    assert_eq(kashi_pcf_decode_glyph(s, &ctx, 0, dest, 64), KASHI_PCF_EINVAL,
+      "80-byte PCF: decode_glyph(0) -> EINVAL");
+    assert_eq(kashi_load_pcf(s, 80), 0 - KASHI_EFORMAT, "80-byte PCF: load -> EFORMAT");
+
+    # A zero-count ctx makes both readers touch nothing. Probed with a
+    # buffer pointer of 1 (page 0 is never mapped), so any read faults; on
+    # the byte-0 cell a cp_to_idx without its count check would read there.
+    var dead[144];
+    _tp_fill(&dead, 144, 0);
+    assert_eq(kashi_pcf_cp_to_idx(1, &dead, 0), 0 - 1, "zero-count ctx: cp_to_idx reads nothing");
+    assert_eq(kashi_pcf_decode_glyph(1, &dead, 0, dest, 64), KASHI_PCF_EINVAL,
+      "zero-count ctx: decode_glyph reads nothing");
+
+    # The same ctx is fully live again after a good parse.
+    len = _tp_pcf_build(buf);
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_OK, "re-parse of the template OK");
+    assert_eq(kashi_pcf_decode_glyph(buf, &ctx, 2, dest, 64), KASHI_PCF_OK, "re-parsed ctx decodes");
+    assert_eq(load8(dest + 3), 0x24, "re-parsed ctx: glyph 2 row 3");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x43), 2, "re-parsed ctx: 'C' -> 2");
+    return 0;
+}
+
+# --- PCF structural guards -------------------------------------------------
+
+# audit 2026-10-30, T4: seven PCF checks could be weakened with every suite
+# green — the METRICS count cross-check, uniformity of every field on every
+# glyph, scan unit <= glyph pad (ADR 0009), the byte2 / byte1 <= 0xFF
+# bounds, `raw >= glyph_count` in cp_to_idx, and the "no glyph mapped" load
+# rejection. Each probe corrupts one field of an otherwise valid font.
+fn test_pcf_structure() {
+    test_group("PCF structural guards");
+    var buf = alloc(4096);
+    var len = 0;
+
+    # METRICS count must EQUAL the bitmap count: one more, one fewer.
+    _tp_pcf_defaults();
+    _tp_pcf_nmet = 4;
+    len = _tp_pcf_build(buf);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_EFORMAT, "METRICS count n + 1 -> EFORMAT");
+    _tp_pcf_defaults();
+    len = _tp_pcf_build(buf);
+    _tp_put16(buf, _tp_pcf_moff + 4, 2, 0);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_EFORMAT, "METRICS count n - 1 -> EFORMAT");
+
+    # Uniformity: each of the five fields, on the LAST glyph, both metric
+    # forms; and the descent on a middle glyph.
+    # Four templates: little / big endian x compressed / uncompressed.
+    var notok = 0;
+    var bad = 0;
+    var form = 0;
+    while (form < 4) {
+        _tp_pcf_defaults();
+        _tp_pcf_be = form / 2;
+        _tp_pcf_comp = form % 2;
+        len = _tp_pcf_build(buf);
+        if (_tp_pcf_parse(buf, len) != KASHI_PCF_OK) { notok = notok + 1; }
+        var f = 0;
+        while (f < 5) {
+            len = _tp_pcf_build(buf);
+            # +1 on the field's first byte (low byte LE, high byte BE).
+            var at = _tp_pcf_mfield(2, f);
+            store8(buf + at, load8(buf + at) + 1);
+            if (_tp_pcf_parse(buf, len) != KASHI_PCF_EFORMAT) { bad = bad + 1; }
+            f = f + 1;
+        }
+        form = form + 1;
+    }
+    assert_eq(notok, 0, "all four metric forms of the template parse");
+    assert_eq(bad, 0, "any of the 5 fields differing on the last glyph -> EFORMAT (all four forms)");
+    _tp_pcf_defaults();
+    len = _tp_pcf_build(buf);
+    store8(buf + _tp_pcf_mfield(1, 4), 0x82);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_EFORMAT, "descent differing on glyph 1 -> EFORMAT");
+
+    # Scan unit wider than the glyph pad is refused; equal is fine.
+    _tp_pcf_defaults();
+    _tp_pcf_pad = 0;
+    _tp_pcf_scan = 1;
+    len = _tp_pcf_build(buf);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_EFORMAT, "scan unit 2 > glyph pad 1 -> EFORMAT");
+    _tp_pcf_defaults();
+    _tp_pcf_pad = 1;
+    _tp_pcf_scan = 1;
+    len = _tp_pcf_build(buf);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_OK, "scan unit 2 == glyph pad 2 -> OK");
+
+    # byte2 / byte1 upper bounds: 0xFF is the last legal value.
+    _tp_pcf_defaults();
+    _tp_pcf_minb2 = 0xFE;
+    _tp_pcf_maxb2 = 0xFF;
+    len = _tp_pcf_build(buf);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_OK, "max byte2 0xFF -> OK");
+    _tp_pcf_maxb2 = 0x100;
+    len = _tp_pcf_build(buf);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_EFORMAT, "max byte2 0x100 -> EFORMAT");
+    _tp_pcf_defaults();
+    _tp_pcf_minb1 = 0xFF;
+    _tp_pcf_maxb1 = 0x100;
+    len = _tp_pcf_build(buf);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_EFORMAT, "max byte1 0x100 -> EFORMAT");
+    _tp_pcf_defaults();
+    len = _tp_pcf_build(buf);
+    _tp_put16(buf, _tp_pcf_eoff + 6, 0x40, 0);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_EFORMAT, "min byte2 > max byte2 -> EFORMAT");
+
+    # A cell holding glyph_count is one past the last glyph: unmapped. A
+    # cell holding glyph_count - 1 is the last glyph.
+    var hdr[56];
+    var ctx[144];
+    _tp_pcf_defaults();
+    len = _tp_pcf_build(buf);
+    _tp_put16(buf, _tp_pcf_eoff + 14, 3, 0);
+    _tp_put16(buf, _tp_pcf_eoff + 16, 2, 0);
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_OK, "cell == count: font parses");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x41), 0 - 1, "cell == glyph_count -> 0 - 1");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x42), 2, "cell == glyph_count - 1 -> that glyph");
+    var id = kashi_load_pcf(buf, len);
+    assert_gte(id, KASHI_RT_FONT_BASE, "cell == count: font loads");
+    assert_eq(kashi_font_ptr(id, 0x41), 0, "cell == count: codepoint unmapped after load");
+    assert_eq(kashi_font_row(id, 0x42, 0), 0x21, "cell == count - 1: glyph 2 row 0");
+
+    # Every cell 0xFFFF: nothing addressable, so the load is refused.
+    _tp_pcf_defaults();
+    len = _tp_pcf_build(buf);
+    _tp_put16(buf, _tp_pcf_eoff + 14, 0xFFFF, 0);
+    _tp_put16(buf, _tp_pcf_eoff + 16, 0xFFFF, 0);
+    _tp_put16(buf, _tp_pcf_eoff + 18, 0xFFFF, 0);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_OK, "all-unmapped font parses");
+    assert_eq(kashi_load_pcf(buf, len), 0 - KASHI_EFORMAT, "all-unmapped font -> load EFORMAT");
+    return 0;
+}
+
+# audit 2026-10-30, T4 (length guards): a glyph's rows must end inside
+# BITMAPS (a check loosened to `src > data_end` decoded up to a glyph's
+# worth past the table), and the last table must end inside the buffer.
+fn test_pcf_lengths() {
+    test_group("PCF length guards at the boundary");
+    var buf = alloc(1024);
+    var hdr[56];
+    var ctx[144];
+    var dest = alloc(64);
+    _tp_pcf_defaults();
+    var len = _tp_pcf_build(buf);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_OK, "PCF at exactly its length -> OK");
+    assert_eq(_tp_pcf_parse(buf, len - 1), KASHI_PCF_EFORMAT, "PCF one byte short -> EFORMAT");
+    assert_eq(kashi_load_pcf(buf, len - 1), 0 - KASHI_EFORMAT, "load PCF one byte short -> EFORMAT");
+    # Last glyph moved one byte later: its last row ends one byte past BITMAPS.
+    var lastoff = _tp_pcf_boff + 8 + 2 * 4;
+    _tp_put32(buf, lastoff, 2 * _tp_pcf_gsize + 1, 0);
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_OK, "late last glyph: header parses");
+    assert_eq(kashi_pcf_decode_glyph(buf, &ctx, 2, dest, 64), KASHI_PCF_EFORMAT,
+      "glyph rows one byte past BITMAPS -> EFORMAT");
+    assert_eq(kashi_pcf_decode_glyph(buf, &ctx, 1, dest, 64), KASHI_PCF_OK, "the glyph before it still decodes");
+    assert_eq(kashi_load_pcf(buf, len), 0 - KASHI_EFORMAT, "late last glyph -> load EFORMAT");
+    # Exactly at the end of BITMAPS (the glyph overlaps its neighbour's
+    # bytes, which is legal) decodes.
+    _tp_put32(buf, lastoff, 2 * _tp_pcf_gsize, 0);
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_OK, "last glyph flush: header parses");
+    assert_eq(kashi_pcf_decode_glyph(buf, &ctx, 2, dest, 64), KASHI_PCF_OK, "last glyph flush with BITMAPS end -> OK");
+    assert_eq(load8(dest + 3), 0x24, "last glyph flush: row 3");
+    # decode_glyph's dest_size boundary: height * stride = 4.
+    _tp_fill(dest, 64, 0xEE);
+    assert_eq(kashi_pcf_decode_glyph(buf, &ctx, 0, dest, 3), KASHI_PCF_EINVAL, "decode dest_size need - 1 -> EINVAL");
+    assert_eq(load8(dest), 0xEE, "decode dest_size need - 1: nothing written");
+    assert_eq(kashi_pcf_decode_glyph(buf, &ctx, 0, dest, 4), KASHI_PCF_OK, "decode dest_size == need -> OK");
+    assert_eq(load8(dest + 4), 0xEE, "decode dest_size == need: byte past dest untouched");
+    return 0;
+}
+
+# --- L6: the PCF map allocation can be refused -----------------------------
+
+# audit 2026-10-30, L6: kashi_load_pcf sizes its codepoint map by the
+# encoded range, not by the glyph count, so one glyph under byte1 and byte2
+# ranges of 0..0xFF is a 4-byte glyph store but a 1 MiB map (65536 cells x
+# 16 bytes). A refused map must fail the load before a pair is written and
+# leave nothing registered. No suite refused it, so deleting the check
+# survived them all; without it the first pair is written through a null
+# pointer (a fault, the only way it can show). The allocation is refused by
+# lowering the stdlib's ALLOC_MAX, as tests/maps.tcyr does for the PSF and
+# attach paths.
+fn test_l6_pcf_map_oom() {
+    test_group("L6: PCF map allocation refused");
+    var buf = alloc(140000);
+    _tp_pcf_defaults();
+    _tp_pcf_n = 1;
+    _tp_pcf_nmet = 1;
+    _tp_pcf_maxb1 = 0xFF;
+    _tp_pcf_minb2 = 0;
+    _tp_pcf_maxb2 = 0xFF;
+    var len = _tp_pcf_build(buf);
+    assert_eq(_tp_pcf_parse(buf, len), KASHI_PCF_OK, "1 glyph x 65536 cells parses");
+    var saved = ALLOC_MAX;
+    var before = kashi_font_total();
+    ALLOC_MAX = 262144;
+    var rc = kashi_load_pcf(buf, len);
+    var after = kashi_font_total();
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EFORMAT, "1 MiB map against a 256 KiB cap -> EFORMAT");
+    assert_eq(after, before, "map refused: nothing registered");
+    var id = kashi_load_pcf(buf, len);
+    assert_gte(id, KASHI_RT_FONT_BASE, "same font loads without the cap");
+    assert_eq(kashi_rt_font_count(id), 1, "uncapped: one glyph");
+    assert_eq(kashi_font_row(id, 0xFFFF, 0), 0x01, "uncapped: U+FFFF -> glyph 0, row 0");
+    assert_eq(kashi_font_row(id, 0, 3), 0x04, "uncapped: U+0000 -> glyph 0, row 3");
+    _tp_pcf_defaults();
+    return 0;
+}
+
+# --- C1: the reverse search is bounded by a constant -----------------------
+
+# Every answer of kashi_cp437_from_unicode over the span its binary search
+# serves (U+00A0..U+25A0), folded with its codepoint into one checksum.
+fn _tp_cp437_sweep() {
+    var h = 0xCBF29CE484222325;
+    var cp = 0xA0;
+    while (cp <= 0x25A0) {
+        h = (h ^ ((cp << 16) | kashi_cp437_from_unicode(cp))) * 0x100000001B3;
+        cp = cp + 1;
+    }
+    return h;
+}
+
+# audit 2026-10-30, C1: the search set `hi = kashi_cp437_n - 1` from an
+# exported, writable global with no tie to the index's 128 slots. With
+# n = 200 it read the count and the glyph buffers as entries (U+2592,
+# U+25A0 answered 0); with n = 2^40 it faulted. It is clamped to 127 now, so any
+# count of 128 or more answers exactly as 128 does. The sweeps run at the
+# moderate counts first, so the 1.2.2 code fails an assertion before the
+# huge count can fault it.
+fn test_c1_cp437_count_clamp() {
+    test_group("C1: cp437 reverse search ignores a bad count");
+    assert_eq(kashi_cp437_n, 128, "count is 128 after init");
+    var base = _tp_cp437_sweep();
+    kashi_cp437_n = 200;
+    assert_eq(_tp_cp437_sweep(), base, "count 200: every answer unchanged");
+    assert_eq(kashi_cp437_from_unicode(0x25A0), 0xFE, "count 200: U+25A0 -> 0xFE");
+    assert_eq(kashi_cp437_from_unicode(0x2592), 0xB1, "count 200: U+2592 -> 0xB1");
+    kashi_cp437_n = 1500;
+    assert_eq(_tp_cp437_sweep(), base, "count 1500: every answer unchanged");
+    kashi_cp437_n = 0x10000000000;
+    assert_eq(_tp_cp437_sweep(), base, "count 2^40: every answer unchanged, no wild read");
+    kashi_cp437_n = 0x7FFFFFFFFFFFFFFF;
+    assert_eq(kashi_cp437_from_unicode(0xA0), 0xFF, "count i64 max: U+00A0 -> 0xFF");
+    assert_eq(kashi_cp437_from_unicode(0x25A0), 0xFE, "count i64 max: U+25A0 -> 0xFE");
+    # A count of 0 is the documented pre-init state: the high half answers 0.
+    kashi_cp437_n = 0;
+    assert_eq(kashi_cp437_from_unicode(0xA0), 0, "count 0: high half answers 0");
+    assert_eq(kashi_cp437_from_unicode(0x41), 0x41, "count 0: ASCII still answers");
+    kashi_cp437_n = 128;
+    assert_eq(_tp_cp437_sweep(), base, "count restored: answers unchanged");
+    return 0;
+}
+
+# audit 2026-10-30, C1, in the pre-init state. After init a search never
+# passes slot 127 (U+25A0, the largest entry), so a clamp one too loose
+# (hi = 128) answered every probe above unchanged. Before init the index is
+# all zeros and every high-half search climbs to the top slot. Slot 128 is
+# kashi_cp437_n itself (declared right after the index; see _tp_rev_fnv),
+# so a bound of 128 read a forged count as an entry: the count 0x41A000 is
+# the bytes 00 A0 41, the entry {U+00A0 -> 0x41}, and 0xFEA025 is
+# {U+25A0 -> 0xFE}. main has run kashi_font_init by now, so the probe
+# zeroes the index to recreate that state and re-inits after. It runs after
+# the sweeps above, which the unclamped 1.2.2 search fails on a value
+# before any huge count faults it. With another layout slot 128 is some
+# other variable; the clamp still answers 0, so this can go blind but
+# never fail.
+fn test_c1_pre_init_clamp() {
+    test_group("C1: cp437 reverse search in the pre-init state");
+    _tp_fill(&kashi_cp437_rev, 1024, 0);
+    kashi_cp437_n = 0x41A000;
+    assert_eq(kashi_cp437_from_unicode(0xA0), 0, "zeroed index, count 0x41A000: U+00A0 -> 0 (slot 128 not read)");
+    kashi_cp437_n = 0xFEA025;
+    assert_eq(kashi_cp437_from_unicode(0x25A0), 0, "zeroed index, count 0xFEA025: U+25A0 -> 0 (slot 128 not read)");
+    kashi_font_init();
+    assert_eq(kashi_cp437_from_unicode(0x25A0), 0xFE, "index rebuilt by re-init: U+25A0 -> 0xFE");
+    return 0;
+}
+
+# --- the reverse-index packer's guards -------------------------------------
+
+# The index, the 8 bytes declared before it and the count declared after
+# it: everywhere a bad packer write could land (cycc lays module-scope
+# variables out in declaration order; a different layout can only make this
+# blind, never fail).
+fn _tp_rev_fnv() {
+    return _tp_fnv(0xCBF29CE484222325, &kashi_cp437_rev - 8, 8 + 1024 + 8);
+}
+
+# audit 2026-10-30, T4: _kashi_cp437_ent's five guards (slot 0..127,
+# codepoint 1..0xFFFF, cell >= 0x80) — the reverse-index half of 1.1.0's "a
+# bad entry is skipped, never written past the table" — could all be
+# deleted with every suite green. Slot 128 is kashi_cp437_n: an unguarded
+# write there set the count to 16,752,640. Every probe below would change a
+# byte the checksum covers.
+fn test_cp437_ent_guards() {
+    test_group("reverse-index packer guards");
+    var before = _tp_rev_fnv();
+    _kashi_cp437_ent(128, 0x00A0FF);
+    _kashi_cp437_ent(0 - 1, 0x00A0FF);
+    _kashi_cp437_ent(0, 0x0000FF);
+    _kashi_cp437_ent(0, 0x1000080);
+    _kashi_cp437_ent(0, 0x00A07F);
+    var after = _tp_rev_fnv();
+    assert_eq(after, before, "bad slot / codepoint / cell: no byte written");
+    assert_eq(kashi_cp437_n, 128, "slot 128 (the count) not written");
+    assert_eq(kashi_cp437_from_unicode(0xA0), 0xFF, "slot 0 intact: U+00A0 -> 0xFF");
+    assert_eq(kashi_cp437_from_unicode(0x25A0), 0xFE, "slot 127 intact: U+25A0 -> 0xFE");
+    # The probe can see a write: an in-range entry IS stored.
+    _kashi_cp437_ent(0, 0x00A080);
+    assert_eq(kashi_cp437_from_unicode(0xA0), 0x80, "in-range entry is written");
+    assert_neq(_tp_rev_fnv(), before, "checksum sees an in-range write");
+    kashi_font_init();
+    assert_eq(kashi_cp437_from_unicode(0xA0), 0xFF, "re-init restores slot 0");
+    assert_eq(kashi_cp437_n, 128, "re-init: count 128");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    kashi_font_init();
+
+    test_b1_bdf_endfont();
+    test_b2_bdf_alloc_bound();
+    test_b3_bdf_extra_rows();
+    test_b4_bdf_int_boundary();
+    test_b5_bdf_header_repeats();
+    test_b6_bdf_ctx_bounds();
+    test_bdf_hex_row_at_end();
+    test_bdf_digit_cap();
+    test_bdf_bounds();
+    test_p1_psf1_surrogates();
+    test_p2_uni_token_null();
+    test_psf_bounds();
+    test_psf_header_fields();
+    test_utf8_bounds();
+    test_f1_pcf_failed_ctx();
+    test_pcf_structure();
+    test_pcf_lengths();
+    test_l6_pcf_map_oom();
+    test_c1_cp437_count_clamp();
+    test_c1_pre_init_clamp();
+    test_cp437_ent_guards();
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(SYS_EXIT, exit_code);

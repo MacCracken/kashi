@@ -1,6 +1,6 @@
 # Getting started with kashi
 
-> **Last Updated**: 2026-10-29 (1.2.2 — `tag` lines; 1.2.1 — the pin at cyrius 6.7.18, `tag`
+> **Last Updated**: 2026-10-30 (1.3.0 — `tag` lines, the test suites; 1.2.2 — `tag` lines; 1.2.1 — the pin at cyrius 6.7.18, `tag`
 > lines bumped, the consumer-`path` description matches the stack; 1.2.0 —
 > the 6.7.6 local-`path` rule; 1.1.1 — glyph buffers right-sized, a
 > bare `cyrius test` runs both suites; 1.1.0 — Unicode
@@ -51,13 +51,18 @@ cyrius build docs/examples/glyph_sheet.cyr build/glyph_sheet && ./build/glyph_sh
                                          # must equal docs/examples/glyph_sheet.sha256 (CI checks)
 ```
 
-There are two suites, and on the pinned cyrius (6.7.18; any pin from 6.6.17)
-a bare `cyrius test` runs both: first the `[build].test` entry, `src/test.cyr`
-(~450 assertions, including the byte-fidelity pins for the built-in tables and
-the storage-sizing checks), then every `tests/*.tcyr` (`tests/kashi.tcyr`,
-~145 — structural invariants for all three built-ins, the Unicode → cell map,
-file round-trips). Each file must end in an "N passed, 0 failed" summary.
-`cyrius test src/test.cyr` or `cyrius test tests/kashi.tcyr` runs one alone.
+On the pinned cyrius (6.7.18; any pin from 6.6.17) a bare `cyrius test`
+runs every suite. First comes the `[build].test` entry, `src/test.cyr`
+(~460 assertions, including the byte-fidelity pins for the built-in tables
+and the storage-sizing checks). Then comes every `tests/*.tcyr`:
+- `tests/kashi.tcyr`, ~145: structural invariants for all three built-ins,
+  the Unicode → cell map, file round-trips;
+- since 1.3.0, the hardening suites `maps`, `parsers`, `pcf_formats` and
+  `files`: ~780 more.
+
+Each file must end in an "N passed, 0 failed" summary. `cyrius test
+src/test.cyr` or `cyrius test tests/maps.tcyr` runs one alone. CI also runs
+everything under `CYRIUS_POISON=1`.
 (Below 6.6.17 a bare run skipped the unit suite — kashi's pin was 6.6.6
 through 1.1.0.)
 
@@ -106,7 +111,7 @@ keep commented out):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.2.2"
+tag     = "1.3.0"
 path    = "../kashi"                  # optional; on cyrius >= 6.7.6, only under --local
 modules = ["src/font_data.cyr"]       # vendored as lib/kashi_font_data.cyr
 ```
@@ -210,8 +215,8 @@ whatever comes back, so this is the trust boundary — see `SECURITY.md`.
 ### Consume it
 
 `cyrius distlib` folds the `[lib]` module list into a single file,
-`dist/kashi.cyr`, and writes `dist/kashi.deps` beside it naming the four
-stdlib leaves the fold needs (`vec`, `alloc`, `string`, `io`). That bundle is what a consumer declares —
+`dist/kashi.cyr`, and writes `dist/kashi.deps` beside it naming the five
+stdlib leaves the fold needs (`syscalls`, `vec`, `alloc`, `string`, `io`). That bundle is what a consumer declares —
 **not** `src/lib.cyr`, whose `include "src/font_data.cyr"` is a path
 relative to kashi's own root and cannot resolve once vendored (ADR 0001,
 amendment):
@@ -219,7 +224,7 @@ amendment):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.2.2"
+tag     = "1.3.0"
 path    = "../kashi"
 modules = ["dist/kashi.cyr"]          # vendored as lib/kashi.cyr
 ```

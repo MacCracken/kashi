@@ -19,9 +19,13 @@ All four attach functions:
   The previous arrays leak conceptually; the bump allocator
   reclaims at process exit.
 - **Are atomic on failure**: a returned negative code implies "no
-  observable state change" — if the new table produces no entries
-  or the input is malformed, the previous map is restored
-  (audit F9, 0.8.0).
+  observable state change" (audit F9, 0.8.0). Since 1.3.0 the new maps
+  are built aside and stored only once the table has parsed, so the
+  record is never cleared in between. That holds for a single-threaded
+  caller; see [Thread safety](README.md#thread-safety).
+- **Build the map like a load does** (duplicates: the highest glyph wins;
+  a table of only sequences makes every single codepoint miss). See
+  [loading.md, Codepoint maps](loading.md#codepoint-maps).
 - **Reject built-in font IDs** (< `KASHI_RT_FONT_BASE`) with
   `KASHI_EINVAL`. Built-ins carry their own fixed mapping — the
   freestanding core's `kashi_cp437_from_unicode` (1.1.0, ADR 0011:
@@ -75,11 +79,13 @@ fn kashi_attach_unicode_table_file(font_id, path, kind);
 #   -> KASHI_OK or 0 - <KashiResult>
 ```
 
-File companion: reads at most `KASHI_TAB_FILE_CAP` (256 KiB) and
-delegates to `kashi_attach_unicode_table`. Returns `0 - KASHI_EINVAL`
-on a read error (missing / permission denied) and `0 - KASHI_EFORMAT`
-on an empty file. A file larger than the cap is not an error: its first
-256 KiB are read and attached.
+File companion: takes a regular file of at most `KASHI_TAB_FILE_CAP`
+(256 KiB) and delegates to `kashi_attach_unicode_table`. The font id and
+`kind` are validated before the path is opened. A file over the cap, a
+missing or unreadable path, or a FIFO / tty / device (Linux) returns
+`0 - KASHI_EINVAL`; an empty file returns `0 - KASHI_EFORMAT`. Until 1.3.0
+a larger file was cut at the cap and attached
+([loading.md, Reading font files](loading.md#reading-font-files)).
 
 ```cyrius
 kashi_attach_unicode_table_file(id, "/path/to/font.tab", KASHI_PSF_KIND_PSF1);
@@ -132,8 +138,8 @@ fn kashi_attach_unicode_text_file(font_id, path);
 #   -> KASHI_OK or 0 - <KashiResult>
 ```
 
-File companion: reads at most `KASHI_TAB_FILE_CAP` (256 KiB) and
-delegates to `kashi_attach_unicode_text`.
+File companion: same file rules as `kashi_attach_unicode_table_file`,
+then delegates to `kashi_attach_unicode_text`.
 
 ```cyrius
 kashi_attach_unicode_text_file(id, "/path/to/font.tab");

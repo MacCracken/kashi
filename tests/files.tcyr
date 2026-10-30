@@ -1,0 +1,729 @@
+# kashi — file-reader suite (1.3.0): the five *_file entry points.
+# Stdlib auto-included via cyrius.cyml. kashi_load_psf_file,
+# kashi_load_bdf_file, kashi_load_pcf_file, kashi_attach_unicode_table_file
+# and kashi_attach_unicode_text_file all read through _kashi_read_file
+# (ADR 0012). Until 1.3.0 they allocated their whole cap before opening the
+# path (audit 2026-10-30, L3), cut a larger file at the cap and loaded what
+# fit (L4), blocked forever on a FIFO (L5), and the attach calls read the
+# path before checking the font id (L14); kashi_attach_unicode_table_file
+# had no test at all and no test tried a non-regular path (T7). This suite
+# pins the reader's contract through every entry point:
+#   - a regular file loads, and costs its own size (+1), not the cap;
+#   - a file of exactly the cap loads; one byte more is 0 - KASHI_EINVAL;
+#   - an empty file is 0 - KASHI_EFORMAT; a missing path 0 - KASHI_EINVAL;
+#   - on Linux a directory, a FIFO, a device or a symlink to one is
+#     0 - KASHI_EINVAL at once, and none of those failures allocates;
+#   - attach_*_file rejects a bad font id (or kind) without touching the
+#     path.
+# Fixtures live in a private 0700 directory build/kashi_files.<pid> (per
+# process, so concurrent runs never collide) and are removed at the end.
+# A regression to a blocking open hangs on the FIFO case; the runner's
+# per-test deadline (cyrius test --timeout, 300 s by default) turns that
+# into a failure.
+
+include "src/lib.cyr"
+
+# The entry points, as _tf_call dispatches them.
+enum _TfApi {
+    _TF_PSF = 0;
+    _TF_BDF = 1;
+    _TF_PCF = 2;
+    _TF_TAB = 3;
+    _TF_TXT = 4;
+}
+
+# kashi_load_psf_file's cap (a literal in src/lib.cyr; the other four
+# entry points have named caps).
+enum _TfCaps {
+    _TF_PSF_CAP = 262144;
+}
+
+var _tf_dir = 0;          # the private fixture directory (cstring)
+var _tf_linux = 0;        # 1 on the Linux reader (fstat + O_NONBLOCK)
+var _tf_setup_ok = 1;     # 0 once any fixture failed to write
+var _tf_made[48];         # fixture paths to remove at the end (48 x u64)
+var _tf_nmade = 0;
+var _tf_subdir = 0;       # a directory fixture
+var _tf_fifo = 0;         # a FIFO fixture, 0 if none could be made
+var _tf_devlink = 0;      # a symlink to /dev/null, 0 if none could be made
+var _tf_missing = 0;      # a path inside the fixture dir that never exists
+var _tf_empty = 0;        # a 0-byte regular file
+var _tf_attach_id = 0;    # the runtime font the attach rejects target
+
+# The Linux reader is the branch src/lib.cyr compiles when the target is
+# none of agnos / Windows / macOS; the others use the bounded stdlib read,
+# which still blocks on a FIFO, so the special-file cases run only here.
+fn _tf_detect_linux() {
+    #ifndef CYRIUS_TARGET_AGNOS
+    #ifndef CYRIUS_TARGET_WIN
+    #ifndef CYRIUS_TARGET_MACOS
+    _tf_linux = 1;
+    #endif
+    #endif
+    #endif
+    return _tf_linux;
+}
+
+# "<dir>/<name>" as a fresh cstring.
+fn _tf_join(dir, name) {
+    var dl = strlen(dir);
+    var nl = strlen(name);
+    var out = alloc(dl + nl + 2);
+    memcpy(out, dir, dl);
+    store8(out + dl, 0x2F);
+    memcpy(out + dl + 1, name, nl);
+    store8(out + dl + 1 + nl, 0);
+    return out;
+}
+
+fn _tf_track(path) {
+    if (_tf_nmade < 48) {
+        store64(&_tf_made + _tf_nmade * 8, path);
+        _tf_nmade = _tf_nmade + 1;
+    }
+    return path;
+}
+
+# Write a fixture file into the private directory; returns its path.
+fn _tf_file(name, buf, n) {
+    var path = _tf_track(_tf_join(_tf_dir, name));
+    if (file_write_all(path, buf, n) != n) { _tf_setup_ok = 0; }
+    return path;
+}
+
+# Copy a NUL-terminated string into buf at p; returns the new end.
+fn _tf_str(buf, p, s) {
+    var n = strlen(s);
+    memcpy(buf + p, s, n);
+    return p + n;
+}
+
+fn _tf_put32(buf, off, v) {
+    store8(buf + off + 0, v & 0xFF);
+    store8(buf + off + 1, (v >> 8) & 0xFF);
+    store8(buf + off + 2, (v >> 16) & 0xFF);
+    store8(buf + off + 3, (v >> 24) & 0xFF);
+    return 0;
+}
+
+# --- Font and table builders ---
+
+# Tableless PSF1, 256 glyphs of height 3; glyph g's rows are g, 0x5A,
+# 0xFF - g, so a row read names the glyph it came from. 772 bytes.
+fn _tf_mk_psf(buf) {
+    store8(buf + 0, 0x36); store8(buf + 1, 0x04);
+    store8(buf + 2, 0); store8(buf + 3, 3);
+    var g = 0;
+    while (g < 256) {
+        store8(buf + 4 + g * 3 + 0, g);
+        store8(buf + 4 + g * 3 + 1, 0x5A);
+        store8(buf + 4 + g * 3 + 2, 0xFF - g);
+        g = g + 1;
+    }
+    return 4 + 256 * 3;
+}
+
+# 8x4 BDF: U+2603 (rows 81 42 24 18) and 'A' (rows F0 0F F0 0F). Nothing
+# after ENDFONT is ever read, so padding it out keeps the font valid.
+fn _tf_mk_bdf(buf) {
+    var p = 0;
+    p = _tf_str(buf, p, "STARTFONT 2.1\nFONTBOUNDINGBOX 8 4 0 0\nCHARS 2\n");
+    p = _tf_str(buf, p, "STARTCHAR snowman\nENCODING 9731\nBBX 8 4 0 0\n");
+    p = _tf_str(buf, p, "BITMAP\n81\n42\n24\n18\nENDCHAR\n");
+    p = _tf_str(buf, p, "STARTCHAR A\nENCODING 65\nBBX 8 4 0 0\n");
+    p = _tf_str(buf, p, "BITMAP\nF0\n0F\nF0\n0F\nENDCHAR\n");
+    p = _tf_str(buf, p, "ENDFONT\n");
+    return p;
+}
+
+# 8x8 PCF with 'Q' -> glyph 0 and 'R' -> glyph 1 (the layout of
+# tests/kashi.tcyr's round-trip: compressed metrics, MSB-bit, LE-byte,
+# scan/pad 1). Its tables are found through the TOC, so zero padding after
+# them keeps the font valid.
+fn _tf_mk_pcf(buf) {
+    store8(buf + 0, 0x01); store8(buf + 1, 0x66);
+    store8(buf + 2, 0x63); store8(buf + 3, 0x70);
+    _tf_put32(buf, 4, 3);
+    var moff = 56;
+    var msize = 4 + 2 + 2 * 5;
+    _tf_put32(buf, 8, 0x04);
+    _tf_put32(buf, 12, 0x108);
+    _tf_put32(buf, 16, msize);
+    _tf_put32(buf, 20, moff);
+    var boff = moff + msize;
+    var bsize = 4 + 4 + 2 * 4 + 16 + 2 * 8;
+    _tf_put32(buf, 24, 0x08);
+    _tf_put32(buf, 28, 0x08);
+    _tf_put32(buf, 32, bsize);
+    _tf_put32(buf, 36, boff);
+    var eoff = boff + bsize;
+    var esize = 4 + 5 * 2 + 2 * 2;
+    _tf_put32(buf, 40, 0x20);
+    _tf_put32(buf, 44, 0x08);
+    _tf_put32(buf, 48, esize);
+    _tf_put32(buf, 52, eoff);
+    # METRICS: 2 glyphs, left 0 right 8 width 8 ascent 8 descent 0.
+    _tf_put32(buf, moff, 0x108);
+    store8(buf + moff + 4, 2); store8(buf + moff + 5, 0);
+    var mi = 0;
+    while (mi < 2) {
+        var s = moff + 6 + mi * 5;
+        store8(buf + s + 0, 0x80);
+        store8(buf + s + 1, 0x88);
+        store8(buf + s + 2, 0x88);
+        store8(buf + s + 3, 0x88);
+        store8(buf + s + 4, 0x80);
+        mi = mi + 1;
+    }
+    # BITMAPS: offsets 0 and 8, then the two 8-byte glyphs.
+    _tf_put32(buf, boff, 0x08);
+    _tf_put32(buf, boff + 4, 2);
+    _tf_put32(buf, boff + 8, 0);
+    _tf_put32(buf, boff + 12, 8);
+    _tf_put32(buf, boff + 16, 16);
+    _tf_put32(buf, boff + 20, 48);
+    _tf_put32(buf, boff + 24, 96);
+    _tf_put32(buf, boff + 28, 192);
+    var bd = boff + 32;
+    var r = 0;
+    while (r < 8) {
+        store8(buf + bd + r, 0x10 + r);         # glyph 0: 0x10..0x17
+        store8(buf + bd + 8 + r, 0xE0 + r);     # glyph 1: 0xE0..0xE7
+        r = r + 1;
+    }
+    # ENCODINGS: b2 'Q'..'R', b1 0..0, default 0; 'Q' -> 0, 'R' -> 1.
+    _tf_put32(buf, eoff, 0x08);
+    store8(buf + eoff + 4, 0x51); store8(buf + eoff + 5, 0);
+    store8(buf + eoff + 6, 0x52); store8(buf + eoff + 7, 0);
+    store8(buf + eoff + 8, 0); store8(buf + eoff + 9, 0);
+    store8(buf + eoff + 10, 0); store8(buf + eoff + 11, 0);
+    store8(buf + eoff + 12, 0); store8(buf + eoff + 13, 0);
+    store8(buf + eoff + 14, 0); store8(buf + eoff + 15, 0);
+    store8(buf + eoff + 16, 1); store8(buf + eoff + 17, 0);
+    return eoff + esize;
+}
+
+# PSF2 (UTF-8) table for the 256-glyph font: glyph 0x21 = U+2603, glyph
+# 0x44 = U+00E9, glyph 0x43 = the sequence U+0041 U+030A; 0xFF ends each
+# glyph. Further 0xFF bytes only end glyphs past the font's count, so 0xFF
+# padding keeps the table's meaning.
+fn _tf_mk_tab2(buf) {
+    var p = 0;
+    var g = 0;
+    while (g < 256) {
+        if (g == 0x21) {
+            store8(buf + p, 0xE2); store8(buf + p + 1, 0x98); store8(buf + p + 2, 0x83);
+            p = p + 3;
+        }
+        if (g == 0x43) {
+            store8(buf + p, 0xFE); store8(buf + p + 1, 0x41);
+            store8(buf + p + 2, 0xCC); store8(buf + p + 3, 0x8A);
+            p = p + 4;
+        }
+        if (g == 0x44) {
+            store8(buf + p, 0xC3); store8(buf + p + 1, 0xA9);
+            p = p + 2;
+        }
+        store8(buf + p, 0xFF);
+        p = p + 1;
+        g = g + 1;
+    }
+    return p;
+}
+
+# PSF1 (LE u16) table for the 256-glyph font: glyph 0x21 = U+263A, glyph
+# 0x43 = the sequence U+0041 U+0301; 0xFFFF ends each glyph.
+fn _tf_mk_tab1(buf) {
+    var p = 0;
+    var g = 0;
+    while (g < 256) {
+        if (g == 0x21) {
+            store8(buf + p, 0x3A); store8(buf + p + 1, 0x26);
+            p = p + 2;
+        }
+        if (g == 0x43) {
+            store8(buf + p, 0xFE); store8(buf + p + 1, 0xFF);
+            store8(buf + p + 2, 0x41); store8(buf + p + 3, 0x00);
+            store8(buf + p + 4, 0x01); store8(buf + p + 5, 0x03);
+            p = p + 6;
+        }
+        store8(buf + p, 0xFF); store8(buf + p + 1, 0xFF);
+        p = p + 2;
+        g = g + 1;
+    }
+    return p;
+}
+
+# Fill buf[0, n) with `pad` and copy the n0-byte `src` over its start:
+# the cap-sized variants of a fixture. The cap-exact file is the first cap
+# bytes of a cap + 1 buffer, so the two files differ only in the last byte.
+fn _tf_padded(buf, n, src, n0, pad) {
+    memset(buf, pad, n);
+    memcpy(buf, src, n0);
+    return n;
+}
+
+# --- Dispatch and the shared rejection checks ---
+
+fn _tf_call(api, path) {
+    if (api == _TF_PSF) { return kashi_load_psf_file(path); }
+    if (api == _TF_BDF) { return kashi_load_bdf_file(path); }
+    if (api == _TF_PCF) { return kashi_load_pcf_file(path); }
+    if (api == _TF_TAB) {
+        return kashi_attach_unicode_table_file(_tf_attach_id, path, KASHI_PSF_KIND_PSF2);
+    }
+    return kashi_attach_unicode_text_file(_tf_attach_id, path);
+}
+
+# Call `api` on `path`; expect `want`. Where the reader can promise it (the
+# Linux reader for special files; every target for the checks made before
+# the open), also expect nothing allocated: the 1.2.2 entry points spent
+# their whole cap (256 KiB or 4 MiB) on every call, kept for good.
+fn _tf_expect(api, path, want, check_alloc, what, what_alloc) {
+    var before = alloc_used();
+    var rc = _tf_call(api, path);
+    var used = alloc_used() - before;
+    assert_eq(rc, want, what);
+    if (check_alloc == 1) { assert_eq(used, 0, what_alloc); }
+    return rc;
+}
+
+# The rejections every entry point shares.
+fn _tf_rejects(api) {
+    # audit 2026-10-30, L3: a missing path is refused before anything is
+    # allocated (1.2.2 allocated the cap first and kept it).
+    _tf_expect(api, _tf_missing, 0 - KASHI_EINVAL, _tf_linux,
+      "missing path -> EINVAL", "missing path allocates nothing");
+    _tf_expect(api, _tf_empty, 0 - KASHI_EFORMAT, _tf_linux,
+      "empty file -> EFORMAT", "empty file allocates nothing");
+    _tf_expect(api, 0, 0 - KASHI_EINVAL, 1,
+      "null path -> EINVAL", "null path allocates nothing");
+    if (_tf_linux == 1) {
+        # audit 2026-10-30, L5: only a regular file is read. A directory
+        # used to cost the cap before read() said EISDIR.
+        _tf_expect(api, _tf_subdir, 0 - KASHI_EINVAL, 1,
+          "directory -> EINVAL", "directory allocates nothing");
+        # A character device: 1.2.2 read /dev/null to EOF and called it an
+        # empty font (EFORMAT); it is not a font file at all.
+        _tf_expect(api, "/dev/null", 0 - KASHI_EINVAL, 1,
+          "/dev/null -> EINVAL", "/dev/null allocates nothing");
+        # Symlinks are followed (no O_NOFOLLOW), but the type check is on
+        # the opened descriptor, so a link to a device is refused too.
+        if (_tf_devlink != 0) {
+            _tf_expect(api, _tf_devlink, 0 - KASHI_EINVAL, 1,
+              "symlink to /dev/null -> EINVAL", "symlink to device allocates nothing");
+        }
+        # audit 2026-10-30, L5: a FIFO with no writer. 1.2.2 blocked in
+        # open() forever (O_RDONLY without O_NONBLOCK); it is refused now
+        # without a read.
+        if (_tf_fifo != 0) {
+            _tf_expect(api, _tf_fifo, 0 - KASHI_EINVAL, 1,
+              "FIFO -> EINVAL without blocking", "FIFO allocates nothing");
+        }
+    }
+    return 0;
+}
+
+# --- The reader itself ---
+
+# 1 if the n bytes at a (which may be null: a refused read) equal b's.
+fn _tf_same(a, b, n) {
+    if (a == 0) { return 0; }
+    return memeq(a, b, n);
+}
+
+# _kashi_read_file is the Linux reader; _kashi_read_bounded is the one
+# agnos / Windows / macOS compile, exercised here directly because no CI
+# leg runs those targets. Small caps pin the boundary exactly.
+fn test_reader_contract(p100, src100) {
+    test_group("reader: cap boundary and sizing");
+    var res[8];
+    var before = alloc_used();
+    var buf = _kashi_read_file(p100, 100, &res);
+    var used = alloc_used() - before;
+    assert_nonnull(buf, "read_file: a file of exactly the cap is read");
+    assert_eq(load64(&res), 100, "read_file: byte count == file size");
+    assert_eq(_tf_same(buf, src100, 100), 1, "read_file: bytes == file contents");
+    if (_tf_linux == 1) {
+        # audit 2026-10-30, L3: sized to the file (size + 1, rounded to the
+        # allocator's 8), not to the cap.
+        assert_eq(used, 104, "read_file: allocates size + 1, not the cap");
+    }
+    before = alloc_used();
+    buf = _kashi_read_file(p100, 99, &res);
+    used = alloc_used() - before;
+    # audit 2026-10-30, L4: one byte over the cap is refused, not cut.
+    assert_eq(buf, 0, "read_file: one byte over the cap -> no buffer");
+    assert_eq(load64(&res), KASHI_EINVAL, "read_file: over the cap -> EINVAL");
+    if (_tf_linux == 1) {
+        assert_eq(used, 0, "read_file: over-cap refusal allocates nothing");
+    }
+    buf = _kashi_read_file(_tf_empty, 100, &res);
+    assert_eq(buf, 0, "read_file: empty -> no buffer");
+    assert_eq(load64(&res), KASHI_EFORMAT, "read_file: empty -> EFORMAT");
+    buf = _kashi_read_file(0, 100, &res);
+    assert_eq(buf, 0, "read_file: null path -> no buffer");
+    assert_eq(load64(&res), KASHI_EINVAL, "read_file: null path -> EINVAL");
+
+    buf = _kashi_read_bounded(p100, 100, &res);
+    assert_nonnull(buf, "read_bounded: a file of exactly the cap is read");
+    assert_eq(load64(&res), 100, "read_bounded: byte count == file size");
+    assert_eq(_tf_same(buf, src100, 100), 1, "read_bounded: bytes == file contents");
+    buf = _kashi_read_bounded(p100, 99, &res);
+    assert_eq(buf, 0, "read_bounded: one byte over the cap -> no buffer");
+    assert_eq(load64(&res), KASHI_EINVAL, "read_bounded: over the cap -> EINVAL");
+    buf = _kashi_read_bounded(_tf_empty, 100, &res);
+    assert_eq(buf, 0, "read_bounded: empty -> no buffer");
+    assert_eq(load64(&res), KASHI_EFORMAT, "read_bounded: empty -> EFORMAT");
+    buf = _kashi_read_bounded(_tf_missing, 100, &res);
+    assert_eq(buf, 0, "read_bounded: missing -> no buffer");
+    assert_eq(load64(&res), KASHI_EINVAL, "read_bounded: missing -> EINVAL");
+    return 0;
+}
+
+# A successful file load costs the in-memory load plus the file's own size
+# + 1 (audit 2026-10-30, L3: 1.2.2 spent 256 KiB per PSF call and 4 MiB
+# per BDF / PCF call). Runs first: its warm-up load creates the registry,
+# and the six measured loads after it stay under the 16 entries at which
+# the registry's vec first doubles, so the two deltas compare exactly.
+fn test_load_sizing(psf, npsf, bdf, nbdf, pcf, npcf) {
+    test_group("*_file: a load costs the file's size, not the cap");
+    if (_tf_linux == 0) { return 0; }
+    var ppsf = _tf_file("size.psf", psf, npsf);
+    var pbdf = _tf_file("size.bdf", bdf, nbdf);
+    var ppcf = _tf_file("size.pcf", pcf, npcf);
+    # The first registration creates the registry itself; keep it out of
+    # the measured windows.
+    assert_gte(kashi_load_psf(psf, npsf), KASHI_RT_FONT_BASE, "warm-up load registers");
+
+    var b0 = alloc_used();
+    var idm = kashi_load_psf(psf, npsf);
+    var b1 = alloc_used();
+    var idf = kashi_load_psf_file(ppsf);
+    var b2 = alloc_used();
+    assert_gte(idf, KASHI_RT_FONT_BASE, "psf file loads");
+    assert_eq(kashi_font_row(idf, 0x41, 2), 0xBE, "psf file 'A' r2");
+    assert_eq((b2 - b1) - (b1 - b0), (npsf + 1 + 7) & (0 - 8), "psf file costs size + 1 over the in-memory load");
+    assert_gte(idm, KASHI_RT_FONT_BASE, "psf in-memory reference loads");
+
+    b0 = alloc_used();
+    idm = kashi_load_bdf(bdf, nbdf);
+    b1 = alloc_used();
+    idf = kashi_load_bdf_file(pbdf);
+    b2 = alloc_used();
+    assert_gte(idf, KASHI_RT_FONT_BASE, "bdf file loads");
+    assert_eq(kashi_font_row(idf, 0x2603, 3), 0x18, "bdf file U+2603 r3");
+    assert_eq((b2 - b1) - (b1 - b0), (nbdf + 1 + 7) & (0 - 8), "bdf file costs size + 1 over the in-memory load");
+    assert_gte(idm, KASHI_RT_FONT_BASE, "bdf in-memory reference loads");
+
+    b0 = alloc_used();
+    idm = kashi_load_pcf(pcf, npcf);
+    b1 = alloc_used();
+    idf = kashi_load_pcf_file(ppcf);
+    b2 = alloc_used();
+    assert_gte(idf, KASHI_RT_FONT_BASE, "pcf file loads");
+    assert_eq(kashi_font_row(idf, 0x52, 7), 0xE7, "pcf file 'R' r7");
+    assert_eq((b2 - b1) - (b1 - b0), (npcf + 1 + 7) & (0 - 8), "pcf file costs size + 1 over the in-memory load");
+    assert_gte(idm, KASHI_RT_FONT_BASE, "pcf in-memory reference loads");
+    return 0;
+}
+
+# --- One group per entry point: the cap boundary, then the rejections ---
+
+fn test_psf_file(big, psf, npsf) {
+    test_group("kashi_load_psf_file");
+    _tf_padded(big, _TF_PSF_CAP + 1, psf, npsf, 0);
+    var pcap = _tf_file("cap.psf", big, _TF_PSF_CAP);
+    var pover = _tf_file("over.psf", big, _TF_PSF_CAP + 1);
+    # Trailing bytes after a tableless font's glyphs are ignored, so the
+    # padded file is the same font.
+    var id = kashi_load_psf_file(pcap);
+    assert_gte(id, KASHI_RT_FONT_BASE, "exactly 256 KiB loads");
+    assert_eq(kashi_font_row(id, 0x41, 0), 0x41, "cap-sized font 'A' r0");
+    assert_eq(kashi_font_row(id, 0xFF, 0), 0xFF, "cap-sized font glyph 0xFF r0");
+    # audit 2026-10-30, L4: 1.2.2 read the first 256 KiB of this file and
+    # returned a font.
+    _tf_expect(_TF_PSF, pover, 0 - KASHI_EINVAL, _tf_linux,
+      "256 KiB + 1 -> EINVAL (refused, not cut)", "over-cap refusal allocates nothing");
+    _tf_rejects(_TF_PSF);
+    return 0;
+}
+
+fn test_bdf_file(big, bdf, nbdf) {
+    test_group("kashi_load_bdf_file");
+    _tf_padded(big, KASHI_BDF_FILE_CAP + 1, bdf, nbdf, 0x0A);
+    var pcap = _tf_file("cap.bdf", big, KASHI_BDF_FILE_CAP);
+    var pover = _tf_file("over.bdf", big, KASHI_BDF_FILE_CAP + 1);
+    var id = kashi_load_bdf_file(pcap);
+    assert_gte(id, KASHI_RT_FONT_BASE, "exactly 4 MiB loads");
+    assert_eq(kashi_rt_font_count(id), 2, "cap-sized bdf count 2");
+    assert_eq(kashi_font_row(id, 0x2603, 0), 0x81, "cap-sized bdf U+2603 r0");
+    assert_eq(kashi_font_row(id, 0x41, 1), 0x0F, "cap-sized bdf 'A' r1");
+    # audit 2026-10-30, L4: the guide always said a file over the cap is
+    # rejected; 1.2.2 parsed its first 4 MiB and returned the font.
+    _tf_expect(_TF_BDF, pover, 0 - KASHI_EINVAL, _tf_linux,
+      "4 MiB + 1 -> EINVAL (refused, not cut)", "over-cap refusal allocates nothing");
+    _tf_rejects(_TF_BDF);
+    return 0;
+}
+
+fn test_pcf_file(big, pcf, npcf) {
+    test_group("kashi_load_pcf_file");
+    _tf_padded(big, KASHI_PCF_FILE_CAP + 1, pcf, npcf, 0);
+    var pcap = _tf_file("cap.pcf", big, KASHI_PCF_FILE_CAP);
+    var pover = _tf_file("over.pcf", big, KASHI_PCF_FILE_CAP + 1);
+    var id = kashi_load_pcf_file(pcap);
+    assert_gte(id, KASHI_RT_FONT_BASE, "exactly 4 MiB loads");
+    assert_eq(kashi_font_row(id, 0x51, 0), 0x10, "cap-sized pcf 'Q' r0");
+    assert_eq(kashi_font_row(id, 0x52, 3), 0xE3, "cap-sized pcf 'R' r3");
+    # audit 2026-10-30, L4: 1.2.2 parsed its first 4 MiB and returned the
+    # font.
+    _tf_expect(_TF_PCF, pover, 0 - KASHI_EINVAL, _tf_linux,
+      "4 MiB + 1 -> EINVAL (refused, not cut)", "over-cap refusal allocates nothing");
+    _tf_rejects(_TF_PCF);
+    return 0;
+}
+
+# kashi_attach_unicode_table_file had no test at all before 1.3.0 (audit
+# 2026-10-30, T7). Both table kinds, from a font that itself came from a
+# file.
+fn test_table_file(psfpath, big, tab1, ntab1, tab2, ntab2) {
+    test_group("kashi_attach_unicode_table_file");
+    var p1 = _tf_file("table.psf1", tab1, ntab1);
+    var p2 = _tf_file("table.psf2", tab2, ntab2);
+    var seq[16];
+
+    var id1 = kashi_load_psf_file(psfpath);
+    assert_gte(id1, KASHI_RT_FONT_BASE, "tableless font for the PSF1 table");
+    assert_eq(kashi_font_row(id1, 0x41, 0), 0x41, "before attach: identity 'A'");
+    assert_eq(kashi_attach_unicode_table_file(id1, p1, KASHI_PSF_KIND_PSF1), KASHI_OK,
+      "PSF1 table file attaches");
+    assert_eq(kashi_font_row(id1, 0x263A, 0), 0x21, "PSF1: U+263A -> glyph 0x21 r0");
+    assert_eq(kashi_font_row(id1, 0x263A, 2), 0xDE, "PSF1: U+263A -> glyph 0x21 r2");
+    assert_eq(kashi_font_row(id1, 0x41, 0), 0, "PSF1: 'A' now unmapped (table-addressed)");
+    store64(&seq, 0x41); store64(&seq + 8, 0x301);
+    assert_eq(kashi_font_seq_glyph(id1, &seq, 2), 0x43, "PSF1: sequence A + U+0301 -> 0x43");
+
+    var id2 = kashi_load_psf_file(psfpath);
+    assert_gte(id2, KASHI_RT_FONT_BASE, "tableless font for the PSF2 table");
+    assert_eq(kashi_attach_unicode_table_file(id2, p2, KASHI_PSF_KIND_PSF2), KASHI_OK,
+      "PSF2 table file attaches");
+    assert_eq(kashi_font_row(id2, 0x2603, 0), 0x21, "PSF2: U+2603 -> glyph 0x21");
+    assert_eq(kashi_font_row(id2, 0xE9, 0), 0x44, "PSF2: U+00E9 -> glyph 0x44");
+    assert_eq(kashi_font_row(id2, 0x263A, 0), 0, "PSF2: U+263A unmapped");
+    store64(&seq, 0x41); store64(&seq + 8, 0x30A);
+    assert_eq(kashi_font_seq_glyph(id2, &seq, 2), 0x43, "PSF2: sequence A + U+030A -> 0x43");
+    # One file, two kinds: the same bytes as a PSF1 table mean something
+    # else, so the kind really reaches the parser.
+    assert_eq(kashi_attach_unicode_table_file(id1, p2, KASHI_PSF_KIND_PSF2), KASHI_OK,
+      "re-attach the PSF2 file to the first font");
+    assert_eq(kashi_font_row(id1, 0x2603, 0), 0x21, "re-attach replaced the map: U+2603");
+    assert_eq(kashi_font_row(id1, 0x263A, 0), 0, "re-attach replaced the map: U+263A gone");
+
+    # The cap boundary: 0xFF padding only ends glyphs past the font.
+    _tf_padded(big, KASHI_TAB_FILE_CAP + 1, tab2, ntab2, 0xFF);
+    var pcap = _tf_file("cap.psf2tab", big, KASHI_TAB_FILE_CAP);
+    var pover = _tf_file("over.psf2tab", big, KASHI_TAB_FILE_CAP + 1);
+    var id3 = kashi_load_psf_file(psfpath);
+    assert_eq(kashi_attach_unicode_table_file(id3, pcap, KASHI_PSF_KIND_PSF2), KASHI_OK,
+      "exactly 256 KiB table attaches");
+    assert_eq(kashi_font_row(id3, 0xE9, 2), 0xBB, "cap-sized table: U+00E9 -> glyph 0x44 r2");
+    # audit 2026-10-30, L4: 1.2.2 cut this table at 256 KiB and attached it.
+    _tf_attach_id = id3;
+    _tf_expect(_TF_TAB, pover, 0 - KASHI_EINVAL, _tf_linux,
+      "256 KiB + 1 table -> EINVAL (refused, not cut)", "over-cap refusal allocates nothing");
+    _tf_rejects(_TF_TAB);
+    # A refused file never reaches the record: the map and the sequences
+    # the cap-sized table attached are intact.
+    assert_eq(kashi_font_row(id3, 0x2603, 0), 0x21, "failed attaches left U+2603 mapped");
+    assert_eq(kashi_font_seq_glyph(id3, &seq, 2), 0x43, "failed attaches left the sequence");
+    return 0;
+}
+
+fn test_text_file(psfpath, big) {
+    test_group("kashi_attach_unicode_text_file");
+    var txt = alloc(128);
+    var n = 0;
+    n = _tf_str(txt, n, "0x44 U+00E9\n0x21 U+2603 U+2744\n#");
+    # The cap-sized file: two mappings, then one comment line to the cap.
+    _tf_padded(big, KASHI_TAB_FILE_CAP + 1, txt, n, 0x78);
+    store8(big + KASHI_TAB_FILE_CAP, 0x0A);
+    var pcap = _tf_file("cap.txt", big, KASHI_TAB_FILE_CAP);
+    var pover = _tf_file("over.txt", big, KASHI_TAB_FILE_CAP + 1);
+    var id = kashi_load_psf_file(psfpath);
+    assert_eq(kashi_attach_unicode_text_file(id, pcap), KASHI_OK, "exactly 256 KiB text table attaches");
+    assert_eq(kashi_font_row(id, 0xE9, 0), 0x44, "cap-sized text: U+00E9 -> glyph 0x44");
+    assert_eq(kashi_font_row(id, 0x2744, 1), 0x5A, "cap-sized text: U+2744 -> glyph 0x21 r1");
+    # audit 2026-10-30, L4: 1.2.2 cut this table at 256 KiB and attached it.
+    _tf_attach_id = id;
+    _tf_expect(_TF_TXT, pover, 0 - KASHI_EINVAL, _tf_linux,
+      "256 KiB + 1 text table -> EINVAL (refused, not cut)", "over-cap refusal allocates nothing");
+    _tf_rejects(_TF_TXT);
+    assert_eq(kashi_font_row(id, 0x2603, 2), 0xDE, "failed attaches left U+2603 mapped");
+    return 0;
+}
+
+# audit 2026-10-30, L14: the attach_*_file calls check the font id
+# (and the table kind) before they touch the path. 1.2.2 read the path
+# first: 256 KiB spent on a call that had to fail, and a FIFO hung it.
+# A regular, valid table file proves the path was never read: reading it
+# would allocate.
+fn _tf_bad_id(id, ptab, ptxt) {
+    var paths[24];
+    store64(&paths, ptab);
+    store64(&paths + 8, _tf_missing);
+    store64(&paths + 16, _tf_fifo);
+    var i = 0;
+    while (i < 3) {
+        var p = load64(&paths + i * 8);
+        if (p != 0) {
+            var b0 = alloc_used();
+            var rt = kashi_attach_unicode_table_file(id, p, KASHI_PSF_KIND_PSF2);
+            var b1 = alloc_used();
+            var px = p;
+            if (i == 0) { px = ptxt; }
+            var rx = kashi_attach_unicode_text_file(id, px);
+            var b2 = alloc_used();
+            assert_eq(rt, 0 - KASHI_EINVAL, "table_file: bad id -> EINVAL");
+            assert_eq(b1 - b0, 0, "table_file: bad id reads nothing");
+            assert_eq(rx, 0 - KASHI_EINVAL, "text_file: bad id -> EINVAL");
+            assert_eq(b2 - b1, 0, "text_file: bad id reads nothing");
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn test_attach_checks_first(ptab, ptxt, good_id) {
+    test_group("attach_*_file: built-in id 0 (path untouched)");
+    _tf_bad_id(KASHI_FONT_VGA_8X16, ptab, ptxt);
+    test_group("attach_*_file: built-in id 2 (path untouched)");
+    _tf_bad_id(KASHI_FONT_VGA_9X16, ptab, ptxt);
+    test_group("attach_*_file: unregistered id (path untouched)");
+    _tf_bad_id(KASHI_RT_FONT_BASE + 4096, ptab, ptxt);
+    test_group("attach_*_file: negative id (path untouched)");
+    _tf_bad_id(0 - 1, ptab, ptxt);
+
+    test_group("attach_unicode_table_file: bad kind (path untouched)");
+    assert_gte(good_id, KASHI_RT_FONT_BASE, "a valid id for the bad-kind calls");
+    var b0 = alloc_used();
+    assert_eq(kashi_attach_unicode_table_file(good_id, ptab, 0), 0 - KASHI_EINVAL, "kind 0 -> EINVAL");
+    assert_eq(kashi_attach_unicode_table_file(good_id, ptab, 3), 0 - KASHI_EINVAL, "kind 3 -> EINVAL");
+    assert_eq(alloc_used() - b0, 0, "bad kind reads nothing");
+    if (_tf_fifo != 0) {
+        assert_eq(kashi_attach_unicode_table_file(good_id, _tf_fifo, 3), 0 - KASHI_EINVAL,
+          "bad kind + FIFO -> EINVAL without blocking");
+    }
+    # The font the bad-kind calls named is untouched: still no table, so
+    # still identity-addressed.
+    assert_eq(kashi_font_row(good_id, 0x41, 0), 0x41, "bad-kind target still identity-addressed");
+    return 0;
+}
+
+# Remove every fixture, then the directory; the rmdir only succeeds if
+# nothing was left behind.
+fn _tf_cleanup() {
+    var i = 0;
+    while (i < _tf_nmade) {
+        xunlink(load64(&_tf_made + i * 8));
+        i = i + 1;
+    }
+    if (_tf_subdir != 0) { xrmdir(_tf_subdir); }
+    return xrmdir(_tf_dir);
+}
+
+# The descriptor `open` hands out next: the lowest free one.
+fn _tf_next_fd(path) {
+    var fd = file_open(path, 0, 0);
+    if (fd >= 0) { file_close(fd); }
+    return fd;
+}
+
+# L5 / L4: a refused path closes what it opened. A directory, a FIFO and an
+# over-cap file are each refused 40 times; if any refusal left its
+# descriptor open, the next descriptor number would have moved by 40 or
+# more, and a caller probing paths would eventually hit EMFILE
+# (audit 2026-10-30, L5).
+fn test_refusals_close(ppsf) {
+    test_group("refused paths close their descriptor");
+    var pover = _tf_join(_tf_dir, "over.psf");
+    var fd0 = _tf_next_fd(ppsf);
+    assert_gte(fd0, 0, "probe file opens");
+    var i = 0;
+    while (i < 40) {
+        kashi_load_psf_file(_tf_subdir);
+        kashi_load_psf_file(pover);
+        if (_tf_fifo != 0) { kashi_load_psf_file(_tf_fifo); }
+        i = i + 1;
+    }
+    assert_eq(_tf_next_fd(ppsf), fd0, "no descriptor left open by 120 refusals");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    kashi_font_init();
+    _tf_detect_linux();
+
+    test_group("fixtures");
+    xmkdir("build", 0x1ED);    # exists already in a built tree; -EEXIST is fine
+    _tf_dir = test_scratch("build/kashi_files");
+    var mk = xmkdir(_tf_dir, 0x1C0);
+    assert_eq(mk, 0, "private fixture dir created");
+    if (mk != 0) { return assert_summary(); }
+
+    var src100 = alloc(100);
+    var i = 0;
+    while (i < 100) { store8(src100 + i, (i * 7 + 3) & 0xFF); i = i + 1; }
+    var psf = alloc(1024);
+    var npsf = _tf_mk_psf(psf);
+    var bdf = alloc(1024);
+    var nbdf = _tf_mk_bdf(bdf);
+    var pcf = alloc(512);
+    var npcf = _tf_mk_pcf(pcf);
+    var tab1 = alloc(1024);
+    var ntab1 = _tf_mk_tab1(tab1);
+    var tab2 = alloc(1024);
+    var ntab2 = _tf_mk_tab2(tab2);
+    var txt = "0x21 U+2603\n";
+
+    var p100 = _tf_file("r100.bin", src100, 100);
+    var ppsf = _tf_file("font.psf", psf, npsf);
+    var ptab = _tf_file("table.psf2", tab2, ntab2);
+    var ptxt = _tf_file("table.txt", txt, strlen(txt));
+    _tf_empty = _tf_file("empty", psf, 0);
+    _tf_missing = _tf_join(_tf_dir, "no-such-file");
+    _tf_subdir = _tf_join(_tf_dir, "subdir");
+    if (xmkdir(_tf_subdir, 0x1C0) != 0) { _tf_setup_ok = 0; }
+    if (_tf_linux == 1) {
+        # mkfifo(3) is mknodat(AT_FDCWD, p, S_IFIFO | 0600, 0).
+        var pf = _tf_join(_tf_dir, "fifo");
+        if (sys_mknodat(AT_FDCWD, pf, 0x1000 | 0x180, 0) == 0) { _tf_fifo = _tf_track(pf); }
+        if (_tf_fifo == 0) { _tf_setup_ok = 0; }
+        var pl = _tf_join(_tf_dir, "devnull-link");
+        if (xsymlink("/dev/null", pl) == 0) { _tf_devlink = _tf_track(pl); }
+        if (_tf_devlink == 0) { _tf_setup_ok = 0; }
+    }
+    assert_eq(_tf_setup_ok, 1, "fixtures written");
+
+    test_load_sizing(psf, npsf, bdf, nbdf, pcf, npcf);
+    test_reader_contract(p100, src100);
+
+    # One buffer serves every cap-sized fixture (largest cap + 1).
+    var big = alloc(KASHI_BDF_FILE_CAP + 1);
+    test_psf_file(big, psf, npsf);
+    test_bdf_file(big, bdf, nbdf);
+    test_pcf_file(big, pcf, npcf);
+    test_table_file(ppsf, big, tab1, ntab1, tab2, ntab2);
+    test_text_file(ppsf, big);
+    test_attach_checks_first(ptab, ptxt, kashi_load_psf_file(ppsf));
+    test_refusals_close(ppsf);
+
+    test_group("cleanup");
+    assert_eq(_tf_setup_ok, 1, "every later fixture written in full");
+    assert_eq(_tf_cleanup(), 0, "fixture dir removed (nothing left behind)");
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(SYS_EXIT, exit_code);

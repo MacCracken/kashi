@@ -1,101 +1,51 @@
 # kashi fuzz harness.
 # Stdlib auto-included via cyrius.cyml.
 #
-# The font accessors take arbitrary (font_id, ch, row) integers from the
-# consumer. They must NEVER wild-deref or return out-of-buffer data for any
-# input — a freestanding kernel renders whatever the accessor hands back.
-# Fuzz the full int range of each argument and assert the bounds contract:
-#   - out-of-range char/font/row => row 0, ptr 0 (null)
-#   - in-range inputs => ptr inside the buffer, row == load8(ptr+row)
-# "In range" is the CP437 cells plus, since 1.1.0, the extension block
-# (KASHI_EXT_FIRST..KASHI_EXT_LAST) — kashi_glyph_encoded decides. The
-# Unicode -> cell mapping gets its own contract (fuzz_unicode, codes 9-11).
+# Two kinds of check run here.
+#
+# CONTRACT fuzzing feeds every accessor and parser arbitrary input: nothing
+# may wild-deref, and every answer must be a known code or the byte it
+# addresses. The font accessors take arbitrary (font_id, ch, row, byte_idx)
+# integers from the consumer, and a freestanding kernel renders whatever an
+# accessor hands back, so each is driven over the full i64 domain of every
+# argument, runtime fonts included.
+#
+# ANSWER oracles (1.3.0) generate a random VALID font from a seed: PSF1 and
+# PSF2 with Unicode tables and sequences, BDF up to 32 pixels wide, PCF in
+# every byte order, bit order, glyph pad and scan unit. Each is loaded and
+# every glyph byte, every mapped codepoint and every sequence is compared
+# with what was generated; codepoints nothing lists must miss. Range checks
+# alone let decode and mapping regressions through for whole releases
+# (audit 2026-10-30, K63); an oracle sees them.
+#
+# Parser inputs end at an unmapped guard page, so a read even one byte past
+# `len` faults instead of landing in slack (audit 2026-10-30, K34).
+#
+# Seeds are fixed, so a failure reproduces on every run. Every failure path
+# exits with its own code, and the FAIL line names the stage; each stage's
+# comment lists its codes. The codes skip the exits other things produce:
+# 1 (a stdlib abort), 86 (a poison-mode detection), 124 (`timeout`) and
+# 128-159 (a signal: 139 is a fault, e.g. a read into the guard page).
+#   2-10     core     kashi_glyph_* against the stores, independent geometry
+#   11-14    unicode  kashi_cp437_from_unicode and the built-ins' face
+#   15-18    token    kashi_psf_uni_token against a reference decoder
+#   20-34    psf      mutated / truncated PSF fonts
+#   40-54    psfo     PSF round-trip oracle
+#   60-79    bdf      mutated / truncated BDF fonts
+#   80-96    bdfo     BDF round-trip oracle and rejection variants
+#   100-110  pcf      mutated / truncated PCF fonts
+#   111-120  pcfo     PCF round-trip oracle
+#   160-166  tab      text-table attach on random text
+#   170-175  tabo     text-table attach oracle
+#   180-191  unified  kashi_font_* over the full domain of every argument
+#   200-202  sortdos  a worst-case Unicode table loads in bounded time
+#   210-219  setup    canned seeds, stub fonts, model fonts
 
 include "src/lib.cyr"
 
-# The core-accessor bounds contract for one (font, ch, row) triple. Takes
-# full-width integers so the random driver below can probe the whole i64
-# domain, not just bytes. Returns 0 on pass or a distinct non-zero code per
-# contract so a failure names what broke.
-fn fuzz_core(font, ch, row) {
-    var r = kashi_glyph_row(font, ch, row);
-    var p = kashi_glyph_ptr(font, ch);
+# --- Random sources ---
 
-    # Contract 1: a single row is always a byte (0..255). load8 guarantees
-    # this, but assert so a future refactor that widens it gets caught.
-    if (r < 0) { return 1; }
-    if (r > 0xFF) { return 1; }
-
-    # Contract 2: out-of-range inputs must yield the safe sentinels.
-    # Every built-in id must be listed here: an id the harness does not know
-    # is treated as unknown and its (legitimate) non-null pointer is reported
-    # as a failure. The 9x16 (0.5.1) was missing until 1.0.10 — latent only
-    # because nothing random ever reached this function.
-    var encoded = kashi_glyph_encoded(ch);
-    var known_font = 0;
-    if (font == KASHI_FONT_VGA_8X16) { known_font = 1; }
-    if (font == KASHI_FONT_CGA_8X8) { known_font = 1; }
-    if (font == KASHI_FONT_VGA_9X16) { known_font = 1; }
-
-    if (encoded == 0) {
-        if (r != 0) { return 2; }
-        if (p != 0) { return 2; }
-    }
-    if (known_font == 0) {
-        if (r != 0) { return 3; }
-        if (p != 0) { return 3; }
-    }
-
-    if (encoded == 1) {
-        if (known_font == 1) {
-            # A known font and an encoded char always resolve to a glyph.
-            if (p == 0) { return 4; }
-            var h = kashi_font_height(font);
-            var stride = kashi_font_stride(font);
-            var in_row = 1;
-            if (row < 0) { in_row = 0; }
-            if (row >= h) { in_row = 0; }
-
-            # Contract 3: an out-of-range row is the sentinel even when font
-            # and char are valid.
-            if (in_row == 0) {
-                if (r != 0) { return 5; }
-            }
-
-            # Contract 4 (stride-aware since the 9x16, whose rows are two
-            # bytes): the row accessor returns the LEADING byte of the row,
-            # i.e. load8(ptr + row * stride); kashi_glyph_row_byte reaches
-            # every byte of the row; byte_idx >= stride is the sentinel.
-            if (in_row == 1) {
-                if (r != load8(p + row * stride)) { return 6; }
-                var b = 0;
-                while (b < stride) {
-                    if (kashi_glyph_row_byte(font, ch, row, b) != load8(p + row * stride + b)) { return 7; }
-                    b = b + 1;
-                }
-                if (kashi_glyph_row_byte(font, ch, row, stride) != 0) { return 8; }
-                if (kashi_glyph_row_byte(font, ch, row, 0 - 1) != 0) { return 8; }
-            }
-        }
-    }
-    return 0;
-}
-
-# Treat `data`/`len` as a stream of bytes that pick (font, ch, row) — the
-# harness entry point; canned seeds and any external driver come in here.
-fn fuzz_main(data, len) {
-    if (len < 3) { return 0; }
-    return fuzz_core(load8(data + 0), load8(data + 1), load8(data + 2));
-}
-
-# --- PSF parser fuzz (the untrusted-input surface) ---
-#
-# A malformed, truncated, or hostile PSF buffer must NEVER wild-deref:
-# kashi_psf_parse must always return KASHI_OK / KASHI_EINVAL / KASHI_EFORMAT,
-# kashi_load_psf must always return a value, and any font it *accepts* must
-# yield in-bounds glyph rows for every (glyph index, row) — including the
-# out-of-range ones, which must come back 0 / null.
-
+# The driver stream: picks shapes, seeds and probes.
 var _rng = 0;
 fn rng_seed(s) { _rng = s; return 0; }
 
@@ -111,205 +61,64 @@ fn rng_wide() {
     return (rng_next() << 33) | (rng_next() << 2) | (rng_next() & 3);
 }
 
-# Random driver for the core-accessor contract (1.0.10). Three input shapes,
-# equally likely: SMALL (byte-sized ids and rows, 9-bit cells, so every
-# built-in id, every row and every cell — CP437 and, since 1.1.0, the
-# extension block past 0xFF — is reachable; this is the shape that finds a
-# built-in missing from the known-font list), FULL-WIDTH (the sentinel path
-# across the whole i64 domain, negatives included), and NEAR-EDGE (ids 0..4,
-# cells just around 0x20 / 0x7F / 0xFF / the extension's two ends, rows just
-# around the cell height — where an off-by-one in a bound would live).
-fn fuzz_core_rounds(rounds) {
-    var n = 0;
-    while (n < rounds) {
-        var pick = rng_next() % 3;
-        var font = 0;
-        var ch = 0;
-        var row = 0;
-        if (pick == 0) {
-            font = rng_next() & 0xFF;
-            ch = rng_next() & 0x1FF;
-            row = rng_next() & 0xFF;
-        }
-        if (pick == 1) {
-            font = rng_wide();
-            ch = rng_wide();
-            row = rng_wide();
-        }
-        if (pick == 2) {
-            font = rng_next() % 5;
-            var cpick = rng_next() % 8;
-            if (cpick == 0) { ch = 0x1F; }
-            if (cpick == 1) { ch = 0x20; }
-            if (cpick == 2) { ch = 0x7F; }
-            if (cpick == 3) { ch = 0x80; }
-            if (cpick == 4) { ch = 0xFF; }
-            if (cpick == 5) { ch = KASHI_EXT_FIRST; }
-            if (cpick == 6) { ch = KASHI_EXT_LAST; }
-            if (cpick == 7) { ch = KASHI_EXT_LAST + 1; }
-            row = (rng_next() % 20) - 2;
-        }
-        var rc = fuzz_core(font, ch, row);
-        if (rc != 0) { return rc; }
-        n = n + 1;
+# Uniform-ish in [0, n) for 1 <= n < 2^31.
+fn rng_below(n) { return rng_next() % n; }
+
+# A 62-bit generator seed.
+fn rng_seed62() { return (rng_next() << 31) | rng_next(); }
+
+# The generator stream. A font generator draws only from this one, so one
+# seed always rebuilds one font (the BDF rejection variants rebuild their
+# font with a single defect added).
+var _grng = 0;
+fn g_seed(s) { _grng = s; return 0; }
+
+fn g_next() {
+    _grng = _grng * 2862933555777941757 + 3037000493;
+    return (_grng >> 16) & 0x7FFFFFFF;
+}
+
+fn g_below(n) { return g_next() % n; }
+
+# --- Byte and text writers ---
+
+fn _ld(a, i) { return load64(a + i * 8); }
+fn _st(a, i, v) { store64(a + i * 8, v); return 0; }
+
+# Index of `v` in the u64 array a[0..n), or 0 - 1.
+fn _fz_index(a, n, v) {
+    var i = 0;
+    while (i < n) {
+        if (_ld(a, i) == v) { return i; }
+        i = i + 1;
     }
+    return 0 - 1;
+}
+
+# u16 / u32 at `off`, big-endian when `be` is 1.
+fn _fz_put16(buf, off, v, be) {
+    if (be == 1) {
+        store8(buf + off, (v >> 8) & 0xFF);
+        store8(buf + off + 1, v & 0xFF);
+        return 0;
+    }
+    store8(buf + off, v & 0xFF);
+    store8(buf + off + 1, (v >> 8) & 0xFF);
     return 0;
 }
 
-# The Unicode -> cell contract (1.1.0, ADR 0011) for one (cp, font, row):
-#   9  — kashi_cp437_from_unicode answered neither 0 nor an encoded cell;
-#   10 — printable ASCII did not map to itself;
-#   11 — the library face's built-in path disagrees with the core
-#        (kashi_font_row / _ptr / _row_byte(font, cp) must equal
-#        kashi_glyph_*(font, kashi_cp437_from_unicode(cp))).
-# Codes continue fuzz_core's 1..8 so a failure still names what broke.
-fn fuzz_unicode(cp, font, row) {
-    var c = kashi_cp437_from_unicode(cp);
-    if (c != 0) {
-        if (kashi_glyph_encoded(c) == 0) { return 9; }
+fn _fz_put32(buf, off, v, be) {
+    if (be == 1) {
+        _fz_put16(buf, off, (v >> 16) & 0xFFFF, 1);
+        _fz_put16(buf, off + 2, v & 0xFFFF, 1);
+        return 0;
     }
-    if (cp >= 0x20) {
-        if (cp <= 0x7E) {
-            if (c != cp) { return 10; }
-        }
-    }
-    if (font >= 0) {
-        if (font < KASHI_RT_FONT_BASE) {
-            if (kashi_font_row(font, cp, row) != kashi_glyph_row(font, c, row)) { return 11; }
-            if (kashi_font_ptr(font, cp) != kashi_glyph_ptr(font, c)) { return 11; }
-            if (kashi_font_row_byte(font, cp, row, 1) != kashi_glyph_row_byte(font, c, row, 1)) { return 11; }
-        }
-    }
+    _fz_put16(buf, off, v & 0xFFFF, 0);
+    _fz_put16(buf, off + 2, (v >> 16) & 0xFFFF, 0);
     return 0;
 }
 
-# Random driver for fuzz_unicode, three shapes: FULL-WIDTH codepoints (the
-# whole i64 domain — almost all unmapped), the UNICODE range
-# (0..0x10FFFF), and DENSE (0..0x27FF, where every mapped codepoint but
-# U+FFFD lives, plus that one). Fonts 0..3 (3 = first runtime id, unloaded
-# here) and rows just around the cell heights.
-fn fuzz_unicode_rounds(rounds) {
-    var n = 0;
-    while (n < rounds) {
-        var pick = rng_next() % 3;
-        var cp = 0;
-        if (pick == 0) { cp = rng_wide(); }
-        if (pick == 1) { cp = rng_next() % 0x110000; }
-        if (pick == 2) {
-            cp = rng_next() % 0x2800;
-            if ((rng_next() % 64) == 0) { cp = 0xFFFD; }
-        }
-        var font = rng_next() % 4;
-        var row = (rng_next() % 20) - 2;
-        var rc = fuzz_unicode(cp, font, row);
-        if (rc != 0) { return rc; }
-        n = n + 1;
-    }
-    return 0;
-}
-
-fn fuzz_psf(rounds) {
-    var cap = 2048;
-    var buf = alloc(cap);
-    var hdr[56];
-    var r = 0;
-    while (r < rounds) {
-        var len = rng_next() % (cap + 1);
-        var i = 0;
-        while (i < len) {
-            store8(buf + i, rng_next() & 0xFF);
-            i = i + 1;
-        }
-        # Sometimes stamp a real magic so the fuzzer drives past detection
-        # into the field-validation / length-bound logic; force the table
-        # flag so accepted fonts exercise the Unicode map build on garbage.
-        var pick = rng_next() & 3;
-        if (pick == 0) {
-            if (len >= 4) {
-                store8(buf + 0, 0x36); store8(buf + 1, 0x04);
-                store8(buf + 2, load8(buf + 2) | 0x02);     # PSF1 HASTAB
-            }
-        }
-        if (pick == 1) {
-            if (len >= 32) {
-                store8(buf + 0, 0x72); store8(buf + 1, 0xB5);
-                store8(buf + 2, 0x4A); store8(buf + 3, 0x86);
-                store8(buf + 12, load8(buf + 12) | 0x01);   # PSF2 HAS_UNICODE
-            }
-        }
-
-        # Contract 1: the parser only ever returns a known code, never crashes.
-        var rc = kashi_psf_parse(buf, len, &hdr);
-        if (rc != KASHI_OK) {
-            if (rc != KASHI_EINVAL) {
-                if (rc != KASHI_EFORMAT) { return 1; }
-            }
-        }
-
-        # Contract 2: a full load (incl. map build from a garbage Unicode
-        # table) returns a value; an accepted font is bounds-safe for every
-        # probe.
-        var id = kashi_load_psf(buf, len);
-        if (id >= KASHI_RT_FONT_BASE) {
-            var count = kashi_rt_font_count(id);
-            var height = kashi_rt_font_height(id);
-            var g = 0;
-            while (g < 4) {
-                var row = rng_next() & 0xFF;
-                # Raw glyph-INDEX access: out-of-range index -> 0 / null.
-                var idx = rng_next() % (count + 2);
-                var rv = kashi_rt_glyph_row(id, idx, row);
-                if (rv < 0) { return 2; }
-                if (rv > 0xFF) { return 3; }
-                if (idx >= count) {
-                    if (rv != 0) { return 4; }
-                    if (kashi_rt_glyph_ptr(id, idx) != 0) { return 5; }
-                }
-                if (row >= height) {
-                    if (rv != 0) { return 6; }
-                }
-                # CODEPOINT access (map is arbitrary): only the byte-range /
-                # no-crash contract holds.
-                var cp = rng_next() & 0xFFFFF;
-                var cv = kashi_font_row(id, cp, row);
-                if (cv < 0) { return 7; }
-                if (cv > 0xFF) { return 8; }
-                # 0.5.0: multi-byte row accessor with random byte_idx
-                # (covers stride > 1 fonts the parser now accepts).
-                var bi = rng_next() & 7;
-                var bv = kashi_font_row_byte(id, cp, row, bi);
-                if (bv < 0) { return 9; }
-                if (bv > 0xFF) { return 10; }
-                # Also exercise the raw-index byte accessor.
-                var rbv = kashi_rt_glyph_row_byte(id, idx, row, bi);
-                if (rbv < 0) { return 11; }
-                if (rbv > 0xFF) { return 12; }
-                g = g + 1;
-            }
-            # 0.5.0: ligature lookup contract — never crashes; returns
-            # either a non-negative glyph index or `0 - 1`.
-            var probe[16];
-            store64(&probe + 0, rng_next() & 0xFFFFF);
-            store64(&probe + 8, rng_next() & 0xFFFFF);
-            var sg = kashi_font_seq_glyph(id, &probe, 2);
-            if (sg < 0 - 1) { return 13; }   # only sentinel is 0 - 1
-            if (sg >= count) {
-                if (sg != 0 - 1) { return 14; }   # any non-sentinel must be in range
-            }
-        }
-        r = r + 1;
-    }
-    return 0;
-}
-
-# --- BDF parser fuzz (0.7.0) ---
-#
-# A malformed, truncated, or hostile BDF buffer must NEVER wild-deref. The
-# BDF parser is text-based with more state than PSF (line scanning,
-# whitespace, signed/hex int parsing, keyword dispatch), so it has more
-# places to go wrong than PSF and warrants its own fuzz harness.
-
-# Inline string-copy helper (mirrors src/test.cyr's _bdf_str).
+# Copy NUL-terminated `s` to buf + p; returns the position after it.
 fn _fz_str(buf, p, s) {
     var i = 0;
     var done = 0;
@@ -324,477 +133,3013 @@ fn _fz_str(buf, p, s) {
     return p + i;
 }
 
-# Build a small valid 8x8 BDF template (2 glyphs) into buf; return length.
-# Used by fuzz_bdf for the mutated-template path.
-fn _fz_bdf_template(buf) {
-    var p = 0;
-    p = _fz_str(buf, p, "STARTFONT 2.1\n");
-    p = _fz_str(buf, p, "FONTBOUNDINGBOX 8 8 0 0\n");
-    p = _fz_str(buf, p, "CHARS 2\n");
-    p = _fz_str(buf, p, "STARTCHAR A\n");
-    p = _fz_str(buf, p, "ENCODING 65\n");
-    p = _fz_str(buf, p, "BBX 8 8 0 0\n");
-    p = _fz_str(buf, p, "BITMAP\n18\n24\n42\n7E\n42\n42\n42\n00\nENDCHAR\n");
-    p = _fz_str(buf, p, "STARTCHAR B\n");
-    p = _fz_str(buf, p, "ENCODING 66\n");
-    p = _fz_str(buf, p, "BBX 8 8 0 0\n");
-    p = _fz_str(buf, p, "BITMAP\n7C\n42\n42\n7C\n42\n42\n7C\n00\nENDCHAR\n");
-    p = _fz_str(buf, p, "ENDFONT\n");
+fn _fz_hexc(d, upper) {
+    if (d < 10) { return 0x30 + d; }
+    if (upper == 1) { return 0x41 + d - 10; }
+    return 0x61 + d - 10;
+}
+
+# `v` (>= 0) as exactly `n` hex digits.
+fn _fz_hexn(buf, p, v, n, upper) {
+    var i = n - 1;
+    while (i >= 0) {
+        store8(buf + p + i, _fz_hexc(v & 15, upper));
+        v = v >> 4;
+        i = i - 1;
+    }
+    return p + n;
+}
+
+# `v` (>= 0) in hex, no leading zeros.
+fn _fz_hex(buf, p, v, upper) {
+    var n = 1;
+    var t = v >> 4;
+    while (t > 0) {
+        n = n + 1;
+        t = t >> 4;
+    }
+    return _fz_hexn(buf, p, v, n, upper);
+}
+
+# `v` in signed decimal.
+fn _fz_dec(buf, p, v) {
+    if (v < 0) {
+        store8(buf + p, 0x2D);
+        p = p + 1;
+        v = 0 - v;
+    }
+    var n = 1;
+    var t = v / 10;
+    while (t > 0) {
+        n = n + 1;
+        t = t / 10;
+    }
+    var i = n - 1;
+    while (i >= 0) {
+        store8(buf + p + i, 0x30 + v % 10);
+        v = v / 10;
+        i = i - 1;
+    }
+    return p + n;
+}
+
+fn _fz_fill(buf, n) {
+    var i = 0;
+    while (i < n) {
+        store8(buf + i, rng_next() & 0xFF);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# 1..`most` random byte writes anywhere in buf[0..len).
+fn _fz_mutate(buf, len, most) {
+    if (len < 1) { return 0; }
+    var muts = 1 + rng_below(most);
+    var m = 0;
+    while (m < muts) {
+        store8(buf + rng_below(len), rng_next() & 0xFF);
+        m = m + 1;
+    }
+    return 0;
+}
+
+fn _fz_puts(s) {
+    syscall(1, 1, s, strlen(s));
+    return 0;
+}
+
+# --- Guard page ---
+#
+# A region of readable pages followed by one inaccessible page. _fz_place
+# copies an input so its last byte is the last readable byte: any read at or
+# past `len` faults. Inputs larger than the region (none here) or a failed
+# mapping fall back to the unguarded source buffer.
+var _fz_gp_end = 0;
+var _fz_gp_cap = 0;
+
+fn _fz_gp_init(pages) {
+    var sz = pages * 4096;
+    var base = syscall(SYS_MMAP, 0, sz + 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0 - 1, 0);
+    if (base <= 0) { return 0; }
+    # Map the last page again over itself, PROT_NONE (0); 0x10 = MAP_FIXED.
+    var g = syscall(SYS_MMAP, base + sz, 4096, 0, MAP_PRIVATE | MAP_ANONYMOUS | 0x10, 0 - 1, 0);
+    if (g != base + sz) { return 0; }
+    _fz_gp_end = base + sz;
+    _fz_gp_cap = sz;
+    return 1;
+}
+
+fn _fz_place(src, len) {
+    if (_fz_gp_end == 0) { return src; }
+    if (len > _fz_gp_cap) { return src; }
+    var dst = _fz_gp_end - len;
+    memcpy(dst, src, len);
+    return dst;
+}
+
+# --- Core accessors (codes 2-10) ---
+#
+# The oracle is independent of the code under test: the cell ranges, the
+# three fonts' geometry and the stores' bases are written out here, and every
+# answer is compared with the byte at the offset it must come from. Until
+# 1.3.0 "in range" was decided by kashi_glyph_encoded itself and a pointer
+# was only checked for non-null, so a gate widened by one cell (a pointer past
+# the extension block, into the next store) passed (audit 2026-10-30, K62).
+#   2  a row byte outside 0..255
+#   3  an unknown font or a cell no font has answered something but 0 / null
+#   4  the glyph pointer is not store + (ch - 0x20) * height * stride
+#   5  the glyph's bytes run past the end of its store
+#   6  kashi_glyph_row is not the row's leading byte (0 out of range)
+#   7  kashi_glyph_row_byte is not the byte it addresses (0 out of range)
+#   8  some byte of an in-range row is not the byte it addresses
+#   9  a store's size is not (224 + extension cells) x height x stride
+#   10 the extension block no longer follows 0xFF (the offset rule breaks)
+
+# 1 if `ch` is a built-in cell: CP437 0x20..0xFF or the extension block.
+fn _fz_cell(ch) {
+    if (ch >= 0x20) {
+        if (ch <= 0xFF) { return 1; }
+    }
+    if (ch >= KASHI_EXT_FIRST) {
+        if (ch <= KASHI_EXT_LAST) { return 1; }
+    }
+    return 0;
+}
+
+# Height of built-in font 0 (VGA 8x16), 1 (CGA 8x8) or 2 (VGA 9x16); 0 for
+# any other id.
+fn _fz_core_h(font) {
+    if (font == 0) { return 16; }
+    if (font == 1) { return 8; }
+    if (font == 2) { return 16; }
+    return 0;
+}
+
+fn _fz_core_stride(font) {
+    if (font == 2) { return 2; }
+    return 1;
+}
+
+fn _fz_core_base(font) {
+    if (font == 0) { return &kashi_font16; }
+    if (font == 1) { return &kashi_font8; }
+    return &kashi_font9_16;
+}
+
+# A store's declared size in bytes (module-scope slots are u64).
+fn _fz_core_bytes(font) {
+    if (font == 0) { return _KASHI_FONT16_SLOTS * 8; }
+    if (font == 1) { return _KASHI_FONT8_SLOTS * 8; }
+    return _KASHI_FONT9_16_SLOTS * 8;
+}
+
+fn _fz_core_ptr(font, ch) {
+    var h = _fz_core_h(font);
+    if (h == 0) { return 0; }
+    if (_fz_cell(ch) == 0) { return 0; }
+    return _fz_core_base(font) + (ch - 0x20) * h * _fz_core_stride(font);
+}
+
+fn _fz_core_byte(font, ch, row, bi) {
+    var p = _fz_core_ptr(font, ch);
+    if (p == 0) { return 0; }
+    var h = _fz_core_h(font);
+    var st = _fz_core_stride(font);
+    if (row < 0) { return 0; }
+    if (row >= h) { return 0; }
+    if (bi < 0) { return 0; }
+    if (bi >= st) { return 0; }
+    return load8(p + row * st + bi);
+}
+
+fn fuzz_core_geometry() {
+    if (KASHI_EXT_FIRST != 0x100) { return 10; }
+    var cells = 0xFF - 0x20 + 1 + KASHI_EXT_LAST - KASHI_EXT_FIRST + 1;
+    var f = 0;
+    while (f < 3) {
+        if (_fz_core_bytes(f) != cells * _fz_core_h(f) * _fz_core_stride(f)) { return 9; }
+        f = f + 1;
+    }
+    return 0;
+}
+
+fn fuzz_core(font, ch, row, bi) {
+    var r = kashi_glyph_row(font, ch, row);
+    var p = kashi_glyph_ptr(font, ch);
+    var rb = kashi_glyph_row_byte(font, ch, row, bi);
+    if (r < 0) { return 2; }
+    if (r > 0xFF) { return 2; }
+    if (rb < 0) { return 2; }
+    if (rb > 0xFF) { return 2; }
+    var want = _fz_core_ptr(font, ch);
+    if (want == 0) {
+        if (p != 0) { return 3; }
+        if (r != 0) { return 3; }
+        if (rb != 0) { return 3; }
+        return 0;
+    }
+    if (p != want) { return 4; }
+    var h = _fz_core_h(font);
+    var st = _fz_core_stride(font);
+    if (p + h * st > _fz_core_base(font) + _fz_core_bytes(font)) { return 5; }
+    if (r != _fz_core_byte(font, ch, row, 0)) { return 6; }
+    if (rb != _fz_core_byte(font, ch, row, bi)) { return 7; }
+    if (row >= 0) {
+        if (row < h) {
+            var b = 0;
+            while (b < st) {
+                if (kashi_glyph_row_byte(font, ch, row, b) != load8(p + row * st + b)) { return 8; }
+                b = b + 1;
+            }
+        }
+    }
+    return 0;
+}
+
+# Treat `data`/`len` as a stream of bytes that pick (font, ch, row) — the
+# harness entry point; canned seeds and any external driver come in here.
+fn fuzz_main(data, len) {
+    if (len < 3) { return 0; }
+    return fuzz_core(load8(data + 0), load8(data + 1), load8(data + 2), 0);
+}
+
+# Three input shapes, equally likely: SMALL (byte-sized ids and rows, 9-bit
+# cells: every built-in id, row and cell is reachable), FULL-WIDTH (the
+# whole i64 domain of all four arguments) and NEAR-EDGE (ids around the
+# built-ins, cells around 0x20 / 0x7F / 0xFF / the extension's ends, rows
+# around the cell height, byte indices around the stride).
+fn fuzz_core_rounds(rounds) {
+    var n = 0;
+    while (n < rounds) {
+        var pick = rng_below(3);
+        var font = 0;
+        var ch = 0;
+        var row = 0;
+        var bi = 0;
+        if (pick == 0) {
+            font = rng_next() & 0xFF;
+            ch = rng_next() & 0x1FF;
+            row = rng_next() & 0xFF;
+            bi = rng_below(4);
+        }
+        if (pick == 1) {
+            font = rng_wide();
+            ch = rng_wide();
+            row = rng_wide();
+            bi = rng_wide();
+        }
+        if (pick == 2) {
+            font = rng_below(6) - 1;
+            var cpick = rng_below(10);
+            if (cpick == 0) { ch = 0x1F; }
+            if (cpick == 1) { ch = 0x20; }
+            if (cpick == 2) { ch = 0x7F; }
+            if (cpick == 3) { ch = 0x80; }
+            if (cpick == 4) { ch = 0xFF; }
+            if (cpick == 5) { ch = KASHI_EXT_FIRST; }
+            if (cpick == 6) { ch = KASHI_EXT_LAST; }
+            if (cpick == 7) { ch = KASHI_EXT_LAST + 1; }
+            if (cpick == 8) { ch = 0 - 1; }
+            if (cpick == 9) { ch = 0x20 + rng_below(0xE2); }
+            row = rng_below(20) - 2;
+            bi = rng_below(5) - 1;
+        }
+        var rc = fuzz_core(font, ch, row, bi);
+        if (rc != 0) { return rc; }
+        n = n + 1;
+    }
+    return 0;
+}
+
+# --- Unicode -> cell (codes 11-14) ---
+#   11  kashi_cp437_from_unicode answered neither 0 nor a built-in cell
+#   12  printable ASCII did not map to itself
+#   13  the library face's built-in path disagrees with the core: kashi_font_*
+#       (font, cp) must equal kashi_glyph_*(font, kashi_cp437_from_unicode(cp))
+#   14  with kashi_cp437_n forced to any value the lookup answered something
+#       but 0 or what the intact index answers (audit 2026-10-30, C1: the
+#       search bound was the raw global, so a wild count walked the search
+#       far past the index's 128 slots)
+fn fuzz_unicode(cp, font, row, bi) {
+    var c = kashi_cp437_from_unicode(cp);
+    if (c != 0) {
+        if (_fz_cell(c) == 0) { return 11; }
+    }
+    if (cp >= 0x20) {
+        if (cp <= 0x7E) {
+            if (c != cp) { return 12; }
+        }
+    }
+    if (font >= 0) {
+        if (font < KASHI_RT_FONT_BASE) {
+            if (kashi_font_row(font, cp, row) != kashi_glyph_row(font, c, row)) { return 13; }
+            if (kashi_font_ptr(font, cp) != kashi_glyph_ptr(font, c)) { return 13; }
+            if (kashi_font_row_byte(font, cp, row, bi) != kashi_glyph_row_byte(font, c, row, bi)) { return 13; }
+        }
+    }
+    return 0;
+}
+
+# Three codepoint shapes: FULL-WIDTH (almost all unmapped), the UNICODE
+# range, and DENSE (0..0x27FF, where every mapped codepoint but U+FFFD
+# lives, plus that one).
+fn fuzz_unicode_rounds(rounds) {
+    var n = 0;
+    while (n < rounds) {
+        var pick = rng_below(3);
+        var cp = 0;
+        if (pick == 0) { cp = rng_wide(); }
+        if (pick == 1) { cp = rng_below(0x110000); }
+        if (pick == 2) {
+            cp = rng_below(0x2800);
+            if (rng_below(64) == 0) { cp = 0xFFFD; }
+        }
+        var rc = fuzz_unicode(cp, rng_below(4), rng_below(20) - 2, rng_below(4) - 1);
+        if (rc != 0) { return rc; }
+        n = n + 1;
+    }
+    return 0;
+}
+
+fn fuzz_cp437_clamp(rounds) {
+    var saved = kashi_cp437_n;
+    var rc = 0;
+    var n = 0;
+    while (n < rounds) {
+        var pick = rng_below(4);
+        var forced = rng_wide();
+        if (pick == 1) { forced = 129 + rng_below(100000); }
+        if (pick == 2) { forced = rng_below(129); }
+        if (pick == 3) { forced = 0 - 1 - rng_below(1000); }
+        var cp = 0xA0 + rng_below(0x2501);
+        if (rng_below(8) == 0) { cp = rng_wide(); }
+        kashi_cp437_n = forced;
+        var got = kashi_cp437_from_unicode(cp);
+        kashi_cp437_n = saved;
+        var want = kashi_cp437_from_unicode(cp);
+        if (got != want) {
+            if (got != 0) { rc = 14; }
+            if (forced >= 128) { rc = 14; }
+        }
+        if (rc != 0) { n = rounds; }
+        n = n + 1;
+    }
+    kashi_cp437_n = saved;
+    return rc;
+}
+
+# --- Unicode-table tokenizer (codes 15-18) ---
+#
+# kashi_psf_uni_token against a reference decoder written apart from it:
+# PSF1 units are little-endian u16 (0xFFFF ends a glyph, 0xFFFE starts a
+# sequence, a UTF-16 surrogate is malformed — audit 2026-10-30, P1); any other
+# kind is UTF-8 (0xFF / 0xFE the same markers; truncated, overlong,
+# surrogate or > U+10FFFF units malformed). A malformed unit ends the walk:
+# type END, next = end.
+#   15  token type differs     16  codepoint differs     17  next differs
+#   18  a null buffer did not answer END at `end` (audit 2026-10-30, P2);
+#       a null `out` must be ignored (a fault there exits 139)
+fn _fz_ref_tok(buf, pos, end, kind, out) {
+    store64(out + 0, KASHI_TOK_END);
+    store64(out + 8, 0);
+    store64(out + 16, end);
+    if (pos < 0) { return 0; }
+    if (pos >= end) { return 0; }
+    if (kind == KASHI_PSF_KIND_PSF1) {
+        if (end - pos < 2) { return 0; }
+        var u = load8(buf + pos) + load8(buf + pos + 1) * 256;
+        if (u >= 0xD800) {
+            if (u < 0xE000) { return 0; }
+        }
+        store64(out + 16, pos + 2);
+        if (u == 0xFFFF) { store64(out + 0, KASHI_TOK_TERM); return 0; }
+        if (u == 0xFFFE) { store64(out + 0, KASHI_TOK_SEQ); return 0; }
+        store64(out + 0, KASHI_TOK_CP);
+        store64(out + 8, u);
+        return 0;
+    }
+    var b = load8(buf + pos);
+    if (b == 0xFF) {
+        store64(out + 0, KASHI_TOK_TERM);
+        store64(out + 16, pos + 1);
+        return 0;
+    }
+    if (b == 0xFE) {
+        store64(out + 0, KASHI_TOK_SEQ);
+        store64(out + 16, pos + 1);
+        return 0;
+    }
+    if (b < 0x80) {
+        store64(out + 0, KASHI_TOK_CP);
+        store64(out + 8, b);
+        store64(out + 16, pos + 1);
+        return 0;
+    }
+    var n = 0;
+    var cp = 0;
+    var least = 0;
+    if (b >= 0xC0) {
+        if (b < 0xE0) { n = 2; cp = b - 0xC0; least = 0x80; }
+    }
+    if (b >= 0xE0) {
+        if (b < 0xF0) { n = 3; cp = b - 0xE0; least = 0x800; }
+    }
+    if (b >= 0xF0) {
+        if (b < 0xF8) { n = 4; cp = b - 0xF0; least = 0x10000; }
+    }
+    if (n == 0) { return 0; }
+    if (end - pos < n) { return 0; }
+    var ok = 1;
+    var i = 1;
+    while (i < n) {
+        var c = load8(buf + pos + i);
+        if (c < 0x80) { ok = 0; }
+        if (c > 0xBF) { ok = 0; }
+        cp = cp * 64 + (c & 0x3F);
+        i = i + 1;
+    }
+    if (ok == 0) { return 0; }
+    if (cp < least) { return 0; }
+    if (cp > 0x10FFFF) { return 0; }
+    if (cp >= 0xD800) {
+        if (cp < 0xE000) { return 0; }
+    }
+    store64(out + 0, KASHI_TOK_CP);
+    store64(out + 8, cp);
+    store64(out + 16, pos + n);
+    return 0;
+}
+
+fn fuzz_uni_token(rounds) {
+    var stage = alloc(32);
+    var got[24];
+    var want[24];
+    var n = 0;
+    while (n < rounds) {
+        var len = rng_below(13);
+        var i = 0;
+        while (i < len) {
+            var s = rng_below(8);
+            var v = rng_next() & 0xFF;
+            if (s == 0) { v = 0xFE + (rng_next() & 1); }
+            if (s == 1) { v = 0xD8 + rng_below(8); }
+            if (s == 2) { v = 0xC0 + rng_below(0x38); }
+            if (s == 3) { v = 0x80 + rng_below(0x40); }
+            store8(stage + i, v);
+            i = i + 1;
+        }
+        var b = _fz_place(stage, len);
+        var pos = rng_below(len + 3) - 1;
+        if (rng_below(16) == 0) { pos = rng_wide(); }
+        var kind = 1 + (rng_next() & 1);
+        if (rng_below(16) == 0) { kind = rng_wide(); }
+        kashi_psf_uni_token(b, pos, len, kind, &got);
+        _fz_ref_tok(b, pos, len, kind, &want);
+        if (load64(&got) != load64(&want)) { return 15; }
+        if (load64(&got + 8) != load64(&want + 8)) { return 16; }
+        if (load64(&got + 16) != load64(&want + 16)) { return 17; }
+        kashi_psf_uni_token(0, pos, len, kind, &got);
+        if (load64(&got) != KASHI_TOK_END) { return 18; }
+        if (load64(&got + 16) != len) { return 18; }
+        kashi_psf_uni_token(b, pos, len, kind, 0);
+        n = n + 1;
+    }
+    return 0;
+}
+
+# --- Runtime-font contracts (shared by the parser stages) ---
+
+# The accessor contract for ANY runtime font, contents unknown (a mutated
+# input): every answer is 0 or exactly the byte it addresses, and a
+# codepoint only ever resolves to one of the font's own glyphs. Indices,
+# rows and byte indices mix in-range, just-out-of-range and full-width
+# values. Returns 0 or
+#   1 kashi_rt_glyph_row_byte   2 kashi_rt_glyph_row   3 kashi_rt_glyph_ptr
+#   4 kashi_font_ptr is not a glyph of this font   5 kashi_font_row(_byte)
+fn _fz_rt_contract(id, probes) {
+    var count = kashi_rt_font_count(id);
+    var h = kashi_rt_font_height(id);
+    var st = kashi_rt_font_stride(id);
+    var cs = h * st;
+    var base = kashi_rt_glyph_ptr(id, 0);
+    var t = 0;
+    while (t < probes) {
+        var idx = rng_below(count + 4) - 2;
+        var row = rng_below(h + 4) - 2;
+        var bi = rng_below(st + 4) - 2;
+        if (rng_below(8) == 0) { idx = rng_wide(); }
+        if (rng_below(8) == 0) { row = rng_wide(); }
+        if (rng_below(8) == 0) { bi = rng_wide(); }
+        var gin = 0;
+        if (idx >= 0) {
+            if (idx < count) { gin = 1; }
+        }
+        var rin = 0;
+        if (row >= 0) {
+            if (row < h) { rin = 1; }
+        }
+        var bin = 0;
+        if (bi >= 0) {
+            if (bi < st) { bin = 1; }
+        }
+        var wantp = 0;
+        if (gin == 1) { wantp = base + idx * cs; }
+        if (kashi_rt_glyph_ptr(id, idx) != wantp) { return 3; }
+        var want = 0;
+        var wantr = 0;
+        if (wantp != 0) {
+            if (rin == 1) {
+                wantr = load8(wantp + row * st);
+                if (bin == 1) { want = load8(wantp + row * st + bi); }
+            }
+        }
+        if (kashi_rt_glyph_row_byte(id, idx, row, bi) != want) { return 1; }
+        if (kashi_rt_glyph_row(id, idx, row) != wantr) { return 2; }
+        var cp = rng_wide();
+        var s = rng_below(4);
+        if (s == 1) { cp = rng_below(0x110000); }
+        if (s == 2) { cp = rng_below(count + 64) - 32; }
+        if (s == 3) { cp = rng_below(0x100); }
+        var fp = kashi_font_ptr(id, cp);
+        if (fp != 0) {
+            if (fp < base) { return 4; }
+            if (fp >= base + count * cs) { return 4; }
+            if (((fp - base) % cs) != 0) { return 4; }
+        }
+        var wf = 0;
+        var wfr = 0;
+        if (fp != 0) {
+            if (rin == 1) {
+                wfr = load8(fp + row * st);
+                if (bin == 1) { wf = load8(fp + row * st + bi); }
+            }
+        }
+        if (kashi_font_row_byte(id, cp, row, bi) != wf) { return 5; }
+        if (kashi_font_row(id, cp, row) != wfr) { return 5; }
+        t = t + 1;
+    }
+    return 0;
+}
+
+# A ligature lookup on runtime font `id` answers 0 - 1 or one of its glyphs,
+# and always misses for a non-positive length. 0 or 1.
+fn _fz_seq_contract(id) {
+    var probe[48];
+    var i = 0;
+    while (i < 6) {
+        var cp = rng_below(0x80);
+        if (rng_below(4) == 0) { cp = rng_below(0x110000); }
+        store64(&probe + i * 8, cp);
+        i = i + 1;
+    }
+    var len = rng_below(7) - 1;
+    if (rng_below(16) == 0) { len = 0 - rng_below(1000000); }
+    var sg = kashi_font_seq_glyph(id, &probe, len);
+    if (sg == 0 - 1) { return 0; }
+    if (len < 1) { return 1; }
+    if (sg < 0) { return 1; }
+    if (sg >= kashi_rt_font_count(id)) { return 1; }
+    return 0;
+}
+
+# Compare every glyph byte of runtime font `id` with `exp` (`count` glyphs of
+# `h` rows x `stride` bytes, packed). 0, or 1 = a byte differs, 2 = the
+# leading-byte accessor differs, 3 = a glyph does not start at
+# store + index * charsize.
+fn _fz_rt_bytes(id, exp, h, stride, count) {
+    var cs = h * stride;
+    var base = kashi_rt_glyph_ptr(id, 0);
+    var g = 0;
+    while (g < count) {
+        if (kashi_rt_glyph_ptr(id, g) != base + g * cs) { return 3; }
+        var r = 0;
+        while (r < h) {
+            var e = exp + g * cs + r * stride;
+            var k = 0;
+            while (k < stride) {
+                if (kashi_rt_glyph_row_byte(id, g, r, k) != load8(e + k)) { return 1; }
+                k = k + 1;
+            }
+            if (kashi_rt_glyph_row(id, g, r) != load8(e)) { return 2; }
+            r = r + 1;
+        }
+        g = g + 1;
+    }
+    if (kashi_rt_glyph_ptr(id, count) != 0) { return 3; }
+    return 0;
+}
+
+# 1 if runtime font `id`'s width, height, glyph count or stride differs.
+fn _fz_rt_meta(id, w, h, count) {
+    if (kashi_rt_font_width(id) != w) { return 1; }
+    if (kashi_rt_font_height(id) != h) { return 1; }
+    if (kashi_rt_font_count(id) != count) { return 1; }
+    if (kashi_rt_font_stride(id) != (w + 7) / 8) { return 1; }
+    return 0;
+}
+
+# --- PSF generator ---
+#
+# _fz_psf_gen writes a random VALID PSF1 or PSF2 font from a seed and records
+# what a loader must answer: the geometry, where the glyph bytes sit (the
+# expected bytes are the generated buffer's own), and the Unicode model. The
+# model is a pool of distinct codepoints, each with the HIGHEST glyph < count
+# that lists it as a single codepoint, and a pool of distinct sequences, each
+# with the highest glyph that lists it (audit 2026-10-30, L10: the Linux
+# console rule; until 1.3.0 the winner depended on the map's size). A glyph's
+# entry lists 0-3 pool codepoints in random (non-monotone) order and, on some
+# glyphs, 1-2 sequences; the same codepoint or sequence on several glyphs is
+# common. Sequences share prefixes (the order is lexicographic, then
+# shorter first). The table may run a few entries past the glyph count
+# (ignored) or stop short of it (the tail glyphs are unlisted).
+
+var _psf_kind = 0;
+var _psf_w = 0;
+var _psf_h = 0;
+var _psf_count = 0;
+var _psf_stride = 0;
+var _psf_charsize = 0;
+var _psf_dataoff = 0;
+var _psf_dataend = 0;
+var _psf_flag = 0;          # 1 if the header announces a table
+var _psf_nsingle = 0;       # pool codepoints mapped to a glyph < count
+var _psf_nseqmap = 0;       # pool sequences mapped to a glyph < count
+var _psf_npool = 0;
+var _psf_pool[48];
+var _psf_best[48];
+var _psf_nseq = 0;
+var _psf_seqlen[12];
+var _psf_seqcp[48];         # sequence k in slots k*4 .. k*4+3
+var _psf_seqbest[12];
+
+# A random codepoint a table of `kind` can carry: PSF1 units reach the BMP
+# (never 0xFFFE / 0xFFFF / surrogates), PSF2 UTF-8 all four lengths.
+fn _fz_psf_cp(kind) {
+    var c = g_below(4);
+    if (kind == KASHI_PSF_KIND_PSF1) {
+        if (c == 3) { c = g_below(3); }
+    }
+    if (c == 0) { return g_below(0x80); }
+    if (c == 1) { return 0x80 + g_below(0x780); }
+    if (c == 2) {
+        var v = 0x800 + g_below(0xEFFE);
+        if (v >= 0xD800) { v = v + 0x800; }
+        return v;
+    }
+    return 0x10000 + g_below(0x100000);
+}
+
+fn _fz_put_cp(buf, p, cp, kind) {
+    if (kind == KASHI_PSF_KIND_PSF1) {
+        _fz_put16(buf, p, cp, 0);
+        return p + 2;
+    }
+    if (cp < 0x80) {
+        store8(buf + p, cp);
+        return p + 1;
+    }
+    if (cp < 0x800) {
+        store8(buf + p, 0xC0 | (cp >> 6));
+        store8(buf + p + 1, 0x80 | (cp & 0x3F));
+        return p + 2;
+    }
+    if (cp < 0x10000) {
+        store8(buf + p, 0xE0 | (cp >> 12));
+        store8(buf + p + 1, 0x80 | ((cp >> 6) & 0x3F));
+        store8(buf + p + 2, 0x80 | (cp & 0x3F));
+        return p + 3;
+    }
+    store8(buf + p, 0xF0 | (cp >> 18));
+    store8(buf + p + 1, 0x80 | ((cp >> 12) & 0x3F));
+    store8(buf + p + 2, 0x80 | ((cp >> 6) & 0x3F));
+    store8(buf + p + 3, 0x80 | (cp & 0x3F));
+    return p + 4;
+}
+
+# A table marker: 0xFE starts a sequence, 0xFF ends a glyph's entry (PSF1:
+# the u16 0xFFFE / 0xFFFF).
+fn _fz_put_mark(buf, p, mark, kind) {
+    store8(buf + p, mark);
+    if (kind == KASHI_PSF_KIND_PSF1) {
+        store8(buf + p + 1, 0xFF);
+        return p + 2;
+    }
+    return p + 1;
+}
+
+fn _fz_psf_in_pool(cp) { return _fz_index(&_psf_pool, _psf_npool, cp); }
+
+fn _fz_psf_mkpool(kind) {
+    var want = 1 + g_below(48);
+    _psf_npool = 0;
+    var tries = 0;
+    while (tries < 200) {
+        if (_psf_npool < want) {
+            var cp = _fz_psf_cp(kind);
+            if (_fz_psf_in_pool(cp) < 0) {
+                _st(&_psf_pool, _psf_npool, cp);
+                _st(&_psf_best, _psf_npool, 0 - 1);
+                _psf_npool = _psf_npool + 1;
+            }
+        }
+        tries = tries + 1;
+    }
+    return 0;
+}
+
+# Index of the generated sequence equal to `len` codepoints at `cand`, or
+# 0 - 1.
+fn _fz_psf_seq_find(cand, len) {
+    var k = 0;
+    while (k < _psf_nseq) {
+        if (_ld(&_psf_seqlen, k) == len) {
+            var same = 1;
+            var i = 0;
+            while (i < len) {
+                if (_ld(&_psf_seqcp, k * 4 + i) != _ld(cand, i)) { same = 0; }
+                i = i + 1;
+            }
+            if (same == 1) { return k; }
+        }
+        k = k + 1;
+    }
+    return 0 - 1;
+}
+
+fn _fz_psf_mkseqs(kind) {
+    var want = g_below(13);
+    _psf_nseq = 0;
+    var cand[32];
+    var tries = 0;
+    while (tries < 60) {
+        if (_psf_nseq < want) {
+            var len = 1 + g_below(4);
+            # Half the time extend or cut an earlier sequence.
+            var base = 0 - 1;
+            if (_psf_nseq > 0) {
+                if (g_below(2) == 0) { base = g_below(_psf_nseq); }
+            }
+            var i = 0;
+            while (i < len) {
+                var cp = 0;
+                var inherit = 0;
+                if (base >= 0) {
+                    if (i < _ld(&_psf_seqlen, base)) { inherit = 1; }
+                }
+                if (inherit == 1) { cp = _ld(&_psf_seqcp, base * 4 + i); }
+                if (inherit == 0) {
+                    cp = _fz_psf_cp(kind);
+                    if (g_below(2) == 0) { cp = _ld(&_psf_pool, g_below(_psf_npool)); }
+                }
+                _st(&cand, i, cp);
+                i = i + 1;
+            }
+            if (_fz_psf_seq_find(&cand, len) < 0) {
+                var j = 0;
+                while (j < len) {
+                    _st(&_psf_seqcp, _psf_nseq * 4 + j, _ld(&cand, j));
+                    j = j + 1;
+                }
+                _st(&_psf_seqlen, _psf_nseq, len);
+                _st(&_psf_seqbest, _psf_nseq, 0 - 1);
+                _psf_nseq = _psf_nseq + 1;
+            }
+        }
+        tries = tries + 1;
+    }
+    return 0;
+}
+
+# Write glyph entries 0..ntab-1 from p. `mode` 0: codepoints and sequences;
+# 1: sequences only; 2: every entry empty. Records the model.
+fn _fz_psf_table(buf, p, kind, ntab, mode) {
+    var g = 0;
+    while (g < ntab) {
+        var ns = 0;
+        if (mode == 0) { ns = g_below(4); }
+        var i = 0;
+        while (i < ns) {
+            var k = g_below(_psf_npool);
+            p = _fz_put_cp(buf, p, _ld(&_psf_pool, k), kind);
+            if (g < _psf_count) { _st(&_psf_best, k, g); }
+            i = i + 1;
+        }
+        var nq = 0;
+        if (mode != 2) {
+            if (_psf_nseq > 0) {
+                if (g_below(4) == 0) { nq = 1 + g_below(2); }
+            }
+        }
+        var j = 0;
+        while (j < nq) {
+            var q = g_below(_psf_nseq);
+            p = _fz_put_mark(buf, p, 0xFE, kind);
+            var t = 0;
+            while (t < _ld(&_psf_seqlen, q)) {
+                p = _fz_put_cp(buf, p, _ld(&_psf_seqcp, q * 4 + t), kind);
+                t = t + 1;
+            }
+            if (g < _psf_count) { _st(&_psf_seqbest, q, g); }
+            j = j + 1;
+        }
+        p = _fz_put_mark(buf, p, 0xFF, kind);
+        g = g + 1;
+    }
     return p;
 }
 
-fn fuzz_bdf(rounds) {
-    var cap = 2048;
-    var buf = alloc(cap);
+# Write a random valid PSF font into buf from `seed`; returns its length.
+# PSF2 glyph counts reach `maxcount` and heights `maxh`. `mode` 0 - 1 picks
+# the table shape at random (mostly 0; 1 and 2 give the tables that map no
+# single codepoint), else forces it.
+fn _fz_psf_gen(buf, seed, maxcount, maxh, mode) {
+    g_seed(seed);
+    _psf_kind = KASHI_PSF_KIND_PSF2;
+    if (g_below(5) < 2) { _psf_kind = KASHI_PSF_KIND_PSF1; }
+    _psf_h = 1 + g_below(maxh);
+    if (_psf_kind == KASHI_PSF_KIND_PSF1) {
+        _psf_w = 8;
+        _psf_count = 256;
+        var m = 0;
+        if (g_below(3) == 0) {
+            m = KASHI_PSF1_MODE512;
+            _psf_count = 512;
+        }
+        # HASTAB, SEQ, both, or neither (the table bytes are then ignored).
+        var tb = g_below(10);
+        _psf_flag = 1;
+        if (tb == 0) { _psf_flag = 0; }
+        if (tb == 1) { m = m | KASHI_PSF1_MODESEQ; }
+        if (tb == 2) { m = m | KASHI_PSF1_MODEHASTAB | KASHI_PSF1_MODESEQ; }
+        if (tb > 2) { m = m | KASHI_PSF1_MODEHASTAB; }
+        store8(buf + 0, KASHI_PSF1_MAGIC0);
+        store8(buf + 1, KASHI_PSF1_MAGIC1);
+        store8(buf + 2, m);
+        store8(buf + 3, _psf_h);
+        _psf_dataoff = KASHI_PSF1_HDR;
+    }
+    if (_psf_kind == KASHI_PSF_KIND_PSF2) {
+        _psf_w = 1 + g_below(32);
+        var small = 48;
+        if (small > maxcount) { small = maxcount; }
+        _psf_count = 1 + g_below(small);
+        if (g_below(10) >= 6) { _psf_count = 1 + g_below(maxcount); }
+        # A header longer than the fixed 32 bytes (the glyphs start at
+        # headersize), its tail random.
+        var hs = 32 + g_below(17);
+        var j = 32;
+        while (j < hs) {
+            store8(buf + j, g_next() & 0xFF);
+            j = j + 1;
+        }
+        _psf_flag = 1;
+        if (g_below(10) == 0) { _psf_flag = 0; }
+        var st2 = (_psf_w + 7) / 8;
+        _fz_put32(buf, 0, KASHI_PSF2_MAGIC, 0);
+        _fz_put32(buf, 4, 0, 0);
+        _fz_put32(buf, 8, hs, 0);
+        _fz_put32(buf, 12, _psf_flag, 0);
+        _fz_put32(buf, 16, _psf_count, 0);
+        _fz_put32(buf, 20, _psf_h * st2, 0);
+        _fz_put32(buf, 24, _psf_h, 0);
+        _fz_put32(buf, 28, _psf_w, 0);
+        _psf_dataoff = hs;
+    }
+    _psf_stride = (_psf_w + 7) / 8;
+    _psf_charsize = _psf_h * _psf_stride;
+    var nb = _psf_count * _psf_charsize;
+    var i = 0;
+    while (i < nb) {
+        store8(buf + _psf_dataoff + i, g_next() & 0xFF);
+        i = i + 1;
+    }
+    _psf_dataend = _psf_dataoff + nb;
+    _fz_psf_mkpool(_psf_kind);
+    _fz_psf_mkseqs(_psf_kind);
+    var md = mode;
+    if (md < 0) {
+        md = 0;
+        var r = g_below(20);
+        if (r < 2) { md = 1; }
+        if (r == 2) { md = 2; }
+    }
+    var ntab = _psf_count + g_below(7) - 3;
+    if (ntab < 0) { ntab = 0; }
+    var len = _fz_psf_table(buf, _psf_dataend, _psf_kind, ntab, md);
+    _psf_nsingle = 0;
+    var k = 0;
+    while (k < _psf_npool) {
+        if (_ld(&_psf_best, k) >= 0) { _psf_nsingle = _psf_nsingle + 1; }
+        k = k + 1;
+    }
+    _psf_nseqmap = 0;
+    k = 0;
+    while (k < _psf_nseq) {
+        if (_ld(&_psf_seqbest, k) >= 0) { _psf_nseqmap = _psf_nseqmap + 1; }
+        k = k + 1;
+    }
+    return len;
+}
+
+# The glyph single codepoint `cp` must resolve to: through the table model
+# when `tab` is 1, else identity (a raw index below the count). 0 - 1 =
+# must miss.
+fn _fz_psf_want(cp, tab) {
+    if (tab == 0) {
+        if (cp < 0) { return 0 - 1; }
+        if (cp >= _psf_count) { return 0 - 1; }
+        return cp;
+    }
+    var k = _fz_psf_in_pool(cp);
+    if (k < 0) { return 0 - 1; }
+    return _ld(&_psf_best, k);
+}
+
+# --- PSF mutation fuzz (codes 20-34) ---
+#
+# Until 1.3.0 this stage only had random bytes with a magic stamped on, and
+# not one of its 4,000 inputs parsed, so nothing after the parse ever ran
+# (audit 2026-10-30, K20). Now three picks in four start from a generated
+# font (PSF1 or PSF2, Unicode table with sequences) and mutate it, truncate
+# it, or both; the fourth keeps the random-bytes path for the header checks.
+#   20  kashi_psf_parse answered an unknown code
+#   21  kashi_load_psf disagrees with kashi_psf_parse
+#   22-26  an accepted font broke the runtime contract (_fz_rt_contract 1-5)
+#   27  a ligature lookup answered something but 0 - 1 or a glyph
+#   28  attaching the font's own (mutated) table answered an unknown code
+#   29-33  the runtime contract broke after that attach
+#   34  fewer than one input in five loaded: the accept path went dark
+var _fz_psf_accepted = 0;
+
+fn fuzz_psf(rounds) {
+    var stage = alloc(262144);
     var hdr[56];
-    var ctx[32];
-    var gout[24];
-    var dest[128];           # max charsize (32 * 4)
+    var accepted = 0;
     var r = 0;
     while (r < rounds) {
-        var pick = rng_next() & 3;
+        var pick = rng_below(4);
         var len = 0;
         if (pick == 0) {
-            # Pure random bytes.
-            len = rng_next() % (cap + 1);
-            var i = 0;
-            while (i < len) {
-                store8(buf + i, rng_next() & 0xFF);
-                i = i + 1;
+            len = rng_below(2049);
+            _fz_fill(stage, len);
+            if (rng_below(2) == 0) {
+                if (len >= 4) {
+                    store8(stage + 0, 0x36);
+                    store8(stage + 1, 0x04);
+                    store8(stage + 2, load8(stage + 2) | 0x02);
+                }
+            }
+            if (rng_below(2) == 0) {
+                if (len >= 32) {
+                    _fz_put32(stage, 0, KASHI_PSF2_MAGIC, 0);
+                    store8(stage + 12, load8(stage + 12) | 0x01);
+                }
             }
         }
-        if (pick == 1) {
-            # Valid template, no mutations.
-            len = _fz_bdf_template(buf);
+        if (pick > 0) {
+            len = _fz_psf_gen(stage, rng_seed62(), 48, 8, 0 - 1);
+            if (pick != 2) { _fz_mutate(stage, len, 8); }
+            if (pick >= 2) { len = rng_below(len + 1); }
         }
-        if (pick == 2) {
-            # Valid template with a handful of random byte mutations.
-            len = _fz_bdf_template(buf);
-            var muts = (rng_next() & 7) + 1;
-            var m = 0;
-            while (m < muts) {
-                var off = rng_next() % len;
-                store8(buf + off, rng_next() & 0xFF);
-                m = m + 1;
+        var b = _fz_place(stage, len);
+        var rc = kashi_psf_parse(b, len, &hdr);
+        if (rc != KASHI_OK) {
+            if (rc != KASHI_EINVAL) {
+                if (rc != KASHI_EFORMAT) { return 20; }
             }
         }
-        if (pick == 3) {
-            # Valid template, then truncated.
-            len = _fz_bdf_template(buf);
-            len = rng_next() % (len + 1);
+        var id = kashi_load_psf(b, len);
+        if (rc == KASHI_OK) {
+            if (id < KASHI_RT_FONT_BASE) { return 21; }
         }
+        if (rc != KASHI_OK) {
+            if (id != 0 - rc) { return 21; }
+        }
+        if (id >= KASHI_RT_FONT_BASE) {
+            accepted = accepted + 1;
+            var c = _fz_rt_contract(id, 4);
+            if (c != 0) { return 21 + c; }
+            if (_fz_seq_contract(id) != 0) { return 27; }
+            var unioff = load64(&hdr + KASHI_PH_UNIOFF);
+            if (unioff > 0) {
+                var kind = load64(&hdr + KASHI_PH_KIND);
+                var ra = kashi_attach_unicode_table(id, b + unioff, len - unioff, kind);
+                if (ra != KASHI_OK) {
+                    if (ra != 0 - KASHI_EFORMAT) { return 28; }
+                }
+                c = _fz_rt_contract(id, 2);
+                if (c != 0) { return 28 + c; }
+                if (_fz_seq_contract(id) != 0) { return 27; }
+            }
+        }
+        r = r + 1;
+    }
+    if (accepted * 5 < rounds) { return 34; }
+    _fz_psf_accepted = accepted;
+    return 0;
+}
 
-        # Contract 1: parse_header only returns a known code, never crashes.
-        var rc = kashi_bdf_parse_header(buf, len, &hdr, &ctx);
+# --- PSF round-trip oracle (codes 40-54) ---
+#   40  a generated font did not load
+#   41  width, height, glyph count or stride differs
+#   42-44  glyph bytes (_fz_rt_bytes 1-3)
+#   45  a pool codepoint resolves to the wrong glyph, or hits / misses wrongly
+#   46  kashi_font_row / _row_byte of a mapped codepoint is not its byte
+#   47  a codepoint no glyph lists resolves: identity addressing on a font
+#       whose table maps no single codepoint (audit 2026-10-30, L7), or a
+#       table hit on a font without one
+#   48  a generated sequence resolves to the wrong glyph (audit 2026-10-30,
+#       L2: the lookup is a binary search over sorted, deduplicated records)
+#   49  a sequence that was never generated resolves
+#   50  re-attaching the font's own table as a sidecar failed
+#   51  re-attaching a table that yields nothing did not fail
+#   52  a table of bare terminators attached. A refused attach must leave
+#       the record as it was, sequences included; codes 45-49 recheck it.
+#       (The window audit 2026-10-30 L8 closed, a record cleared while the
+#       new table parsed, is visible only to a concurrent reader.)
+#   53  a font one byte short of its glyph data loaded
+#   54  the font cut right after its glyph data is not identity-addressed
+fn _fz_psf_check_map(id, src, tab) {
+    var k = 0;
+    while (k < _psf_npool) {
+        var cp = _ld(&_psf_pool, k);
+        var want = _fz_psf_want(cp, tab);
+        var wp = 0;
+        if (want >= 0) { wp = kashi_rt_glyph_ptr(id, want); }
+        if (kashi_font_ptr(id, cp) != wp) { return 45; }
+        if (want >= 0) {
+            var r = rng_below(_psf_h);
+            var b = rng_below(_psf_stride);
+            var e = src + _psf_dataoff + want * _psf_charsize + r * _psf_stride;
+            if (kashi_font_row_byte(id, cp, r, b) != load8(e + b)) { return 46; }
+            if (kashi_font_row(id, cp, r) != load8(e)) { return 46; }
+        }
+        k = k + 1;
+    }
+    # The small codepoints identity addressing would hit, the two around the
+    # count, and random scalars.
+    var t = 0;
+    while (t < 12) {
+        var cp2 = t;
+        if (t >= 4) { cp2 = _psf_count + t - 5; }
+        if (t >= 6) { cp2 = rng_below(0x110000); }
+        var want2 = _fz_psf_want(cp2, tab);
+        var wp2 = 0;
+        if (want2 >= 0) { wp2 = kashi_rt_glyph_ptr(id, want2); }
+        if (kashi_font_ptr(id, cp2) != wp2) { return 47; }
+        t = t + 1;
+    }
+    var probe[48];
+    var q = 0;
+    while (q < _psf_nseq) {
+        var len = _ld(&_psf_seqlen, q);
+        var i = 0;
+        while (i < len) {
+            _st(&probe, i, _ld(&_psf_seqcp, q * 4 + i));
+            i = i + 1;
+        }
+        var wq = 0 - 1;
+        if (tab == 1) { wq = _ld(&_psf_seqbest, q); }
+        if (kashi_font_seq_glyph(id, &probe, len) != wq) { return 48; }
+        q = q + 1;
+    }
+    # Near misses: a generated sequence with one codepoint changed, dropped
+    # or added, and runs of pool codepoints.
+    t = 0;
+    while (t < 6) {
+        var plen = 1 + rng_below(5);
+        var j = 0;
+        while (j < plen) {
+            var v = _ld(&_psf_pool, rng_below(_psf_npool));
+            if (rng_below(4) == 0) { v = rng_below(0x110000); }
+            _st(&probe, j, v);
+            j = j + 1;
+        }
+        if (_psf_nseq > 0) {
+            if (rng_below(2) == 0) {
+                var s = rng_below(_psf_nseq);
+                plen = _ld(&_psf_seqlen, s);
+                j = 0;
+                while (j < plen) {
+                    _st(&probe, j, _ld(&_psf_seqcp, s * 4 + j));
+                    j = j + 1;
+                }
+                var how = rng_below(3);
+                if (how == 0) { _st(&probe, rng_below(plen), rng_below(0x110000)); }
+                if (how == 1) { plen = plen - 1; }
+                if (how == 2) {
+                    _st(&probe, plen, _ld(&_psf_pool, rng_below(_psf_npool)));
+                    plen = plen + 1;
+                }
+            }
+        }
+        var wn = 0 - 1;
+        if (tab == 1) {
+            var f = _fz_psf_seq_find(&probe, plen);
+            if (f >= 0) { wn = _ld(&_psf_seqbest, f); }
+        }
+        if (plen > 0) {
+            if (kashi_font_seq_glyph(id, &probe, plen) != wn) { return 49; }
+        }
+        t = t + 1;
+    }
+    return 0;
+}
+
+var _fz_psf_oracle_fonts = 0;
+
+fn oracle_psf(rounds) {
+    var stage = alloc(262144);
+    var terms = alloc(16);
+    var n = 0;
+    while (n < rounds) {
+        var len = _fz_psf_gen(stage, rng_seed62(), 700, 32, 0 - 1);
+        var b = _fz_place(stage, len);
+        var id = kashi_load_psf(b, len);
+        if (id < KASHI_RT_FONT_BASE) { return 40; }
+        if (_fz_rt_meta(id, _psf_w, _psf_h, _psf_count) != 0) { return 41; }
+        var c = _fz_rt_bytes(id, stage + _psf_dataoff, _psf_h, _psf_stride, _psf_count);
+        if (c != 0) { return 41 + c; }
+        var tab = 0;
+        if (_psf_flag == 1) {
+            if (len > _psf_dataend) { tab = 1; }
+        }
+        c = _fz_psf_check_map(id, stage, tab);
+        if (c != 0) { return c; }
+        # The same table again, as a sidecar: the same answers (and a font
+        # loaded without its table becomes table-addressed).
+        if (len > _psf_dataend) {
+            var ra = kashi_attach_unicode_table(id, b + _psf_dataend, len - _psf_dataend, _psf_kind);
+            if (_psf_nsingle + _psf_nseqmap > 0) {
+                if (ra != KASHI_OK) { return 50; }
+                tab = 1;
+            }
+            if (_psf_nsingle + _psf_nseqmap == 0) {
+                if (ra != 0 - KASHI_EFORMAT) { return 51; }
+            }
+            c = _fz_psf_check_map(id, stage, tab);
+            if (c != 0) { return c; }
+        }
+        var m = 1 + rng_below(4);
+        var tl = 0;
+        var j = 0;
+        while (j < m) {
+            tl = _fz_put_mark(terms, tl, 0xFF, _psf_kind);
+            j = j + 1;
+        }
+        if (kashi_attach_unicode_table(id, terms, tl, _psf_kind) != 0 - KASHI_EFORMAT) { return 52; }
+        c = _fz_psf_check_map(id, stage, tab);
+        if (c != 0) { return c; }
+        if ((n & 3) == 0) {
+            var b2 = _fz_place(stage, _psf_dataend - 1);
+            if (kashi_load_psf(b2, _psf_dataend - 1) >= 0) { return 53; }
+            b2 = _fz_place(stage, _psf_dataend);
+            var id2 = kashi_load_psf(b2, _psf_dataend);
+            if (id2 < KASHI_RT_FONT_BASE) { return 54; }
+            if (_fz_psf_check_map(id2, stage, 0) != 0) { return 54; }
+        }
+        _fz_psf_oracle_fonts = _fz_psf_oracle_fonts + 1;
+        n = n + 1;
+    }
+    return 0;
+}
+
+# --- BDF generator ---
+#
+# _fz_bdf_gen writes a random VALID BDF font from a seed: a font bounding
+# box 1..32 wide (stride 1..4) and 1..32 high with signed offsets; records in
+# random ENCODING order drawn from a small pool (so codepoints repeat — the
+# later record has the higher glyph index and wins, audit 2026-10-30, L10),
+# with ENCODING -1 (optionally with the second field real fonts carry) and
+# encodings past U+10FFFF both skipped; CHARS equal to the record count, a
+# little above it, or 65536; optional COMMENT / FONT / SIZE lines, a
+# properties block, SWIDTH / DWIDTH lines, blank lines, leading whitespace,
+# trailing spaces after a row, mixed-case hex, CRLF line ends and a missing
+# final newline. It records the loaded glyphs' bytes, the codepoint model and
+# the offsets of each record and of ENDFONT.
+#
+# `defect` (1-6) rebuilds the same font with one defect that must make the
+# load fail:
+#   1  an extra BITMAP row in record `darg` (audit 2026-10-30, B3)
+#   2  record `darg`'s ENCODING in hex, "0x..." (B4: it parsed as 0)
+#   3  STARTFONT twice  4  FONTBOUNDINGBOX twice  5  CHARS twice (B5: the
+#      last one used to win, even for identical lines)
+#   6  CHARS one below the number of loaded glyphs
+var _bdf_w = 0;
+var _bdf_h = 0;
+var _bdf_x = 0;
+var _bdf_y = 0;
+var _bdf_stride = 0;
+var _bdf_charsize = 0;
+var _bdf_nrec = 0;
+var _bdf_nok = 0;
+var _bdf_reccp[48];         # the ENCODING written for each record
+var _bdf_recpool[48];       # pool index of a loaded record, 0 - 1 if skipped
+var _bdf_recoff[48];        # offset of each record's STARTCHAR keyword
+var _bdf_npool = 0;
+var _bdf_pool[24];
+var _bdf_best[24];
+var _bdf_dataoff = 0;
+var _bdf_endoff = 0;        # offset of the ENDFONT keyword
+var _bdf_chars = 0;
+var _bdf_crlf = 0;
+var _bdf_lead = 0;
+var _bdf_exp = 0;           # the loaded glyphs' bytes, packed (alloc'd in main)
+
+fn _fz_bdf_eol(buf, p) {
+    if (_bdf_crlf == 1) {
+        store8(buf + p, 0x0D);
+        p = p + 1;
+    }
+    store8(buf + p, 0x0A);
+    return p + 1;
+}
+
+fn _fz_bdf_ws(buf, p) {
+    if (_bdf_lead == 0) { return p; }
+    var k = g_below(3);
+    if (k == 1) {
+        store8(buf + p, 0x20);
+        return p + 1;
+    }
+    if (k == 2) {
+        store8(buf + p, 0x09);
+        store8(buf + p + 1, 0x20);
+        return p + 2;
+    }
+    return p;
+}
+
+fn _fz_bdf_line(buf, p, s) {
+    p = _fz_bdf_ws(buf, p);
+    p = _fz_str(buf, p, s);
+    return _fz_bdf_eol(buf, p);
+}
+
+# "<kw>w h x y" + EOL.
+fn _fz_bdf_box(buf, p, kw) {
+    p = _fz_str(buf, p, kw);
+    p = _fz_dec(buf, p, _bdf_w);
+    store8(buf + p, 0x20);
+    p = _fz_dec(buf, p + 1, _bdf_h);
+    store8(buf + p, 0x20);
+    p = _fz_dec(buf, p + 1, _bdf_x);
+    store8(buf + p, 0x20);
+    p = _fz_dec(buf, p + 1, _bdf_y);
+    return _fz_bdf_eol(buf, p);
+}
+
+fn _fz_bdf_chars_line(buf, p) {
+    p = _fz_str(buf, p, "CHARS ");
+    p = _fz_dec(buf, p, _bdf_chars);
+    return _fz_bdf_eol(buf, p);
+}
+
+fn _fz_bdf_want(cp) {
+    var k = 0;
+    while (k < _bdf_npool) {
+        if (_ld(&_bdf_pool, k) == cp) { return _ld(&_bdf_best, k); }
+        k = k + 1;
+    }
+    return 0 - 1;
+}
+
+fn _fz_bdf_gen(buf, seed, maxrec, defect, darg) {
+    g_seed(seed);
+    _bdf_w = 1 + g_below(32);
+    if (g_below(4) == 0) { _bdf_w = 8; }
+    _bdf_h = 1 + g_below(32);
+    _bdf_x = g_below(9) - 4;
+    _bdf_y = g_below(9) - 6;
+    _bdf_stride = (_bdf_w + 7) / 8;
+    _bdf_charsize = _bdf_h * _bdf_stride;
+    _bdf_crlf = 0;
+    if (g_below(4) == 0) { _bdf_crlf = 1; }
+    _bdf_lead = 0;
+    if (g_below(4) == 0) { _bdf_lead = 1; }
+
+    var want = 1 + g_below(24);
+    _bdf_npool = 0;
+    var tries = 0;
+    while (tries < 100) {
+        if (_bdf_npool < want) {
+            var c = g_below(4);
+            var cp = 0x20 + g_below(0x5F);
+            if (c == 1) { cp = g_below(0x10000); }
+            if (c == 2) { cp = 0x10000 + g_below(0x100000); }
+            if (c == 3) { cp = g_below(0x20); }
+            if (_fz_index(&_bdf_pool, _bdf_npool, cp) < 0) {
+                _st(&_bdf_pool, _bdf_npool, cp);
+                _st(&_bdf_best, _bdf_npool, 0 - 1);
+                _bdf_npool = _bdf_npool + 1;
+            }
+        }
+        tries = tries + 1;
+    }
+
+    _bdf_nrec = 1 + g_below(maxrec);
+    _bdf_nok = 0;
+    var i = 0;
+    while (i < _bdf_nrec) {
+        var t = g_below(16);
+        var pk = g_below(_bdf_npool);
+        _st(&_bdf_recpool, i, pk);
+        _st(&_bdf_reccp, i, _ld(&_bdf_pool, pk));
+        if (t == 0) {
+            _st(&_bdf_recpool, i, 0 - 1);
+            _st(&_bdf_reccp, i, 0 - 1);
+        }
+        if (t == 1) {
+            _st(&_bdf_recpool, i, 0 - 1);
+            _st(&_bdf_reccp, i, 0x110000 + g_below(0x7FFFFFFF));
+        }
+        if (_ld(&_bdf_recpool, i) >= 0) { _bdf_nok = _bdf_nok + 1; }
+        i = i + 1;
+    }
+    if (_bdf_nok == 0) {
+        _st(&_bdf_recpool, 0, 0);
+        _st(&_bdf_reccp, 0, _ld(&_bdf_pool, 0));
+        _bdf_nok = 1;
+    }
+    # B2 (audit 2026-10-30): CHARS 65536 on a font of a few dozen glyphs. The
+    # loader must size its store from the input, not from CHARS.
+    var cc = g_below(10);
+    _bdf_chars = _bdf_nrec;
+    if (cc == 6) { _bdf_chars = _bdf_nok + g_below(4); }
+    if (cc == 7) { _bdf_chars = _bdf_nrec + g_below(100); }
+    if (cc >= 8) { _bdf_chars = 65536; }
+    if (defect == 6) { _bdf_chars = _bdf_nok - 1; }
+
+    var p = 0;
+    p = _fz_bdf_line(buf, p, "STARTFONT 2.1");
+    if (defect == 3) {
+        p = _fz_str(buf, p, "STARTFONT 2.1");
+        p = _fz_bdf_eol(buf, p);
+    }
+    if (g_below(2) == 0) { p = _fz_bdf_line(buf, p, "COMMENT generated by tests/kashi.fcyr"); }
+    p = _fz_bdf_line(buf, p, "FONT -kashi-fuzz-medium-r-normal--16-160-75-75-c-80-iso10646-1");
+    p = _fz_bdf_line(buf, p, "SIZE 16 75 75");
+    p = _fz_bdf_ws(buf, p);
+    p = _fz_bdf_box(buf, p, "FONTBOUNDINGBOX ");
+    if (defect == 4) { p = _fz_bdf_box(buf, p, "FONTBOUNDINGBOX "); }
+    if (g_below(2) == 0) {
+        p = _fz_bdf_line(buf, p, "STARTPROPERTIES 3");
+        p = _fz_bdf_line(buf, p, "FONT_ASCENT 14");
+        p = _fz_bdf_line(buf, p, "FONT_DESCENT 2");
+        p = _fz_bdf_line(buf, p, "DEFAULT_CHAR 65533");
+        p = _fz_bdf_line(buf, p, "ENDPROPERTIES");
+    }
+    p = _fz_bdf_ws(buf, p);
+    p = _fz_bdf_chars_line(buf, p);
+    if (defect == 5) { p = _fz_bdf_chars_line(buf, p); }
+
+    var okn = 0;
+    i = 0;
+    while (i < _bdf_nrec) {
+        if (g_below(8) == 0) { p = _fz_bdf_eol(buf, p); }
+        p = _fz_bdf_ws(buf, p);
+        _st(&_bdf_recoff, i, p);
+        if (i == 0) { _bdf_dataoff = p; }
+        p = _fz_str(buf, p, "STARTCHAR g");
+        p = _fz_dec(buf, p, i);
+        p = _fz_bdf_eol(buf, p);
+        var ecp = _ld(&_bdf_reccp, i);
+        p = _fz_bdf_ws(buf, p);
+        var hexenc = 0;
+        if (defect == 2) {
+            if (i == darg) { hexenc = 1; }
+        }
+        if (hexenc == 1) {
+            p = _fz_str(buf, p, "ENCODING 0x");
+            p = _fz_hex(buf, p, ecp & 0xFFFF, 1);
+        }
+        if (hexenc == 0) {
+            p = _fz_str(buf, p, "ENCODING ");
+            p = _fz_dec(buf, p, ecp);
+            if (ecp < 0) {
+                if (g_below(2) == 0) {
+                    store8(buf + p, 0x20);
+                    p = _fz_dec(buf, p + 1, g_below(0x10000));
+                }
+            }
+        }
+        p = _fz_bdf_eol(buf, p);
+        if (g_below(2) == 0) {
+            p = _fz_bdf_line(buf, p, "SWIDTH 500 0");
+            p = _fz_bdf_line(buf, p, "DWIDTH 8 0");
+        }
+        p = _fz_bdf_ws(buf, p);
+        p = _fz_bdf_box(buf, p, "BBX ");
+        p = _fz_bdf_line(buf, p, "BITMAP");
+        var slot = 0 - 1;
+        var pk2 = _ld(&_bdf_recpool, i);
+        if (pk2 >= 0) {
+            slot = okn;
+            _st(&_bdf_best, pk2, okn);
+            okn = okn + 1;
+        }
+        var r = 0;
+        while (r < _bdf_h) {
+            p = _fz_bdf_ws(buf, p);
+            var up = g_below(2);
+            var kb = 0;
+            while (kb < _bdf_stride) {
+                var v = g_below(256);
+                p = _fz_hexn(buf, p, v, 2, up);
+                if (slot >= 0) { store8(_bdf_exp + slot * _bdf_charsize + r * _bdf_stride + kb, v); }
+                kb = kb + 1;
+            }
+            if (g_below(8) == 0) {
+                store8(buf + p, 0x20);
+                p = p + 1;
+            }
+            p = _fz_bdf_eol(buf, p);
+            r = r + 1;
+        }
+        if (defect == 1) {
+            if (i == darg) {
+                p = _fz_hexn(buf, p, 0, 2 * _bdf_stride, 1);
+                p = _fz_bdf_eol(buf, p);
+            }
+        }
+        if (g_below(8) == 0) { p = _fz_bdf_eol(buf, p); }
+        p = _fz_bdf_line(buf, p, "ENDCHAR");
+        i = i + 1;
+    }
+    p = _fz_bdf_ws(buf, p);
+    _bdf_endoff = p;
+    p = _fz_str(buf, p, "ENDFONT");
+    if (g_below(4) != 0) { p = _fz_bdf_eol(buf, p); }
+    return p;
+}
+
+# --- BDF mutation fuzz (codes 60-79) ---
+#
+# Random bytes, and generated fonts (widths up to 32, so rows of up to four
+# bytes — until 1.3.0 every input here was 8 wide) mutated, truncated or both.
+#   60  kashi_bdf_parse_header answered an unknown code
+#   61  a ctx from a failed parse was not refused by the glyph cursor
+#       (audit 2026-10-30, B6: it is zeroed, and a zero width made the
+#       cursor's size check vacuous)
+#   62  kashi_bdf_next_glyph answered an unknown code
+#   63  a glyph kind outside OK / SKIP / END
+#   64  a resume offset outside [pos, len]
+#   65  a forged ctx with a width or height outside 1..32 was not refused
+#       (B6: a wide one could wrap height * stride past the dest_size check)
+#   66-70  an accepted font broke the runtime contract (_fz_rt_contract 1-5)
+#   79  fewer than one input in twenty loaded: the accept path went dark
+var _fz_bdf_accepted = 0;
+
+# 1-4 mutations. A third are random bytes; the rest keep a byte's class (a
+# digit stays a digit, a hex digit a hex digit) or write a space, a newline
+# or a minus sign, so many mutants still parse and reach the loader with a
+# changed ENCODING, row or count.
+fn _fz_bdf_mutate(buf, len) {
+    if (len < 1) { return 0; }
+    var muts = 1 + rng_below(4);
+    var m = 0;
+    while (m < muts) {
+        var off = rng_below(len);
+        var c = load8(buf + off);
+        var v = rng_next() & 0xFF;
+        var s = rng_below(6);
+        if (s >= 2) {
+            v = c;
+            var hex = 0;
+            if (c >= 0x30) {
+                if (c <= 0x39) { hex = 1; }
+            }
+            if (c >= 0x41) {
+                if (c <= 0x46) { hex = 1; }
+            }
+            if (c >= 0x61) {
+                if (c <= 0x66) { hex = 1; }
+            }
+            if (hex == 1) { v = _fz_hexc(rng_below(16), rng_below(2)); }
+            if (c >= 0x30) {
+                if (c <= 0x39) {
+                    if (s == 2) { v = 0x30 + rng_below(10); }
+                }
+            }
+        }
+        if (s == 1) {
+            v = 0x20;
+            var t = rng_below(3);
+            if (t == 1) { v = 0x0A; }
+            if (t == 2) { v = 0x2D; }
+        }
+        store8(buf + off, v);
+        m = m + 1;
+    }
+    return 0;
+}
+
+fn fuzz_bdf(rounds) {
+    var stage = alloc(65536);
+    var hdr[56];
+    var ctx[32];
+    var fctx[32];
+    var gout[24];
+    var dest[128];
+    var accepted = 0;
+    var r = 0;
+    while (r < rounds) {
+        var pick = rng_below(4);
+        var len = 0;
+        if (pick == 0) {
+            len = rng_below(2049);
+            _fz_fill(stage, len);
+        }
+        if (pick > 0) {
+            len = _fz_bdf_gen(stage, rng_seed62(), 6, 0, 0);
+            if (pick != 2) { _fz_bdf_mutate(stage, len); }
+            if (pick >= 2) { len = rng_below(len + 1); }
+        }
+        var b = _fz_place(stage, len);
+        var rc = kashi_bdf_parse_header(b, len, &hdr, &ctx);
         if (rc != KASHI_BDF_OK) {
             if (rc != KASHI_BDF_EINVAL) {
-                if (rc != KASHI_BDF_EFORMAT) { return 1; }
+                if (rc != KASHI_BDF_EFORMAT) { return 60; }
             }
+            if (kashi_bdf_next_glyph(b, 0, len, &ctx, &dest, 128, &gout) != KASHI_BDF_EINVAL) { return 61; }
         }
-
-        # Contract 2: next_glyph with random pos/end never crashes; returns
-        # a known code; bounds-safe in its outputs.
         if (rc == KASHI_BDF_OK) {
-            var pos = rng_next() % (len + 1);
-            var grc = kashi_bdf_next_glyph(buf, pos, len, &ctx, &dest, 128, &gout);
+            var pos = rng_below(len + 1);
+            var grc = kashi_bdf_next_glyph(b, pos, len, &ctx, &dest, 128, &gout);
             if (grc != KASHI_BDF_OK) {
                 if (grc != KASHI_BDF_EINVAL) {
-                    if (grc != KASHI_BDF_EFORMAT) { return 2; }
+                    if (grc != KASHI_BDF_EFORMAT) { return 62; }
                 }
             }
             if (grc == KASHI_BDF_OK) {
                 var kind = load64(&gout + BG_KIND);
-                if (kind < 0) { return 3; }
-                if (kind > BG_KIND_END) { return 4; }
+                if (kind < 0) { return 63; }
+                if (kind > BG_KIND_END) { return 63; }
                 var nxt = load64(&gout + BG_NEXT);
-                if (nxt < 0) { return 5; }
-                if (nxt > len) { return 6; }
+                if (nxt < pos) { return 64; }
+                if (nxt > len) { return 64; }
+            }
+            memcpy(&fctx, &ctx, 32);
+            var fw = load64(&ctx + BDF_CTX_W);
+            var fh = load64(&ctx + BDF_CTX_H);
+            var f = rng_below(6);
+            if (f == 0) { fw = 0; }
+            if (f == 1) { fw = 33 + rng_below(1000); }
+            if (f == 2) { fh = 0 - 1 - rng_below(1000); }
+            if (f == 3) { fh = rng_wide(); }
+            if (f == 4) { fw = rng_wide(); }
+            if (f == 5) { fh = 33; }
+            store64(&fctx + BDF_CTX_W, fw);
+            store64(&fctx + BDF_CTX_H, fh);
+            var bad = 0;
+            if (fw < 1) { bad = 1; }
+            if (fw > 32) { bad = 1; }
+            if (fh < 1) { bad = 1; }
+            if (fh > 32) { bad = 1; }
+            if (bad == 1) {
+                if (kashi_bdf_next_glyph(b, pos, len, &fctx, &dest, 128, &gout) != KASHI_BDF_EINVAL) { return 65; }
             }
         }
-
-        # Contract 3: full load returns a value; any accepted font is
-        # bounds-safe under random probes (same posture as fuzz_psf).
-        var id = kashi_load_bdf(buf, len);
+        var id = kashi_load_bdf(b, len);
         if (id >= KASHI_RT_FONT_BASE) {
-            var count = kashi_rt_font_count(id);
-            var height = kashi_rt_font_height(id);
-            var g = 0;
-            while (g < 3) {
-                var row = rng_next() & 0xFF;
-                var idx = rng_next() % (count + 2);
-                var rv = kashi_rt_glyph_row(id, idx, row);
-                if (rv < 0) { return 7; }
-                if (rv > 0xFF) { return 8; }
-                if (idx >= count) {
-                    if (rv != 0) { return 9; }
-                }
-                if (row >= height) {
-                    if (rv != 0) { return 10; }
-                }
-                var cp = rng_next() & 0xFFFFF;
-                var cv = kashi_font_row(id, cp, row);
-                if (cv < 0) { return 11; }
-                if (cv > 0xFF) { return 12; }
-                g = g + 1;
-            }
+            accepted = accepted + 1;
+            var c = _fz_rt_contract(id, 3);
+            if (c != 0) { return 65 + c; }
         }
         r = r + 1;
     }
+    if (accepted * 20 < rounds) { return 79; }
+    _fz_bdf_accepted = accepted;
     return 0;
 }
 
-# --- PCF parser fuzz (0.7.1) ---
-#
-# PCF is the biggest untrusted-input surface kashi has so far — table-of-
-# contents with offsets, signed metric biases, variable-length encodings,
-# format-byte combinatorics, per-row bit-reverse and scan-unit byte-swap
-# paths. Same four pick paths as fuzz_bdf.
-
-fn _fz_pcf_put32(buf, off, v) {
-    store8(buf + off + 0, v & 0xFF);
-    store8(buf + off + 1, (v >> 8) & 0xFF);
-    store8(buf + off + 2, (v >> 16) & 0xFF);
-    store8(buf + off + 3, (v >> 24) & 0xFF);
-    return 0;
-}
-
-# Build a small valid 2-glyph PCF into `buf`. Used by fuzz_pcf for the
-# template / mutated / truncated paths.
-fn _fz_pcf_template(buf) {
-    store8(buf + 0, 0x01); store8(buf + 1, 0x66);
-    store8(buf + 2, 0x63); store8(buf + 3, 0x70);
-    _fz_pcf_put32(buf, 4, 3);
-    var moff = 56;
-    var msize = 4 + 2 + 2 * 5;
-    _fz_pcf_put32(buf, 8, 0x04);
-    _fz_pcf_put32(buf, 12, 0x108);
-    _fz_pcf_put32(buf, 16, msize);
-    _fz_pcf_put32(buf, 20, moff);
-    var boff = moff + msize;
-    var bsize = 4 + 4 + 2 * 4 + 16 + 2 * 8;
-    _fz_pcf_put32(buf, 24, 0x08);
-    _fz_pcf_put32(buf, 28, 0x08);
-    _fz_pcf_put32(buf, 32, bsize);
-    _fz_pcf_put32(buf, 36, boff);
-    var eoff = boff + bsize;
-    var esize = 4 + 5 * 2 + 2 * 2;
-    _fz_pcf_put32(buf, 40, 0x20);
-    _fz_pcf_put32(buf, 44, 0x08);
-    _fz_pcf_put32(buf, 48, esize);
-    _fz_pcf_put32(buf, 52, eoff);
-    _fz_pcf_put32(buf, moff, 0x108);
-    store8(buf + moff + 4, 2); store8(buf + moff + 5, 0);
-    var mi = 0;
-    while (mi < 2) {
-        var s = moff + 6 + mi * 5;
-        store8(buf + s + 0, 0x80);
-        store8(buf + s + 1, 0x88);
-        store8(buf + s + 2, 0x88);
-        store8(buf + s + 3, 0x88);
-        store8(buf + s + 4, 0x80);
-        mi = mi + 1;
+# --- BDF round-trip oracle (codes 80-96) ---
+#   80  a generated font did not load
+#   81  the load allocated more than the input can justify (audit 2026-10-30,
+#       B2: CHARS 65536 on a small file used to reserve 9 MiB)
+#   82  width, height, glyph count (the loaded records) or stride differs
+#   83-85  glyph bytes (_fz_rt_bytes 1-3)
+#   87  a pool codepoint resolves to the wrong glyph (the later record wins)
+#   88  kashi_font_row_byte of a mapped codepoint is not its byte
+#   89  a skipped encoding (past U+10FFFF) or an unlisted codepoint resolves
+#   90  the font cut before its ENDFONT keyword loaded (audit 2026-10-30, B1:
+#       a file cut between records loaded as a partial font)
+#   91-96  the font rebuilt with defect 1-6 (see _fz_bdf_gen) loaded
+fn _fz_bdf_check_map(id) {
+    var k = 0;
+    while (k < _bdf_npool) {
+        var cp = _ld(&_bdf_pool, k);
+        var want = _ld(&_bdf_best, k);
+        var wp = 0;
+        if (want >= 0) { wp = kashi_rt_glyph_ptr(id, want); }
+        if (kashi_font_ptr(id, cp) != wp) { return 87; }
+        if (want >= 0) {
+            var r = rng_below(_bdf_h);
+            var b = rng_below(_bdf_stride);
+            var e = _bdf_exp + want * _bdf_charsize + r * _bdf_stride + b;
+            if (kashi_font_row_byte(id, cp, r, b) != load8(e)) { return 88; }
+        }
+        k = k + 1;
     }
-    _fz_pcf_put32(buf, boff, 0x08);
-    _fz_pcf_put32(buf, boff + 4, 2);
-    _fz_pcf_put32(buf, boff + 8, 0);
-    _fz_pcf_put32(buf, boff + 12, 8);
-    _fz_pcf_put32(buf, boff + 16, 16);
-    _fz_pcf_put32(buf, boff + 20, 48);
-    _fz_pcf_put32(buf, boff + 24, 96);
-    _fz_pcf_put32(buf, boff + 28, 192);
-    var bd = boff + 32;
-    var bi = 0;
-    while (bi < 16) { store8(buf + bd + bi, 0x55); bi = bi + 1; }
-    _fz_pcf_put32(buf, eoff, 0x08);
-    store8(buf + eoff + 4, 0x41); store8(buf + eoff + 5, 0);
-    store8(buf + eoff + 6, 0x42); store8(buf + eoff + 7, 0);
-    store8(buf + eoff + 8, 0); store8(buf + eoff + 9, 0);
-    store8(buf + eoff + 10, 0); store8(buf + eoff + 11, 0);
-    store8(buf + eoff + 12, 0); store8(buf + eoff + 13, 0);
-    store8(buf + eoff + 14, 0); store8(buf + eoff + 15, 0);
-    store8(buf + eoff + 16, 1); store8(buf + eoff + 17, 0);
-    return eoff + esize;
+    var i = 0;
+    while (i < _bdf_nrec) {
+        var ecp = _ld(&_bdf_reccp, i);
+        if (ecp > 0x10FFFF) {
+            if (kashi_font_ptr(id, ecp) != 0) { return 89; }
+        }
+        i = i + 1;
+    }
+    var t = 0;
+    while (t < 8) {
+        var cp2 = rng_below(0x110000);
+        if (t < 4) { cp2 = rng_below(0x80); }
+        if (_fz_bdf_want(cp2) == 0 - 1) {
+            if (kashi_font_ptr(id, cp2) != 0) { return 89; }
+        }
+        t = t + 1;
+    }
+    return 0;
 }
+
+var _fz_bdf_oracle_fonts = 0;
+
+fn oracle_bdf(rounds) {
+    var stage = alloc(65536);
+    var n = 0;
+    while (n < rounds) {
+        var seed = rng_seed62();
+        var len = _fz_bdf_gen(stage, seed, 40, 0, 0);
+        var b = _fz_place(stage, len);
+        var before = alloc_used();
+        var id = kashi_load_bdf(b, len);
+        var used = alloc_used() - before;
+        if (id < KASHI_RT_FONT_BASE) { return 80; }
+        if (used > len * 6 + kashi_font_total() * 16 + 8192) { return 81; }
+        if (_fz_rt_meta(id, _bdf_w, _bdf_h, _bdf_nok) != 0) { return 82; }
+        var c = _fz_rt_bytes(id, _bdf_exp, _bdf_h, _bdf_stride, _bdf_nok);
+        if (c != 0) { return 82 + c; }
+        c = _fz_bdf_check_map(id);
+        if (c != 0) { return c; }
+        # Cut before ENDFONT: right at it, at a record's start, or anywhere
+        # from the first record to the keyword's last letter.
+        var cut = _bdf_endoff;
+        var w = rng_below(3);
+        if (w == 1) { cut = _ld(&_bdf_recoff, rng_below(_bdf_nrec)); }
+        if (w == 2) { cut = _bdf_dataoff + rng_below(_bdf_endoff + 7 - _bdf_dataoff); }
+        var bc = _fz_place(stage, cut);
+        if (kashi_load_bdf(bc, cut) >= 0) { return 90; }
+        var d = 1 + (n % 6);
+        var len2 = _fz_bdf_gen(stage, seed, 40, d, rng_below(_bdf_nrec));
+        var b2 = _fz_place(stage, len2);
+        if (kashi_load_bdf(b2, len2) >= 0) { return 90 + d; }
+        _fz_bdf_oracle_fonts = _fz_bdf_oracle_fonts + 1;
+        n = n + 1;
+    }
+    return 0;
+}
+
+# --- PCF generator ---
+#
+# _fz_pcf_gen writes a random VALID PCF font from a seed with an encoder
+# written apart from the decoder: any byte order, bit order, glyph pad and
+# scan unit <= pad (the metrics and encodings tables sometimes in a byte
+# order of their own); width 1..32, height 1..32; compressed or uncompressed
+# metrics with a signed left bearing and descent; glyph bitmaps stored in a
+# random order (the offsets table says where); garbage in each row's pad
+# bytes; one to three byte1 rows of up to 48 cells, each cell a glyph, 0xFFFF
+# or an index >= the glyph count (both unmapped); up to two tables kashi
+# ignores; the table of contents and the file layout in two independent
+# random orders. Each canonical row byte (MSB-first, pad bits zero) is
+# recorded; the writer reverses bits for an LSB bit order and swaps within
+# the scan unit when byte order != bit order.
+var _pcf_n = 0;
+var _pcf_w = 0;
+var _pcf_h = 0;
+var _pcf_stride = 0;
+var _pcf_charsize = 0;
+var _pcf_minb1 = 0;
+var _pcf_maxb1 = 0;
+var _pcf_minb2 = 0;
+var _pcf_maxb2 = 0;
+var _pcf_ncell = 0;
+var _pcf_lastreq = 0;       # 1 if a required table ends the file
+var _pcf_cells = 0;         # alloc'd: the raw index written in each cell
+var _pcf_exp = 0;           # alloc'd: canonical glyph bytes, packed
+var _pcf_perm[48];
+var _pcf_ttype[5];
+var _pcf_tfmt[5];
+var _pcf_tsize[5];
+var _pcf_toff[5];
+var _pcf_order[5];
+
+fn _fz_rev8(b) {
+    var r = 0;
+    var i = 0;
+    while (i < 8) {
+        r = r * 2 + ((b >> i) & 1);
+        i = i + 1;
+    }
+    return r;
+}
+
+# Row bytes for a `w`-pixel row padded to `padb` bytes.
+fn _fz_pcf_rowbytes(w, padb) {
+    return ((w + padb * 8 - 1) / (padb * 8)) * padb;
+}
+
+# Shuffle `a[0..n)` in place.
+fn _fz_shuffle(a, n) {
+    var i = n - 1;
+    while (i > 0) {
+        var j = g_below(i + 1);
+        var t = _ld(a, i);
+        _st(a, i, _ld(a, j));
+        _st(a, j, t);
+        i = i - 1;
+    }
+    return 0;
+}
+
+fn _fz_pcf_gen(buf, seed, maxn) {
+    g_seed(seed);
+    var bbe = g_below(2);
+    var msb = g_below(2);
+    var mbe = bbe;
+    var ebe = bbe;
+    if (g_below(4) == 0) {
+        mbe = g_below(2);
+        ebe = g_below(2);
+    }
+    var padc = g_below(4);
+    var scanc = g_below(padc + 1);
+    var padb = 1;
+    var i = 0;
+    while (i < padc) {
+        padb = padb * 2;
+        i = i + 1;
+    }
+    var scanb = 1;
+    i = 0;
+    while (i < scanc) {
+        scanb = scanb * 2;
+        i = i + 1;
+    }
+    _pcf_w = 1 + g_below(32);
+    _pcf_h = 1 + g_below(32);
+    _pcf_n = 1 + g_below(maxn);
+    _pcf_stride = (_pcf_w + 7) / 8;
+    _pcf_charsize = _pcf_h * _pcf_stride;
+    var comp = g_below(2);
+    var lsb = g_below(9) - 4;
+    var desc = g_below(6) - 1;
+    var asc = _pcf_h - desc;
+    var rb = _fz_pcf_rowbytes(_pcf_w, padb);
+    var gsize = _pcf_h * rb;
+
+    var nb1 = 1 + g_below(3);
+    _pcf_minb1 = g_below(257 - nb1);
+    _pcf_maxb1 = _pcf_minb1 + nb1 - 1;
+    var nb2 = 1 + g_below(48);
+    _pcf_minb2 = g_below(257 - nb2);
+    _pcf_maxb2 = _pcf_minb2 + nb2 - 1;
+    _pcf_ncell = nb1 * nb2;
+    var mapped = 0;
+    i = 0;
+    while (i < _pcf_ncell) {
+        var t = g_below(10);
+        var v = g_below(_pcf_n);
+        if (t == 0) { v = 0xFFFF; }
+        if (t == 1) { v = _pcf_n + g_below(8); }
+        _st(_pcf_cells, i, v);
+        if (v < _pcf_n) { mapped = 1; }
+        i = i + 1;
+    }
+    if (mapped == 0) { _st(_pcf_cells, g_below(_pcf_ncell), g_below(_pcf_n)); }
+
+    var g = 0;
+    while (g < _pcf_n) {
+        _st(&_pcf_perm, g, g);
+        var r = 0;
+        while (r < _pcf_h) {
+            var k = 0;
+            while (k < _pcf_stride) {
+                var bv = g_below(256);
+                if (k == _pcf_stride - 1) {
+                    var bits = _pcf_w - 8 * k;
+                    var keep = 0;
+                    var q = 0;
+                    while (q < bits) {
+                        keep = keep | (0x80 >> q);
+                        q = q + 1;
+                    }
+                    bv = bv & keep;
+                }
+                store8(_pcf_exp + g * _pcf_charsize + r * _pcf_stride + k, bv);
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        g = g + 1;
+    }
+    _fz_shuffle(&_pcf_perm, _pcf_n);
+
+    var fmt = padc | (bbe << 2) | (msb << 3) | (scanc << 4);
+    var mfmt = padc | (mbe << 2) | (msb << 3) | (scanc << 4) | (comp << 8);
+    var efmt = padc | (ebe << 2) | (msb << 3) | (scanc << 4);
+    var msize = 4 + 4 + 12 * _pcf_n;
+    if (comp == 1) { msize = 4 + 2 + 5 * _pcf_n; }
+    _st(&_pcf_ttype, 0, PCF_TYPE_METRICS);
+    _st(&_pcf_tfmt, 0, mfmt);
+    _st(&_pcf_tsize, 0, msize + g_below(3));
+    _st(&_pcf_ttype, 1, PCF_TYPE_BITMAPS);
+    _st(&_pcf_tfmt, 1, fmt);
+    _st(&_pcf_tsize, 1, 8 + 4 * _pcf_n + 16 + _pcf_n * gsize + g_below(4));
+    _st(&_pcf_ttype, 2, PCF_TYPE_BDF_ENCODINGS);
+    _st(&_pcf_tfmt, 2, efmt);
+    _st(&_pcf_tsize, 2, 14 + 2 * _pcf_ncell + 2 * g_below(2));
+    var ntab = 3 + g_below(3);
+    var s0 = g_below(6);
+    var j = 3;
+    while (j < ntab) {
+        var e = (s0 + j) % 6;
+        var ty = PCF_TYPE_PROPERTIES;
+        if (e == 1) { ty = PCF_TYPE_ACCELERATORS; }
+        if (e == 2) { ty = PCF_TYPE_INK_METRICS; }
+        if (e == 3) { ty = PCF_TYPE_SWIDTHS; }
+        if (e == 4) { ty = PCF_TYPE_GLYPH_NAMES; }
+        if (e == 5) { ty = PCF_TYPE_BDF_ACCELERATORS; }
+        _st(&_pcf_ttype, j, ty);
+        _st(&_pcf_tfmt, j, g_next());
+        _st(&_pcf_tsize, j, 4 + g_below(24));
+        j = j + 1;
+    }
+    # File layout order, then a gap of 0-3 garbage bytes before each table.
+    j = 0;
+    while (j < ntab) {
+        _st(&_pcf_order, j, j);
+        j = j + 1;
+    }
+    _fz_shuffle(&_pcf_order, ntab);
+    var p = 8 + 16 * ntab;
+    j = 0;
+    while (j < ntab) {
+        var gap = g_below(4);
+        var z = 0;
+        while (z < gap) {
+            store8(buf + p + z, g_next() & 0xFF);
+            z = z + 1;
+        }
+        p = p + gap;
+        var ti = _ld(&_pcf_order, j);
+        _st(&_pcf_toff, ti, p);
+        p = p + _ld(&_pcf_tsize, ti);
+        j = j + 1;
+    }
+    var total = p;
+    _pcf_lastreq = 0;
+    if (_ld(&_pcf_order, ntab - 1) < 3) { _pcf_lastreq = 1; }
+    # Header, then the table of contents in its own random order.
+    store8(buf + 0, KASHI_PCF_MAGIC0);
+    store8(buf + 1, KASHI_PCF_MAGIC1);
+    store8(buf + 2, KASHI_PCF_MAGIC2);
+    store8(buf + 3, KASHI_PCF_MAGIC3);
+    _fz_put32(buf, 4, ntab, 0);
+    _fz_shuffle(&_pcf_order, ntab);
+    j = 0;
+    while (j < ntab) {
+        var tj = _ld(&_pcf_order, j);
+        var te = 8 + 16 * j;
+        _fz_put32(buf, te, _ld(&_pcf_ttype, tj), 0);
+        _fz_put32(buf, te + 4, _ld(&_pcf_tfmt, tj), 0);
+        _fz_put32(buf, te + 8, _ld(&_pcf_tsize, tj), 0);
+        _fz_put32(buf, te + 12, _ld(&_pcf_toff, tj), 0);
+        j = j + 1;
+    }
+    # Tables kashi ignores: their format word, then garbage.
+    j = 3;
+    while (j < ntab) {
+        var xo = _ld(&_pcf_toff, j);
+        _fz_put32(buf, xo, _ld(&_pcf_tfmt, j), 0);
+        var xi = 4;
+        while (xi < _ld(&_pcf_tsize, j)) {
+            store8(buf + xo + xi, g_next() & 0xFF);
+            xi = xi + 1;
+        }
+        j = j + 1;
+    }
+    # METRICS: every glyph the same cell (kashi requires uniform metrics).
+    var mo = _ld(&_pcf_toff, 0);
+    _fz_put32(buf, mo, mfmt, 0);
+    var mp = mo + 8;
+    if (comp == 1) {
+        _fz_put16(buf, mo + 4, _pcf_n, mbe);
+        mp = mo + 6;
+    }
+    if (comp == 0) { _fz_put32(buf, mo + 4, _pcf_n, mbe); }
+    g = 0;
+    while (g < _pcf_n) {
+        if (comp == 1) {
+            store8(buf + mp + 0, lsb + 0x80);
+            store8(buf + mp + 1, lsb + _pcf_w + 0x80);
+            store8(buf + mp + 2, _pcf_w + 0x80);
+            store8(buf + mp + 3, asc + 0x80);
+            store8(buf + mp + 4, desc + 0x80);
+            mp = mp + 5;
+        }
+        if (comp == 0) {
+            _fz_put16(buf, mp + 0, lsb & 0xFFFF, mbe);
+            _fz_put16(buf, mp + 2, (lsb + _pcf_w) & 0xFFFF, mbe);
+            _fz_put16(buf, mp + 4, _pcf_w, mbe);
+            _fz_put16(buf, mp + 6, asc & 0xFFFF, mbe);
+            _fz_put16(buf, mp + 8, desc & 0xFFFF, mbe);
+            _fz_put16(buf, mp + 10, g_below(0x10000), mbe);
+            mp = mp + 12;
+        }
+        g = g + 1;
+    }
+    while (mp < mo + _ld(&_pcf_tsize, 0)) {
+        store8(buf + mp, g_next() & 0xFF);
+        mp = mp + 1;
+    }
+    # BITMAPS: count, offsets, the four pad-size totals, the data.
+    var bo = _ld(&_pcf_toff, 1);
+    _fz_put32(buf, bo, fmt, 0);
+    _fz_put32(buf, bo + 4, _pcf_n, bbe);
+    g = 0;
+    while (g < _pcf_n) {
+        _fz_put32(buf, bo + 8 + 4 * g, _ld(&_pcf_perm, g) * gsize, bbe);
+        g = g + 1;
+    }
+    var ps = bo + 8 + 4 * _pcf_n;
+    var pz = 0;
+    var pb = 1;
+    while (pz < 4) {
+        _fz_put32(buf, ps + 4 * pz, _pcf_n * _pcf_h * _fz_pcf_rowbytes(_pcf_w, pb), bbe);
+        pb = pb * 2;
+        pz = pz + 1;
+    }
+    var data = ps + 16;
+    var swap = 0;
+    if (bbe != msb) {
+        if (scanb > 1) { swap = 1; }
+    }
+    var row[8];
+    g = 0;
+    while (g < _pcf_n) {
+        var dst = data + _ld(&_pcf_perm, g) * gsize;
+        var r2 = 0;
+        while (r2 < _pcf_h) {
+            var k2 = 0;
+            while (k2 < rb) {
+                var v2 = g_below(256);
+                if (k2 < _pcf_stride) { v2 = load8(_pcf_exp + g * _pcf_charsize + r2 * _pcf_stride + k2); }
+                if (msb == 0) { v2 = _fz_rev8(v2); }
+                store8(&row + k2, v2);
+                k2 = k2 + 1;
+            }
+            k2 = 0;
+            while (k2 < rb) {
+                var sk = k2;
+                if (swap == 1) { sk = (k2 / scanb) * scanb + (scanb - 1 - k2 % scanb); }
+                store8(buf + dst + r2 * rb + k2, load8(&row + sk));
+                k2 = k2 + 1;
+            }
+            r2 = r2 + 1;
+        }
+        g = g + 1;
+    }
+    var be2 = data + _pcf_n * gsize;
+    while (be2 < bo + _ld(&_pcf_tsize, 1)) {
+        store8(buf + be2, g_next() & 0xFF);
+        be2 = be2 + 1;
+    }
+    # BDF_ENCODINGS: the byte2 and byte1 ranges, a default char, the cells.
+    var eo = _ld(&_pcf_toff, 2);
+    _fz_put32(buf, eo, efmt, 0);
+    _fz_put16(buf, eo + 4, _pcf_minb2, ebe);
+    _fz_put16(buf, eo + 6, _pcf_maxb2, ebe);
+    _fz_put16(buf, eo + 8, _pcf_minb1, ebe);
+    _fz_put16(buf, eo + 10, _pcf_maxb1, ebe);
+    _fz_put16(buf, eo + 12, g_below(0x10000), ebe);
+    i = 0;
+    while (i < _pcf_ncell) {
+        _fz_put16(buf, eo + 14 + 2 * i, _ld(_pcf_cells, i), ebe);
+        i = i + 1;
+    }
+    var ee = eo + 14 + 2 * _pcf_ncell;
+    while (ee < eo + _ld(&_pcf_tsize, 2)) {
+        store8(buf + ee, g_next() & 0xFF);
+        ee = ee + 1;
+    }
+    return total;
+}
+
+# The glyph `cp` must resolve to through the generated cells, or 0 - 1.
+fn _fz_pcf_want(cp) {
+    if (cp < 0) { return 0 - 1; }
+    if (cp > 0xFFFF) { return 0 - 1; }
+    var b1 = cp >> 8;
+    var b2 = cp & 0xFF;
+    if (b1 < _pcf_minb1) { return 0 - 1; }
+    if (b1 > _pcf_maxb1) { return 0 - 1; }
+    if (b2 < _pcf_minb2) { return 0 - 1; }
+    if (b2 > _pcf_maxb2) { return 0 - 1; }
+    var v = _ld(_pcf_cells, (b1 - _pcf_minb1) * (_pcf_maxb2 - _pcf_minb2 + 1) + (b2 - _pcf_minb2));
+    if (v >= _pcf_n) { return 0 - 1; }
+    return v;
+}
+
+fn _fz_pcf_cell_cp(i) {
+    var nb2 = _pcf_maxb2 - _pcf_minb2 + 1;
+    return ((_pcf_minb1 + i / nb2) << 8) | (_pcf_minb2 + i % nb2);
+}
+
+# --- PCF mutation fuzz (codes 100-110) ---
+#
+# Random bytes (half with the magic stamped on) and generated fonts in every
+# format, mutated, truncated or both.
+#   100  kashi_pcf_parse_header answered an unknown code
+#   101  a ctx from a failed parse still decoded or mapped (audit 2026-10-30,
+#        F1: the glyph count stayed set after a later table failed, and
+#        decode_glyph read with the other fields half-set)
+#   102  kashi_pcf_decode_glyph answered an unknown code
+#   103  kashi_pcf_cp_to_idx answered below 0 - 1 or past the glyph count
+#   104  a codepoint above U+FFFF mapped (two bytes per codepoint; until
+#        1.2.2 such a codepoint wrapped into the BMP)
+#   105-109  an accepted font broke the runtime contract (_fz_rt_contract)
+#   110  fewer than one input in fifteen loaded: the accept path went dark
+var _fz_pcf_accepted = 0;
 
 fn fuzz_pcf(rounds) {
-    var cap = 2048;
-    var buf = alloc(cap);
+    var stage = alloc(65536);
     var hdr[56];
     var ctx[144];
     var dest[128];
+    var accepted = 0;
     var r = 0;
     while (r < rounds) {
-        var pick = rng_next() & 3;
+        var pick = rng_below(4);
         var len = 0;
         if (pick == 0) {
-            len = rng_next() % (cap + 1);
-            var i = 0;
-            while (i < len) {
-                store8(buf + i, rng_next() & 0xFF);
-                i = i + 1;
-            }
-            # Sometimes stamp a real magic so the fuzzer reaches table-validation.
-            if ((rng_next() & 1) == 1) {
+            len = rng_below(2049);
+            _fz_fill(stage, len);
+            if (rng_below(2) == 1) {
                 if (len >= 4) {
-                    store8(buf + 0, 0x01); store8(buf + 1, 0x66);
-                    store8(buf + 2, 0x63); store8(buf + 3, 0x70);
+                    store8(stage + 0, 0x01);
+                    store8(stage + 1, 0x66);
+                    store8(stage + 2, 0x63);
+                    store8(stage + 3, 0x70);
                 }
             }
         }
-        if (pick == 1) {
-            len = _fz_pcf_template(buf);
+        if (pick > 0) {
+            len = _fz_pcf_gen(stage, rng_seed62(), 6);
+            if (pick != 2) { _fz_mutate(stage, len, 4); }
+            if (pick >= 2) { len = rng_below(len + 1); }
         }
-        if (pick == 2) {
-            len = _fz_pcf_template(buf);
-            var muts = (rng_next() & 7) + 1;
-            var m = 0;
-            while (m < muts) {
-                var off = rng_next() % len;
-                store8(buf + off, rng_next() & 0xFF);
-                m = m + 1;
-            }
-        }
-        if (pick == 3) {
-            len = _fz_pcf_template(buf);
-            len = rng_next() % (len + 1);
-        }
-
-        # Contract 1: parser only returns a known code, never crashes.
-        var rc = kashi_pcf_parse_header(buf, len, &hdr, &ctx);
+        var b = _fz_place(stage, len);
+        var rc = kashi_pcf_parse_header(b, len, &hdr, &ctx);
         if (rc != KASHI_PCF_OK) {
             if (rc != KASHI_PCF_EINVAL) {
-                if (rc != KASHI_PCF_EFORMAT) { return 1; }
+                if (rc != KASHI_PCF_EFORMAT) { return 100; }
             }
+            var gi0 = rng_below(70000);
+            if (rng_below(4) == 0) { gi0 = rng_below(4); }
+            if (kashi_pcf_decode_glyph(b, &ctx, gi0, &dest, 128) != KASHI_PCF_EINVAL) { return 101; }
+            if (kashi_pcf_cp_to_idx(b, &ctx, rng_below(0x10000)) != 0 - 1) { return 101; }
         }
-
-        # Contract 2: if parse accepted, decode_glyph and cp_to_idx are
-        # bounds-safe for random inputs.
         if (rc == KASHI_PCF_OK) {
             var count = load64(&ctx + PCF_CTX_GLYPH_COUNT);
             var g = 0;
             while (g < 3) {
-                var gi = rng_next() % (count + 2);
-                var grc = kashi_pcf_decode_glyph(buf, &ctx, gi, &dest, 128);
+                var gi = rng_below(count + 2);
+                var grc = kashi_pcf_decode_glyph(b, &ctx, gi, &dest, 128);
                 if (grc != KASHI_PCF_OK) {
                     if (grc != KASHI_PCF_EINVAL) {
-                        if (grc != KASHI_PCF_EFORMAT) { return 2; }
+                        if (grc != KASHI_PCF_EFORMAT) { return 102; }
                     }
                 }
                 var cp = rng_next() & 0xFFFFF;
-                var idx = kashi_pcf_cp_to_idx(buf, &ctx, cp);
-                if (idx < 0 - 1) { return 3; }
-                if (idx >= count) {
-                    if (idx != 0 - 1) { return 4; }
-                }
-                # 1.2.2: a PCF encodes two bytes per codepoint, so nothing
-                # above U+FFFF maps — here or anywhere in the i64 domain.
-                # Until 1.2.2 such a cp wrapped into the BMP, which the
-                # range checks above could not see.
+                var idx = kashi_pcf_cp_to_idx(b, &ctx, cp);
+                if (idx < 0 - 1) { return 103; }
+                if (idx >= count) { return 103; }
                 if (cp > 0xFFFF) {
-                    if (idx != 0 - 1) { return 11; }
+                    if (idx != 0 - 1) { return 104; }
                 }
-                # A wrap only shows when the low 16 bits map, which a random
-                # cp almost never hits, so build one from the font's own
-                # encoded range and splice a nonzero high part over it.
+                # A wrap only shows when the low 16 bits map, so build one
+                # from the font's own range and splice a nonzero high part on.
                 var mn1 = load64(&ctx + PCF_CTX_MIN_B1);
                 var mx1 = load64(&ctx + PCF_CTX_MAX_B1);
                 var mn2 = load64(&ctx + PCF_CTX_MIN_B2);
                 var mx2 = load64(&ctx + PCF_CTX_MAX_B2);
-                if (mx1 >= mn1) {
-                    if (mx2 >= mn2) {
-                        var eb1 = mn1 + rng_next() % (mx1 - mn1 + 1);
-                        var eb2 = mn2 + rng_next() % (mx2 - mn2 + 1);
-                        var hi = (rng_wide() & 0x3FFFFFFFFFFF) + 1;
-                        var cpw = (hi << 16) | (eb1 << 8) | eb2;
-                        if (kashi_pcf_cp_to_idx(buf, &ctx, cpw) != 0 - 1) { return 11; }
-                    }
-                }
+                var eb1 = mn1 + rng_below(mx1 - mn1 + 1);
+                var eb2 = mn2 + rng_below(mx2 - mn2 + 1);
+                var hi = (rng_wide() & 0x3FFFFFFFFFFF) + 1;
+                if (kashi_pcf_cp_to_idx(b, &ctx, (hi << 16) | (eb1 << 8) | eb2) != 0 - 1) { return 104; }
                 g = g + 1;
             }
         }
-
-        # Contract 3: kashi_load_pcf returns a value; an accepted font is
-        # bounds-safe under random probes (same posture as fuzz_bdf).
-        var id = kashi_load_pcf(buf, len);
+        var id = kashi_load_pcf(b, len);
         if (id >= KASHI_RT_FONT_BASE) {
-            var c2 = kashi_rt_font_count(id);
-            var h2 = kashi_rt_font_height(id);
-            var pr = 0;
-            while (pr < 3) {
-                var row = rng_next() & 0xFF;
-                var idx2 = rng_next() % (c2 + 2);
-                var rv = kashi_rt_glyph_row(id, idx2, row);
-                if (rv < 0) { return 5; }
-                if (rv > 0xFF) { return 6; }
-                if (idx2 >= c2) {
-                    if (rv != 0) { return 7; }
-                }
-                if (row >= h2) {
-                    if (rv != 0) { return 8; }
-                }
-                var cp2 = rng_next() & 0xFFFFF;
-                var cv = kashi_font_row(id, cp2, row);
-                if (cv < 0) { return 9; }
-                if (cv > 0xFF) { return 10; }
-                pr = pr + 1;
-            }
+            accepted = accepted + 1;
+            var c = _fz_rt_contract(id, 3);
+            if (c != 0) { return 104 + c; }
         }
         r = r + 1;
+    }
+    if (accepted * 15 < rounds) { return 110; }
+    _fz_pcf_accepted = accepted;
+    return 0;
+}
+
+# --- PCF round-trip oracle (codes 111-120) ---
+#   111  a generated font did not parse
+#   112  kashi_pcf_cp_to_idx disagrees with a cell
+#   113  a generated font did not load
+#   114  width, height, glyph count or stride differs
+#   115-117  glyph bytes (_fz_rt_bytes 1-3)
+#   118  a cell's codepoint resolves to the wrong glyph, or its bytes differ
+#   119  a codepoint around the encoded block, or above U+FFFF, resolves
+#   120  the file one byte short loaded (a required table ends the file)
+var _fz_pcf_oracle_fonts = 0;
+
+fn oracle_pcf(rounds) {
+    var stage = alloc(65536);
+    var hdr[56];
+    var ctx[144];
+    var n = 0;
+    while (n < rounds) {
+        var len = _fz_pcf_gen(stage, rng_seed62(), 48);
+        var b = _fz_place(stage, len);
+        if (kashi_pcf_parse_header(b, len, &hdr, &ctx) != KASHI_PCF_OK) { return 111; }
+        var i = 0;
+        while (i < _pcf_ncell) {
+            var cp = _fz_pcf_cell_cp(i);
+            if (kashi_pcf_cp_to_idx(b, &ctx, cp) != _fz_pcf_want(cp)) { return 112; }
+            i = i + 1;
+        }
+        var id = kashi_load_pcf(b, len);
+        if (id < KASHI_RT_FONT_BASE) { return 113; }
+        if (_fz_rt_meta(id, _pcf_w, _pcf_h, _pcf_n) != 0) { return 114; }
+        var c = _fz_rt_bytes(id, _pcf_exp, _pcf_h, _pcf_stride, _pcf_n);
+        if (c != 0) { return 114 + c; }
+        i = 0;
+        while (i < _pcf_ncell) {
+            var cp2 = _fz_pcf_cell_cp(i);
+            var want = _fz_pcf_want(cp2);
+            var wp = 0;
+            if (want >= 0) { wp = kashi_rt_glyph_ptr(id, want); }
+            if (kashi_font_ptr(id, cp2) != wp) { return 118; }
+            if (want >= 0) {
+                var r = rng_below(_pcf_h);
+                var k = rng_below(_pcf_stride);
+                var e = _pcf_exp + want * _pcf_charsize + r * _pcf_stride + k;
+                if (kashi_font_row_byte(id, cp2, r, k) != load8(e)) { return 118; }
+            }
+            if (kashi_font_ptr(id, cp2 + 0x10000 * (1 + rng_below(16))) != 0) { return 119; }
+            i = i + 1;
+        }
+        var lo2 = (_pcf_minb1 << 8) | _pcf_minb2;
+        if (_pcf_minb2 > 0) {
+            if (kashi_font_ptr(id, lo2 - 1) != 0) { return 119; }
+        }
+        if (_pcf_maxb2 < 0xFF) {
+            if (kashi_font_ptr(id, (_pcf_maxb1 << 8) | (_pcf_maxb2 + 1)) != 0) { return 119; }
+        }
+        if (_pcf_minb1 > 0) {
+            if (kashi_font_ptr(id, lo2 - 0x100) != 0) { return 119; }
+        }
+        if (_pcf_maxb1 < 0xFF) {
+            if (kashi_font_ptr(id, ((_pcf_maxb1 + 1) << 8) | _pcf_minb2) != 0) { return 119; }
+        }
+        if (_pcf_lastreq == 1) {
+            var bc = _fz_place(stage, len - 1);
+            if (kashi_load_pcf(bc, len - 1) >= 0) { return 120; }
+        }
+        _fz_pcf_oracle_fonts = _fz_pcf_oracle_fonts + 1;
+        n = n + 1;
     }
     return 0;
 }
 
-# --- Text-tab fuzz (0.7.2, ADR 0010) ---
+# --- Text-tab fuzz (codes 160-166) ---
 #
-# kashi_attach_unicode_text takes untrusted text and must never crash —
-# returns KASHI_OK or `0 - <KashiResult>`. We load a stub tableless PSF
-# once, then attach randomized text to it on each round.
-
-fn _fz_tab_str(buf, p, s) {
-    var i = 0;
-    var done = 0;
-    while (done == 0) {
-        var c = load8(s + i);
-        if (c == 0) { done = 1; }
-        if (done == 0) {
-            store8(buf + p + i, c);
-            i = i + 1;
-        }
-    }
-    return p + i;
-}
+# kashi_attach_unicode_text takes untrusted text and must never crash: it
+# answers KASHI_OK or `0 - <KashiResult>`, and the font stays bounds-safe.
+#   160  a positive answer other than KASHI_OK
+#   161  a negative answer other than EFORMAT / EINVAL
+#   162-166  the font broke the runtime contract (_fz_rt_contract 1-5)
 
 # Plant a small tab template into buf. Used by fuzz_tab.
 fn _fz_tab_template(buf) {
     var p = 0;
-    p = _fz_tab_str(buf, p, "# kashi tab template\n");
-    p = _fz_tab_str(buf, p, "0x20  U+0020\n");
-    p = _fz_tab_str(buf, p, "0x21  U+0021 U+E001\n");
-    p = _fz_tab_str(buf, p, "0x41  U+0041 U+0391  # A and Alpha\n");
-    p = _fz_tab_str(buf, p, "0x42  U+0042\n");
+    p = _fz_str(buf, p, "# kashi tab template\n");
+    p = _fz_str(buf, p, "0x20  U+0020\n");
+    p = _fz_str(buf, p, "0x21  U+0021 U+E001\n");
+    p = _fz_str(buf, p, "0x41  U+0041 U+0391  # A and Alpha\n");
+    p = _fz_str(buf, p, "0x42  U+0042\n");
     return p;
 }
 
 fn fuzz_tab(font_id, rounds) {
     var cap = 1024;
-    var buf = alloc(cap);
+    var stage = alloc(cap);
     var r = 0;
     while (r < rounds) {
-        var pick = rng_next() & 3;
+        var pick = rng_below(4);
         var len = 0;
         if (pick == 0) {
-            len = rng_next() % (cap + 1);
-            var i = 0;
-            while (i < len) {
-                store8(buf + i, rng_next() & 0xFF);
-                i = i + 1;
-            }
+            len = rng_below(cap + 1);
+            _fz_fill(stage, len);
         }
-        if (pick == 1) {
-            len = _fz_tab_template(buf);
+        if (pick > 0) {
+            len = _fz_tab_template(stage);
+            if (pick != 2) { _fz_mutate(stage, len, 8); }
+            if (pick >= 2) { len = rng_below(len + 1); }
         }
-        if (pick == 2) {
-            len = _fz_tab_template(buf);
-            var muts = (rng_next() & 7) + 1;
-            var m = 0;
-            while (m < muts) {
-                var off = rng_next() % len;
-                store8(buf + off, rng_next() & 0xFF);
-                m = m + 1;
-            }
-        }
-        if (pick == 3) {
-            len = _fz_tab_template(buf);
-            len = rng_next() % (len + 1);
-        }
-
-        var rc = kashi_attach_unicode_text(font_id, buf, len);
-        # Contract: returns KASHI_OK (0) or a negative `0 - <code>`.
-        # KASHI_OK is the only non-negative possible value.
-        if (rc > 0) { return 1; }
+        var b = _fz_place(stage, len);
+        var rc = kashi_attach_unicode_text(font_id, b, len);
+        if (rc > 0) { return 160; }
         if (rc < 0) {
-            # Must be one of the known negatives.
             if (rc != 0 - KASHI_EFORMAT) {
-                if (rc != 0 - KASHI_EINVAL) { return 2; }
+                if (rc != 0 - KASHI_EINVAL) { return 161; }
             }
         }
-        # Probe the font for bounds-safety after the attach attempt:
-        # any codepoint lookup must return 0..0xFF.
-        var probe = rng_next() & 0xFFFFF;
-        var rv = kashi_font_row(font_id, probe, 0);
-        if (rv < 0) { return 3; }
-        if (rv > 0xFF) { return 4; }
+        var c = _fz_rt_contract(font_id, 2);
+        if (c != 0) { return 161 + c; }
         r = r + 1;
     }
     return 0;
 }
 
+# --- Text-tab oracle (codes 170-175) ---
+#
+# Random valid text tables for a 300-glyph font: lines in random glyph order
+# (glyph indices past the count are ignored), 1-4 "U+" values each from a
+# small pool, mixed-case hex with optional leading zeros, "0x" / "0X",
+# spaces and tabs, comment and blank lines, trailing comments, no final
+# newline. A codepoint on several lines maps to the HIGHEST glyph listing it,
+# whatever the line order (audit 2026-10-30, L10). One table in five carries
+# a surrogate or a value past U+10FFFF and must be refused (L9), leaving the
+# map as it was.
+#   170  a table with a surrogate or a value past U+10FFFF attached
+#   171  a table mapping no glyph below the count attached
+#   172  a refused attach changed the map
+#   173  a valid table did not attach
+#   174  a pool codepoint resolves to the wrong glyph
+#   175  a codepoint the table does not list resolves
+var _tab_npool = 0;
+var _tab_pool[24];
+var _tab_best[24];
+var _tab_pnpool = 0;        # the map last attached (identity before any)
+var _tab_ppool[24];
+var _tab_pbest[24];
+var _tab_pident = 1;
+
+fn _fz_tab_lookup(pool, best, npool, cp) {
+    var k = 0;
+    while (k < npool) {
+        if (_ld(pool, k) == cp) { return _ld(best, k); }
+        k = k + 1;
+    }
+    return 0 - 1;
+}
+
+# Check font `id` (`count` glyphs) against the current (prev 0) or the last
+# attached (prev 1) model. 0, or 1 = a listed codepoint is wrong, 2 = an
+# unlisted one resolves.
+fn _fz_tab_check(id, count, prev) {
+    var pool = &_tab_pool;
+    var best = &_tab_best;
+    var np = _tab_npool;
+    var ident = 0;
+    if (prev == 1) {
+        pool = &_tab_ppool;
+        best = &_tab_pbest;
+        np = _tab_pnpool;
+        ident = _tab_pident;
+    }
+    var t = 0;
+    while (t < np + 12) {
+        var cp = 0;
+        if (t < np) { cp = _ld(pool, t); }
+        if (t >= np) { cp = rng_below(0x110000); }
+        if (t >= np + 8) { cp = rng_below(count + 4); }
+        var want = _fz_tab_lookup(pool, best, np, cp);
+        if (ident == 1) {
+            want = 0 - 1;
+            if (cp < count) { want = cp; }
+        }
+        var wp = 0;
+        if (want >= 0) { wp = kashi_rt_glyph_ptr(id, want); }
+        if (kashi_font_ptr(id, cp) != wp) {
+            if (t < np) { return 1; }
+            return 2;
+        }
+        t = t + 1;
+    }
+    return 0;
+}
+
+# Spaces and tabs, at least `min` of them.
+fn _fz_tab_ws(buf, p, min) {
+    var n = min + rng_below(3);
+    var i = 0;
+    while (i < n) {
+        var c = 0x20;
+        if (rng_below(3) == 0) { c = 0x09; }
+        store8(buf + p, c);
+        p = p + 1;
+        i = i + 1;
+    }
+    return p;
+}
+
+# `v` in hex, random case, sometimes zero-padded.
+fn _fz_tab_hex(buf, p, v) {
+    var up = rng_below(2);
+    var n = 1;
+    var t = v >> 4;
+    while (t > 0) {
+        n = n + 1;
+        t = t >> 4;
+    }
+    if (rng_below(3) == 0) { n = n + rng_below(3); }
+    return _fz_hexn(buf, p, v, n, up);
+}
+
+var _fz_tab_oracle_tables = 0;
+
+fn oracle_tab(id, count, rounds) {
+    var stage = alloc(8192);
+    var n = 0;
+    while (n < rounds) {
+        var want = 1 + rng_below(24);
+        _tab_npool = 0;
+        var tries = 0;
+        while (tries < 80) {
+            if (_tab_npool < want) {
+                var cp = rng_below(0x110000);
+                if (rng_below(2) == 0) { cp = rng_below(0x3000); }
+                var bad = 0;
+                if (cp >= 0xD800) {
+                    if (cp <= 0xDFFF) { bad = 1; }
+                }
+                if (_fz_index(&_tab_pool, _tab_npool, cp) >= 0) { bad = 1; }
+                if (bad == 0) {
+                    _st(&_tab_pool, _tab_npool, cp);
+                    _st(&_tab_best, _tab_npool, 0 - 1);
+                    _tab_npool = _tab_npool + 1;
+                }
+            }
+            tries = tries + 1;
+        }
+        var nlines = 1 + rng_below(30);
+        var defect = 0;
+        var dline = 0 - 1;
+        if (rng_below(5) == 0) {
+            defect = 1;
+            dline = rng_below(nlines);
+        }
+        var p = 0;
+        if (rng_below(2) == 0) { p = _fz_str(stage, p, "# generated by tests/kashi.fcyr\n"); }
+        var l = 0;
+        while (l < nlines) {
+            if (rng_below(6) == 0) { p = _fz_str(stage, p, "\n"); }
+            if (rng_below(6) == 0) { p = _fz_str(stage, p, "  # a comment line\n"); }
+            if (rng_below(4) == 0) { p = _fz_tab_ws(stage, p, 1); }
+            var pre = "0x";
+            if (rng_below(2) == 0) { pre = "0X"; }
+            p = _fz_str(stage, p, pre);
+            var gi = rng_below(count + 8);
+            p = _fz_tab_hex(stage, p, gi);
+            var ncp = 1 + rng_below(4);
+            var j = 0;
+            while (j < ncp) {
+                p = _fz_tab_ws(stage, p, 1);
+                p = _fz_str(stage, p, "U+");
+                var k = rng_below(_tab_npool);
+                var v = _ld(&_tab_pool, k);
+                var isbad = 0;
+                if (l == dline) {
+                    if (j == 0) { isbad = 1; }
+                }
+                if (isbad == 1) {
+                    v = 0xD800 + rng_below(0x800);
+                    if (rng_below(2) == 0) { v = 0x110000 + rng_below(0x7FFFFFFF); }
+                }
+                p = _fz_tab_hex(stage, p, v);
+                if (isbad == 0) {
+                    if (gi < count) {
+                        if (gi > _ld(&_tab_best, k)) { _st(&_tab_best, k, gi); }
+                    }
+                }
+                j = j + 1;
+            }
+            if (rng_below(5) == 0) {
+                p = _fz_tab_ws(stage, p, 1);
+                p = _fz_str(stage, p, "# trailing comment");
+            }
+            if (l + 1 < nlines) { p = _fz_str(stage, p, "\n"); }
+            if (l + 1 == nlines) {
+                if (rng_below(2) == 0) { p = _fz_str(stage, p, "\n"); }
+            }
+            l = l + 1;
+        }
+        var yields = 0;
+        var k2 = 0;
+        while (k2 < _tab_npool) {
+            if (_ld(&_tab_best, k2) >= 0) { yields = 1; }
+            k2 = k2 + 1;
+        }
+        var b = _fz_place(stage, p);
+        var rc = kashi_attach_unicode_text(id, b, p);
+        var refused = 0;
+        if (defect == 1) {
+            if (rc != 0 - KASHI_EFORMAT) { return 170; }
+            refused = 1;
+        }
+        if (defect == 0) {
+            if (yields == 0) {
+                if (rc != 0 - KASHI_EFORMAT) { return 171; }
+                refused = 1;
+            }
+            if (yields == 1) {
+                if (rc != KASHI_OK) { return 173; }
+            }
+        }
+        if (refused == 1) {
+            if (_fz_tab_check(id, count, 1) != 0) { return 172; }
+        }
+        if (refused == 0) {
+            var c = _fz_tab_check(id, count, 0);
+            if (c != 0) { return 173 + c; }
+            _tab_pnpool = _tab_npool;
+            var q = 0;
+            while (q < _tab_npool) {
+                _st(&_tab_ppool, q, _ld(&_tab_pool, q));
+                _st(&_tab_pbest, q, _ld(&_tab_best, q));
+                q = q + 1;
+            }
+            _tab_pident = 0;
+        }
+        _fz_tab_oracle_tables = _fz_tab_oracle_tables + 1;
+        n = n + 1;
+    }
+    return 0;
+}
+
+# --- Worst-case table (codes 200-202) ---
+#
+# One glyph listing 60,000 distinct codepoints in DESCENDING order: the worst
+# input for the insertion sorts the map builders used until 1.3.0, which made
+# a hostile 256 KiB table take ~200 s to load (audit 2026-10-30, L1). The
+# heapsort loads it in milliseconds; the bound below leaves a wide margin
+# for a slow machine and still catches a quadratic sort.
+#   200  the font did not load
+#   201  a listed codepoint does not resolve to glyph 0, or an unlisted one
+#        resolves
+#   202  the load took longer than one second
+fn fuzz_sortdos() {
+    var n = 60000;
+    var len = 4 + 256 + n * 2 + 2 + 255 * 2;
+    var buf = alloc(len);
+    store8(buf + 0, KASHI_PSF1_MAGIC0);
+    store8(buf + 1, KASHI_PSF1_MAGIC1);
+    store8(buf + 2, KASHI_PSF1_MODEHASTAB);
+    store8(buf + 3, 1);
+    var i = 0;
+    while (i < 256) {
+        store8(buf + 4 + i, i);
+        i = i + 1;
+    }
+    var p = 260;
+    var cp = 0xFFFD;
+    i = 0;
+    while (i < n) {
+        _fz_put16(buf, p, cp, 0);
+        p = p + 2;
+        cp = cp - 1;
+        if (cp == 0xDFFF) { cp = 0xD7FF; }
+        i = i + 1;
+    }
+    var lowest = cp + 1;
+    i = 0;
+    while (i < 256) {
+        _fz_put16(buf, p, 0xFFFF, 0);
+        p = p + 2;
+        i = i + 1;
+    }
+    var b = _fz_place(buf, len);
+    var t0 = now_ns();
+    var id = kashi_load_psf(b, len);
+    var dt = now_ns() - t0;
+    if (id < KASHI_RT_FONT_BASE) { return 200; }
+    var g0 = kashi_rt_glyph_ptr(id, 0);
+    if (kashi_font_ptr(id, 0xFFFD) != g0) { return 201; }
+    if (kashi_font_ptr(id, lowest) != g0) { return 201; }
+    if (kashi_font_ptr(id, 0xE000) != g0) { return 201; }
+    if (kashi_font_ptr(id, 0xD7FF) != g0) { return 201; }
+    if (kashi_font_ptr(id, lowest - 1) != 0) { return 201; }
+    if (kashi_font_ptr(id, 0x41) != 0) { return 201; }
+    if (dt > 1000000000) { return 202; }
+    return 0;
+}
+
+# --- Unified accessors over the full domain (codes 180-191) ---
+#
+# kashi_font_ptr / _row / _row_byte (and the runtime metadata and ligature
+# lookups) with every argument drawn from the whole i64 domain as well as
+# near the edges, over the built-ins, every runtime font loaded above, ids
+# just past the last font, and negative ids (audit 2026-10-30, K50: these
+# were fuzzed with fonts 0..3, rows -2..17 and byte index 1 only). Model
+# fonts — one identity-addressed, one PSF with a table, one whose table maps
+# no single codepoint, one BDF, one PCF — have exact answers; any other
+# runtime font gets the contract (0, or exactly the addressed byte of one
+# of its own glyphs).
+#   180  a row byte outside 0..255
+#   181  an id no font has answered something but 0 / null
+#   182  runtime metadata of a non-runtime id is not 0
+#   183  a ligature lookup on a non-runtime id did not miss
+#   184  built-in: the pointer is not the mapped cell's
+#   185  built-in: a row byte is not the mapped cell's byte
+#   186  model font: the pointer is not the model's glyph
+#   187  model font: a row byte is not the model's byte
+#   188  other runtime font: the pointer is not one of its glyphs
+#   189  other runtime font: a row byte is not the addressed byte
+#   190  a ligature lookup on a runtime font answered out of range
+#   191  a model font's width, height, count or stride differs
+#   215-219 (setup) a model font could not be built
+enum _FzModel {
+    _FZM_ID = 0;
+    _FZM_MODE = 8;          # 0 identity, 1 pool, 2 empty map, 3 PCF cells
+    _FZM_W = 16;
+    _FZM_H = 24;
+    _FZM_ST = 32;
+    _FZM_COUNT = 40;
+    _FZM_DATA = 48;         # expected glyph bytes, packed
+    _FZM_NPOOL = 56;
+    _FZM_POOL = 64;
+    _FZM_BEST = 72;
+    _FZM_MINB1 = 80;
+    _FZM_MAXB1 = 88;
+    _FZM_MINB2 = 96;
+    _FZM_MAXB2 = 104;
+    _FZM_CELLS = 112;
+    _FZM_SIZE = 120;
+}
+
+var _fz_models[8];
+var _fz_nmodels = 0;
+
+fn _fz_copy(src, n) {
+    var d = alloc(n + 8);
+    memcpy(d, src, n);
+    return d;
+}
+
+fn _fz_model_new(id, mode, w, h, count, data) {
+    var m = alloc(_FZM_SIZE);
+    var st = (w + 7) / 8;
+    store64(m + _FZM_ID, id);
+    store64(m + _FZM_MODE, mode);
+    store64(m + _FZM_W, w);
+    store64(m + _FZM_H, h);
+    store64(m + _FZM_ST, st);
+    store64(m + _FZM_COUNT, count);
+    store64(m + _FZM_DATA, _fz_copy(data, count * h * st));
+    _st(&_fz_models, _fz_nmodels, m);
+    _fz_nmodels = _fz_nmodels + 1;
+    return m;
+}
+
+fn _fz_model_pool(m, pool, best, npool) {
+    store64(m + _FZM_NPOOL, npool);
+    store64(m + _FZM_POOL, _fz_copy(pool, npool * 8));
+    store64(m + _FZM_BEST, _fz_copy(best, npool * 8));
+    return 0;
+}
+
+fn _fz_model_find(id) {
+    var i = 0;
+    while (i < _fz_nmodels) {
+        var m = _ld(&_fz_models, i);
+        if (load64(m + _FZM_ID) == id) { return m; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn _fz_model_glyph(m, cp) {
+    var mode = load64(m + _FZM_MODE);
+    if (mode == 0) {
+        if (cp < 0) { return 0 - 1; }
+        if (cp >= load64(m + _FZM_COUNT)) { return 0 - 1; }
+        return cp;
+    }
+    if (mode == 1) { return _fz_tab_lookup(load64(m + _FZM_POOL), load64(m + _FZM_BEST), load64(m + _FZM_NPOOL), cp); }
+    if (mode == 3) {
+        if (cp < 0) { return 0 - 1; }
+        if (cp > 0xFFFF) { return 0 - 1; }
+        var b1 = cp >> 8;
+        var b2 = cp & 0xFF;
+        if (b1 < load64(m + _FZM_MINB1)) { return 0 - 1; }
+        if (b1 > load64(m + _FZM_MAXB1)) { return 0 - 1; }
+        if (b2 < load64(m + _FZM_MINB2)) { return 0 - 1; }
+        if (b2 > load64(m + _FZM_MAXB2)) { return 0 - 1; }
+        var nb2 = load64(m + _FZM_MAXB2) - load64(m + _FZM_MINB2) + 1;
+        var v = _ld(load64(m + _FZM_CELLS), (b1 - load64(m + _FZM_MINB1)) * nb2 + (b2 - load64(m + _FZM_MINB2)));
+        if (v >= load64(m + _FZM_COUNT)) { return 0 - 1; }
+        return v;
+    }
+    return 0 - 1;
+}
+
+# A codepoint at or next to one model font `m` maps.
+fn _fz_model_cp(m) {
+    var mode = load64(m + _FZM_MODE);
+    var cp = rng_below(0x80);
+    if (mode == 0) { cp = rng_below(load64(m + _FZM_COUNT)); }
+    if (mode == 1) { cp = _ld(load64(m + _FZM_POOL), rng_below(load64(m + _FZM_NPOOL))); }
+    if (mode == 3) {
+        var b1 = load64(m + _FZM_MINB1) + rng_below(load64(m + _FZM_MAXB1) - load64(m + _FZM_MINB1) + 1);
+        var b2 = load64(m + _FZM_MINB2) + rng_below(load64(m + _FZM_MAXB2) - load64(m + _FZM_MINB2) + 1);
+        cp = (b1 << 8) | b2;
+    }
+    return cp + rng_below(3) - 1;
+}
+
+# A codepoint at or next to one the built-ins map: ASCII, Latin-1, the box
+# drawing block, U+2026 / U+2302 / U+FFFD.
+fn _fz_builtin_cp() {
+    var s = rng_below(4);
+    var cp = 0x1F + rng_below(0x62);
+    if (s == 1) { cp = 0x9F + rng_below(0x62); }
+    if (s == 2) { cp = 0x2500 + rng_below(0xA2); }
+    if (s == 3) {
+        cp = 0x2026;
+        var t = rng_below(3);
+        if (t == 1) { cp = 0x2302; }
+        if (t == 2) { cp = 0xFFFD; }
+        cp = cp + rng_below(3) - 1;
+    }
+    return cp;
+}
+
+fn _fz_model_byte(m, g, row, bi) {
+    if (g < 0) { return 0; }
+    var h = load64(m + _FZM_H);
+    var st = load64(m + _FZM_ST);
+    if (row < 0) { return 0; }
+    if (row >= h) { return 0; }
+    if (bi < 0) { return 0; }
+    if (bi >= st) { return 0; }
+    return load8(load64(m + _FZM_DATA) + g * h * st + row * st + bi);
+}
+
+# Build the model fonts. 0, or a setup code 215-219.
+fn fuzz_unified_models() {
+    var stage = alloc(262144);
+    # Identity-addressed: registered from raw bytes, no table.
+    var idata = alloc(50 * 7 * 2);
+    _fz_fill(idata, 50 * 7 * 2);
+    var id = kashi_register_font(13, 7, idata, 50);
+    if (id < KASHI_RT_FONT_BASE) { return 215; }
+    _fz_model_new(id, 0, 13, 7, 50, idata);
+    # PSF whose table maps single codepoints and sequences.
+    var found = 0;
+    var tries = 0;
+    while (found == 0) {
+        tries = tries + 1;
+        if (tries > 1000) { return 216; }
+        var len = _fz_psf_gen(stage, rng_seed62(), 200, 32, 0);
+        if (_psf_flag == 1) {
+            if (len > _psf_dataend) {
+                if (_psf_nsingle > 0) { found = 1; }
+            }
+        }
+        if (found == 1) {
+            id = kashi_load_psf(_fz_place(stage, len), len);
+            if (id < KASHI_RT_FONT_BASE) { return 216; }
+            var m = _fz_model_new(id, 1, _psf_w, _psf_h, _psf_count, stage + _psf_dataoff);
+            _fz_model_pool(m, &_psf_pool, &_psf_best, _psf_npool);
+        }
+    }
+    # PSF whose table maps sequences only: every codepoint misses (L7).
+    found = 0;
+    tries = 0;
+    while (found == 0) {
+        tries = tries + 1;
+        if (tries > 1000) { return 217; }
+        var len2 = _fz_psf_gen(stage, rng_seed62(), 200, 32, 1);
+        if (_psf_flag == 1) {
+            if (len2 > _psf_dataend) { found = 1; }
+        }
+        if (found == 1) {
+            id = kashi_load_psf(_fz_place(stage, len2), len2);
+            if (id < KASHI_RT_FONT_BASE) { return 217; }
+            _fz_model_new(id, 2, _psf_w, _psf_h, _psf_count, stage + _psf_dataoff);
+        }
+    }
+    var len3 = _fz_bdf_gen(stage, rng_seed62(), 40, 0, 0);
+    id = kashi_load_bdf(_fz_place(stage, len3), len3);
+    if (id < KASHI_RT_FONT_BASE) { return 218; }
+    var mb = _fz_model_new(id, 1, _bdf_w, _bdf_h, _bdf_nok, _bdf_exp);
+    _fz_model_pool(mb, &_bdf_pool, &_bdf_best, _bdf_npool);
+    var len4 = _fz_pcf_gen(stage, rng_seed62(), 48);
+    id = kashi_load_pcf(_fz_place(stage, len4), len4);
+    if (id < KASHI_RT_FONT_BASE) { return 219; }
+    var mp = _fz_model_new(id, 3, _pcf_w, _pcf_h, _pcf_n, _pcf_exp);
+    store64(mp + _FZM_MINB1, _pcf_minb1);
+    store64(mp + _FZM_MAXB1, _pcf_maxb1);
+    store64(mp + _FZM_MINB2, _pcf_minb2);
+    store64(mp + _FZM_MAXB2, _pcf_maxb2);
+    store64(mp + _FZM_CELLS, _fz_copy(_pcf_cells, _pcf_ncell * 8));
+    return 0;
+}
+
+fn fuzz_unified(rounds) {
+    var i = 0;
+    while (i < _fz_nmodels) {
+        var mm = _ld(&_fz_models, i);
+        var mid = load64(mm + _FZM_ID);
+        if (_fz_rt_meta(mid, load64(mm + _FZM_W), load64(mm + _FZM_H), load64(mm + _FZM_COUNT)) != 0) { return 191; }
+        i = i + 1;
+    }
+    var total = kashi_font_total();
+    var probe[48];
+    var n = 0;
+    while (n < rounds) {
+        var font = 0;
+        var s = rng_below(8);
+        if (s == 0) { font = rng_wide(); }
+        if (s == 1) { font = rng_below(total + 8) - 4; }
+        if (s == 2) { font = rng_below(3); }
+        if (s >= 3) {
+            if (s <= 5) { font = load64(_ld(&_fz_models, rng_below(_fz_nmodels)) + _FZM_ID); }
+        }
+        if (s == 6) { font = total + rng_below(1000); }
+        if (s == 7) { font = KASHI_RT_FONT_BASE + rng_below(total - KASHI_RT_FONT_BASE); }
+        var m = _fz_model_find(font);
+        # Rows and byte indices mostly around the font's own geometry.
+        var fh = 16;
+        var fst = 2;
+        if (font >= KASHI_RT_FONT_BASE) {
+            if (font < total) {
+                fh = kashi_rt_font_height(font);
+                fst = kashi_rt_font_stride(font);
+            }
+        }
+        var cp = rng_wide();
+        var cs = rng_below(8);
+        if (cs == 1) { cp = rng_below(0x110000); }
+        if (cs == 2) { cp = rng_below(700) - 100; }
+        if (cs == 3) { cp = rng_below(0x2600); }
+        if (cs >= 4) {
+            if (cs <= 5) {
+                cp = rng_below(0x80);
+                if (m != 0) { cp = _fz_model_cp(m); }
+                if (font >= 0) {
+                    if (font < KASHI_RT_FONT_BASE) { cp = _fz_builtin_cp(); }
+                }
+            }
+        }
+        if (cs == 6) { cp = (rng_next() << 16) | (rng_next() & 0xFFFF); }
+        if (cs == 7) { cp = rng_below(0x80); }
+        var row = rng_below(fh);
+        var rs = rng_below(4);
+        if (rs == 1) { row = rng_below(fh + 4) - 2; }
+        if (rs == 2) { row = rng_wide(); }
+        var bi = rng_below(fst);
+        var bs = rng_below(4);
+        if (bs == 1) { bi = rng_below(fst + 3) - 1; }
+        if (bs == 2) { bi = rng_wide(); }
+        var p = kashi_font_ptr(font, cp);
+        var rv = kashi_font_row(font, cp, row);
+        var bv = kashi_font_row_byte(font, cp, row, bi);
+        if (rv < 0) { return 180; }
+        if (rv > 0xFF) { return 180; }
+        if (bv < 0) { return 180; }
+        if (bv > 0xFF) { return 180; }
+        var j = 0;
+        while (j < 6) {
+            store64(&probe + j * 8, rng_below(0x80));
+            j = j + 1;
+        }
+        var slen = rng_below(7) - 1;
+        if (rng_below(8) == 0) { slen = 0 - rng_below(1000000); }
+        var sg = kashi_font_seq_glyph(font, &probe, slen);
+        var known = 0;
+        if (font >= 0) {
+            if (font < total) { known = 1; }
+        }
+        if (known == 0) {
+            if (p != 0) { return 181; }
+            if (rv != 0) { return 181; }
+            if (bv != 0) { return 181; }
+        }
+        var rt = 0;
+        if (known == 1) {
+            if (font >= KASHI_RT_FONT_BASE) { rt = 1; }
+        }
+        if (rt == 0) {
+            if (kashi_rt_font_width(font) != 0) { return 182; }
+            if (kashi_rt_font_height(font) != 0) { return 182; }
+            if (kashi_rt_font_count(font) != 0) { return 182; }
+            if (kashi_rt_font_stride(font) != 0) { return 182; }
+            if (kashi_rt_glyph_ptr(font, cp) != 0) { return 182; }
+            if (sg != 0 - 1) { return 183; }
+        }
+        if (known == 1) {
+            if (font < KASHI_RT_FONT_BASE) {
+                var cell = kashi_cp437_from_unicode(cp);
+                if (p != _fz_core_ptr(font, cell)) { return 184; }
+                if (rv != _fz_core_byte(font, cell, row, 0)) { return 185; }
+                if (bv != _fz_core_byte(font, cell, row, bi)) { return 185; }
+            }
+        }
+        if (rt == 1) {
+            if (m != 0) {
+                var g = _fz_model_glyph(m, cp);
+                var wp = 0;
+                if (g >= 0) {
+                    wp = kashi_rt_glyph_ptr(font, g);
+                    if (wp == 0) { return 186; }
+                }
+                if (p != wp) { return 186; }
+                if (rv != _fz_model_byte(m, g, row, 0)) { return 187; }
+                if (bv != _fz_model_byte(m, g, row, bi)) { return 187; }
+            }
+            if (m == 0) {
+                var cnt = kashi_rt_font_count(font);
+                var h = kashi_rt_font_height(font);
+                var st = kashi_rt_font_stride(font);
+                var gs = h * st;
+                var base = kashi_rt_glyph_ptr(font, 0);
+                var wr = 0;
+                var wb = 0;
+                if (p != 0) {
+                    if (p < base) { return 188; }
+                    if (p >= base + cnt * gs) { return 188; }
+                    if (((p - base) % gs) != 0) { return 188; }
+                    if (row >= 0) {
+                        if (row < h) {
+                            wr = load8(p + row * st);
+                            if (bi >= 0) {
+                                if (bi < st) { wb = load8(p + row * st + bi); }
+                            }
+                        }
+                    }
+                }
+                if (rv != wr) { return 189; }
+                if (bv != wb) { return 189; }
+            }
+            if (sg != 0 - 1) {
+                if (slen < 1) { return 190; }
+                if (sg < 0) { return 190; }
+                if (sg >= kashi_rt_font_count(font)) { return 190; }
+            }
+        }
+        n = n + 1;
+    }
+    return 0;
+}
+
+# --- Driver ---
+
+fn _fz_fail(stage, rc) {
+    _fz_puts("fuzz: FAIL ");
+    _fz_puts(stage);
+    _fz_puts(" (code ");
+    fmt_int(rc);
+    _fz_puts(")\n");
+    return rc;
+}
+
+# One line of run statistics before the verdict. Nothing timing-dependent:
+# `cyrius fuzz --poison=ab` requires two runs to print the same.
+fn _fz_stat(label, v) {
+    _fz_puts(label);
+    fmt_int(v);
+    return 0;
+}
+
+# Rounds per stage. The whole harness runs in under two seconds.
+enum _FzRounds {
+    _FZ_CORE = 200000;
+    _FZ_UNICODE = 100000;
+    _FZ_CLAMP = 20000;
+    _FZ_TOKEN = 50000;
+    _FZ_PSF = 4000;
+    _FZ_PSFO = 600;
+    _FZ_BDF = 6000;
+    _FZ_BDFO = 1000;
+    _FZ_PCF = 5000;
+    _FZ_PCFO = 1500;
+    _FZ_TAB = 3000;
+    _FZ_TABO = 1000;
+    _FZ_UNIFIED = 500000;
+}
+
 fn main() {
     alloc_init();
     kashi_font_init();
+    _fz_gp_init(64);
+    _bdf_exp = alloc(48 * 128);
+    _pcf_exp = alloc(48 * 128);
+    _pcf_cells = alloc(3 * 48 * 8);
 
-    # A couple of canned seeds so the harness self-checks under `cyrius run`.
+    # Canned seeds, so the harness self-checks with nothing random.
     var seed[4];
     store8(&seed + 0, KASHI_FONT_VGA_8X16);
     store8(&seed + 1, 0x41);
     store8(&seed + 2, 5);
     store8(&seed + 3, 0);
-    if (fuzz_main(&seed, 3) != 0) { println("fuzz: FAIL seed1"); return 1; }
-
+    if (fuzz_main(&seed, 3) != 0) { return _fz_fail("seed1", 210); }
     store8(&seed + 0, 99);     # unknown font
     store8(&seed + 1, 0x09);   # control char (unencoded)
     store8(&seed + 2, 200);    # out-of-range row
-    if (fuzz_main(&seed, 3) != 0) { println("fuzz: FAIL seed2"); return 1; }
-
+    if (fuzz_main(&seed, 3) != 0) { return _fz_fail("seed2", 211); }
     store8(&seed + 0, KASHI_FONT_VGA_9X16);   # the 2-byte-stride built-in
     store8(&seed + 1, 0x41);
     store8(&seed + 2, 5);
-    if (fuzz_main(&seed, 3) != 0) { println("fuzz: FAIL seed3"); return 1; }
+    if (fuzz_main(&seed, 3) != 0) { return _fz_fail("seed3", 212); }
 
-    # Core-accessor fuzz: until 1.0.10 the two seeds above were the ONLY
-    # inputs the bounds contract ever saw (the random loops below cover the
-    # parsers), which is how a built-in missing from its known-font list went
-    # unnoticed for four minor versions. 200k triples across three shapes.
+    # The freestanding core: what the kernel renders.
+    var rc = fuzz_core_geometry();
+    if (rc != 0) { return _fz_fail("core", rc); }
     rng_seed(0x5851F42D4C957F2D);
-    var fr = fuzz_core_rounds(200000);
-    if (fr != 0) { println("fuzz: FAIL core"); return fr; }
-
-    # Unicode -> cell fuzz (1.1.0): the mapping only ever answers 0 or an
-    # encoded cell, and the library face's built-in path is exactly
-    # core(kashi_cp437_from_unicode(cp)). 100k (cp, font, row) triples.
+    rc = fuzz_core_rounds(_FZ_CORE);
+    if (rc != 0) { return _fz_fail("core", rc); }
     rng_seed(0x2545F4914F6CDD1D);
-    var ur = fuzz_unicode_rounds(100000);
-    if (ur != 0) { println("fuzz: FAIL unicode"); return ur; }
+    rc = fuzz_unicode_rounds(_FZ_UNICODE);
+    if (rc != 0) { return _fz_fail("unicode", rc); }
+    rng_seed(0x6A09E667F3BCC908);
+    rc = fuzz_cp437_clamp(_FZ_CLAMP);
+    if (rc != 0) { return _fz_fail("unicode", rc); }
 
-    # PSF parser fuzz: thousands of random/truncated/mutated buffers.
+    # The parsers, each as a mutation fuzz and an answer oracle.
+    rng_seed(0xBB67AE8584CAA73B);
+    rc = fuzz_uni_token(_FZ_TOKEN);
+    if (rc != 0) { return _fz_fail("token", rc); }
     rng_seed(0x9E3779B97F4A7C15);
-    var pr = fuzz_psf(4000);
-    if (pr != 0) { println("fuzz: FAIL psf"); return pr; }
-
-    # BDF parser fuzz: text-based parser, four pick paths.
+    rc = fuzz_psf(_FZ_PSF);
+    if (rc != 0) { return _fz_fail("psf", rc); }
+    rng_seed(0x3C6EF372FE94F82B);
+    rc = oracle_psf(_FZ_PSFO);
+    if (rc != 0) { return _fz_fail("psfo", rc); }
     rng_seed(0xD1B54A32D192ED03);
-    var br = fuzz_bdf(2000);
-    if (br != 0) { println("fuzz: FAIL bdf"); return br; }
-
-    # PCF parser fuzz: TOC-driven binary parser; biggest input surface.
+    rc = fuzz_bdf(_FZ_BDF);
+    if (rc != 0) { return _fz_fail("bdf", rc); }
+    rng_seed(0xA54FF53A5F1D36F1);
+    rc = oracle_bdf(_FZ_BDFO);
+    if (rc != 0) { return _fz_fail("bdfo", rc); }
     rng_seed(0xA1B2C3D4E5F60718);
-    var cr = fuzz_pcf(1500);
-    if (cr != 0) { println("fuzz: FAIL pcf"); return cr; }
+    rc = fuzz_pcf(_FZ_PCF);
+    if (rc != 0) { return _fz_fail("pcf", rc); }
+    rng_seed(0x510E527FADE682D1);
+    rc = oracle_pcf(_FZ_PCFO);
+    if (rc != 0) { return _fz_fail("pcfo", rc); }
 
-    # Text-tab parser fuzz: needs an existing runtime font to attach to.
-    # Register a tiny 256-glyph 8x3 stub.
-    var stub = alloc(256 * 3);
-    var si = 0;
-    while (si < 256 * 3) { store8(stub + si, 0); si = si + 1; }
+    # Text tables attach to registered stubs: random text to a 256-glyph
+    # font, the oracle's tables to a fresh 300-glyph one.
+    var stub = alloc(300 * 3);
     var fz_font = kashi_register_font(8, 3, stub, 256);
-    if (fz_font < KASHI_RT_FONT_BASE) { println("fuzz: FAIL tab stub"); return 1; }
+    if (fz_font < KASHI_RT_FONT_BASE) { return _fz_fail("tab", 213); }
     rng_seed(0xB2A4C6E80123456F);
-    var tr = fuzz_tab(fz_font, 1000);
-    if (tr != 0) { println("fuzz: FAIL tab"); return tr; }
+    rc = fuzz_tab(fz_font, _FZ_TAB);
+    if (rc != 0) { return _fz_fail("tab", rc); }
+    var tab_font = kashi_register_font(8, 3, stub, 300);
+    if (tab_font < KASHI_RT_FONT_BASE) { return _fz_fail("tabo", 214); }
+    rng_seed(0x9B05688C2B3E6C1F);
+    rc = oracle_tab(tab_font, 300, _FZ_TABO);
+    if (rc != 0) { return _fz_fail("tabo", rc); }
 
+    rc = fuzz_sortdos();
+    if (rc != 0) { return _fz_fail("sortdos", rc); }
+
+    # Last, so every runtime font the stages above loaded is in the domain.
+    rng_seed(0x1F83D9ABFB41BD6B);
+    rc = fuzz_unified_models();
+    if (rc != 0) { return _fz_fail("unified", rc); }
+    rc = fuzz_unified(_FZ_UNIFIED);
+    if (rc != 0) { return _fz_fail("unified", rc); }
+
+    _fz_stat("fuzz: accepted psf ", _fz_psf_accepted);
+    _fz_stat("/", _FZ_PSF);
+    _fz_stat(" bdf ", _fz_bdf_accepted);
+    _fz_stat("/", _FZ_BDF);
+    _fz_stat(" pcf ", _fz_pcf_accepted);
+    _fz_stat("/", _FZ_PCF);
+    _fz_stat("; oracle fonts psf ", _fz_psf_oracle_fonts);
+    _fz_stat(" bdf ", _fz_bdf_oracle_fonts);
+    _fz_stat(" pcf ", _fz_pcf_oracle_fonts);
+    _fz_stat(", text tables ", _fz_tab_oracle_tables);
+    _fz_puts("\n");
     println("fuzz: ok");
     return 0;
 }
 
 var r = main();
-syscall(60, r);
+syscall(SYS_EXIT, r);

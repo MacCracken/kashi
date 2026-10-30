@@ -98,10 +98,28 @@ the **kept** count, which may be less than the declared `CHARS n`.
 
 ### File-size cap
 
-`kashi_load_bdf_file` reads at most **4 MiB** of source
+`kashi_load_bdf_file` takes a regular file of at most **4 MiB**
 (`KASHI_BDF_FILE_CAP`). BDF is verbose text (~8–16× a PSF of the same
 font), and 4 MiB covers every console BDF in the wild plus most
-display BDFs. Files larger than the cap are rejected.
+display BDFs. A larger file is rejected (`0 - KASHI_EINVAL`). Until
+1.3.0 it was cut at the cap and loaded as a partial font. A FIFO, tty or
+device path is refused too; see
+[`../api/loading.md`](../api/loading.md#reading-font-files).
+
+### Strictness (1.3.0)
+
+The 2026-10-30 audit found BDFs that loaded wrong instead of failing.
+Each of these is now `0 - KASHI_EFORMAT`:
+- **A font without its `ENDFONT` line.** A file cut short used to load
+  the glyphs before the cut.
+- **A line after a glyph's `BITMAP` rows that is not `ENDCHAR`,** such as
+  an extra row.
+- **A number with trailing characters.** `ENCODING 0x41` used to load as
+  U+0000.
+- **A repeated `STARTFONT`, `FONTBOUNDINGBOX` or `CHARS`.**
+
+When two glyphs carry the same `ENCODING`, the later one (the higher
+glyph index) wins.
 
 ## Minimal example BDF
 

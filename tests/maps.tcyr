@@ -1,0 +1,1739 @@
+# kashi — codepoint-map and ligature-list suite (1.3.0 hardening).
+#
+# Every runtime font is addressed through two structures built from its
+# Unicode table: a sorted {codepoint, glyph} map and a sorted ligature list.
+# Until 1.3.0 every table the suites fed those builders was already in
+# ascending order with no repeated codepoint, so deleting a sort passed
+# everything (audit 2026-10-30, K56). Real tables are in GLYPH order: their
+# codepoints arrive descending or interleaved, and real fonts list one
+# codepoint (or one ligature) on several glyphs. This file feeds each
+# builder exactly that — PSF1 and PSF2 inline tables, binary and text
+# attach, BDF — plus tables that map no single codepoint, allocation
+# failures mid-build, and the registry's first unknown id.
+#
+# Covers audit 2026-10-30 L1 (one heapsort), L2 (sorted ligatures, binary
+# search), L6 (maps built before registration; allocation failures fail the
+# call), L7 (the empty map), L8 (attach builds aside), L10 (a repeated
+# codepoint resolves to its HIGHEST glyph) and the registry boundary.
+#
+# Allocation failures are forced by lowering the stdlib's ALLOC_MAX (the
+# per-call cap every alloc() checks first) around one call, so a chosen
+# allocation is refused and every smaller one still succeeds. Each such
+# window is restored before any assertion runs.
+#
+# No fixture files: every font is built in memory.
+
+include "src/lib.cyr"
+
+# --- Builders ---
+
+fn _mp_put32(buf, off, v) {
+    store8(buf + off + 0, v & 0xFF);
+    store8(buf + off + 1, (v >> 8) & 0xFF);
+    store8(buf + off + 2, (v >> 16) & 0xFF);
+    store8(buf + off + 3, (v >> 24) & 0xFF);
+    return 0;
+}
+
+# The one row byte of glyph `g` in every font built here. Bit 7 is always
+# set, so a codepoint that resolves to ANY glyph reads non-zero through
+# kashi_font_row, and an unmapped one reads 0.
+fn _mp_gb(g) {
+    return 0x80 | (g & 0x7F);
+}
+
+# UTF-8 encode `cp` at buf + p; returns the position after it.
+fn _mp_utf8(buf, p, cp) {
+    if (cp < 0x80) {
+        store8(buf + p, cp);
+        return p + 1;
+    }
+    if (cp < 0x800) {
+        store8(buf + p, 0xC0 | (cp >> 6));
+        store8(buf + p + 1, 0x80 | (cp & 0x3F));
+        return p + 2;
+    }
+    if (cp < 0x10000) {
+        store8(buf + p, 0xE0 | (cp >> 12));
+        store8(buf + p + 1, 0x80 | ((cp >> 6) & 0x3F));
+        store8(buf + p + 2, 0x80 | (cp & 0x3F));
+        return p + 3;
+    }
+    store8(buf + p, 0xF0 | (cp >> 18));
+    store8(buf + p + 1, 0x80 | ((cp >> 12) & 0x3F));
+    store8(buf + p + 2, 0x80 | ((cp >> 6) & 0x3F));
+    store8(buf + p + 3, 0x80 | (cp & 0x3F));
+    return p + 4;
+}
+
+# A PSF1 table unit (LE u16) at buf + p; returns p + 2.
+fn _mp_u16(buf, p, v) {
+    store8(buf + p, v & 0xFF);
+    store8(buf + p + 1, (v >> 8) & 0xFF);
+    return p + 2;
+}
+
+# Copy NUL-terminated `s` to buf + p; returns the position after it.
+fn _mp_str(buf, p, s) {
+    var i = 0;
+    while (load8(s + i) != 0) {
+        store8(buf + p + i, load8(s + i));
+        i = i + 1;
+    }
+    return p + i;
+}
+
+fn _mp_hexdigit(d) {
+    if (d < 10) { return 0x30 + d; }
+    return 0x41 + d - 10;
+}
+
+# Uppercase hex of v >= 0, no prefix, no padding; returns the new position.
+fn _mp_hex(buf, p, v) {
+    var n = 1;
+    var x = v >> 4;
+    while (x > 0) {
+        n = n + 1;
+        x = x >> 4;
+    }
+    var i = n;
+    x = v;
+    while (i > 0) {
+        i = i - 1;
+        store8(buf + p + i, _mp_hexdigit(x & 15));
+        x = x >> 4;
+    }
+    return p + n;
+}
+
+# Decimal of v >= 0; returns the new position.
+fn _mp_dec(buf, p, v) {
+    var n = 1;
+    var x = v / 10;
+    while (x > 0) {
+        n = n + 1;
+        x = x / 10;
+    }
+    var i = n;
+    x = v;
+    while (i > 0) {
+        i = i - 1;
+        store8(buf + p + i, 0x30 + (x % 10));
+        x = x / 10;
+    }
+    return p + n;
+}
+
+# PSF2 header + glyph data: `count` glyphs, 8x1, flags (1 = HAS_UNICODE).
+# Glyph g's row is _mp_gb(g). Returns the offset the table starts at.
+fn _mp_psf2(buf, count, flags) {
+    var i = 0;
+    while (i < 32) {
+        store8(buf + i, 0);
+        i = i + 1;
+    }
+    _mp_put32(buf, 0, 0x864AB572);
+    _mp_put32(buf, 4, 0);
+    _mp_put32(buf, 8, 32);
+    _mp_put32(buf, 12, flags);
+    _mp_put32(buf, 16, count);
+    _mp_put32(buf, 20, 1);
+    _mp_put32(buf, 24, 1);
+    _mp_put32(buf, 28, 8);
+    var g = 0;
+    while (g < count) {
+        store8(buf + 32 + g, _mp_gb(g));
+        g = g + 1;
+    }
+    return 32 + count;
+}
+
+# PSF1 header + glyph data, charsize 1: 256 glyphs, or 512 when mode bit 0
+# is set. Returns the offset the table starts at.
+fn _mp_psf1(buf, mode) {
+    store8(buf + 0, 0x36);
+    store8(buf + 1, 0x04);
+    store8(buf + 2, mode);
+    store8(buf + 3, 1);
+    var count = 256;
+    if ((mode & 1) != 0) { count = 512; }
+    var g = 0;
+    while (g < count) {
+        store8(buf + 4 + g, _mp_gb(g));
+        g = g + 1;
+    }
+    return 4 + count;
+}
+
+# Register a table-less 8x1 runtime font of `count` glyphs (rows _mp_gb).
+fn _mp_reg(count) {
+    var data = alloc(count);
+    var g = 0;
+    while (g < count) {
+        store8(data + g, _mp_gb(g));
+        g = g + 1;
+    }
+    return kashi_register_font(8, 1, data, count);
+}
+
+# BDF header for an 8x1 font declaring `chars` glyphs.
+fn _mp_bdf_head(buf, chars) {
+    var p = _mp_str(buf, 0, "STARTFONT 2.1\nFONTBOUNDINGBOX 8 1 0 0\nCHARS ");
+    p = _mp_dec(buf, p, chars);
+    return _mp_str(buf, p, "\n");
+}
+
+# One 8x1 BDF glyph with ENCODING `enc` (0 - 1 writes "-1") and row `row`.
+fn _mp_bdf_glyph(buf, p, enc, row) {
+    p = _mp_str(buf, p, "STARTCHAR g\nENCODING ");
+    if (enc < 0) { p = _mp_str(buf, p, "-1"); }
+    if (enc >= 0) { p = _mp_dec(buf, p, enc); }
+    p = _mp_str(buf, p, "\nBBX 8 1 0 0\nBITMAP\n");
+    store8(buf + p, _mp_hexdigit((row >> 4) & 15));
+    store8(buf + p + 1, _mp_hexdigit(row & 15));
+    return _mp_str(buf, p + 2, "\nENDCHAR\n");
+}
+
+# One psfgettable line "0x<g> U+<cp>\n" (cp2 >= 0 adds a second U+).
+fn _mp_tab_line(buf, p, g, cp, cp2) {
+    p = _mp_str(buf, p, "0x");
+    p = _mp_hex(buf, p, g);
+    p = _mp_str(buf, p, "\tU+");
+    p = _mp_hex(buf, p, cp);
+    if (cp2 >= 0) {
+        p = _mp_str(buf, p, " U+");
+        p = _mp_hex(buf, p, cp2);
+    }
+    return _mp_str(buf, p, "\n");
+}
+
+# --- Checks ---
+
+# 1 when `cp` resolves to glyph `g` of runtime font `id` through both
+# codepoint accessors, else 0.
+fn _mp_hits(id, cp, g) {
+    var gp = kashi_rt_glyph_ptr(id, g);
+    if (gp == 0) { return 0; }
+    if (kashi_font_ptr(id, cp) != gp) { return 0; }
+    if (kashi_font_row(id, cp, 0) != load8(gp)) { return 0; }
+    return 1;
+}
+
+# 1 when `cp` is unmapped in runtime font `id` (null pointer, row 0).
+fn _mp_misses(id, cp) {
+    if (kashi_font_ptr(id, cp) != 0) { return 0; }
+    if (kashi_font_row(id, cp, 0) != 0) { return 0; }
+    if (kashi_font_row_byte(id, cp, 0, 0) != 0) { return 0; }
+    return 1;
+}
+
+# How many codepoints in [lo, hi] resolve to a glyph (0 = all miss).
+fn _mp_count_hits(id, lo, hi) {
+    var n = 0;
+    var cp = lo;
+    while (cp <= hi) {
+        if (_mp_misses(id, cp) == 0) { n = n + 1; }
+        cp = cp + 1;
+    }
+    return n;
+}
+
+fn _mp_ucount(id) {
+    return load64(_kashi_rt_get(id) + _KASHI_RT_UCOUNT);
+}
+
+fn _mp_seqcount(id) {
+    return load64(_kashi_rt_get(id) + _KASHI_RT_SEQCOUNT);
+}
+
+# Copy the five map fields of font `id`'s record to `out` (40 bytes).
+fn _mp_snap(id, out) {
+    var rec = _kashi_rt_get(id);
+    store64(out + 0, load64(rec + _KASHI_RT_UMAP));
+    store64(out + 8, load64(rec + _KASHI_RT_UCOUNT));
+    store64(out + 16, load64(rec + _KASHI_RT_SEQS));
+    store64(out + 24, load64(rec + _KASHI_RT_SEQCOUNT));
+    store64(out + 32, load64(rec + _KASHI_RT_SEQDATA));
+    return 0;
+}
+
+# 1 when font `id`'s map fields still equal the snapshot.
+fn _mp_same(id, snap) {
+    var now[40];
+    _mp_snap(id, &now);
+    var i = 0;
+    var same = 1;
+    while (i < 40) {
+        if (load64(&now + i) != load64(snap + i)) { same = 0; }
+        i = i + 8;
+    }
+    return same;
+}
+
+# Ligature query scratch: up to 8 codepoints.
+var _mp_q[8];
+
+# kashi_font_seq_glyph for the first `n` (1..4) of a, b, c, d.
+fn _mp_seq(id, n, a, b, c, d) {
+    store64(&_mp_q + 0, a);
+    store64(&_mp_q + 8, b);
+    store64(&_mp_q + 16, c);
+    store64(&_mp_q + 24, d);
+    return kashi_font_seq_glyph(id, &_mp_q, n);
+}
+
+# --- Timing (L1 / L2) ---
+#
+# The quadratic sorts 1.3.0 removed returned correct maps, only slowly, so
+# a correctness check cannot see them come back. These compare a hostile
+# input against a benign one of the same size in the same process: with
+# the heapsort both cost about the same, with an insertion sort the hostile
+# one costs ~300x more (32768 reverse-ordered entries: ~3 s vs ~15 ms). A
+# slow check is re-measured up to twice and the best time kept, so one
+# scheduler stall does not fail the run.
+
+var _mp_last = 0;
+
+fn _mp_time_psf(buf, len) {
+    var t0 = now_ns();
+    _mp_last = kashi_load_psf(buf, len);
+    return now_ns() - t0;
+}
+
+fn _mp_time_bdf(buf, len) {
+    var t0 = now_ns();
+    _mp_last = kashi_load_bdf(buf, len);
+    return now_ns() - t0;
+}
+
+fn _mp_time_text(id, buf, len) {
+    var t0 = now_ns();
+    _mp_last = kashi_attach_unicode_text(id, buf, len);
+    return now_ns() - t0;
+}
+
+# Look up (0x4000 + k, 'B') for k in [0, n) — none exists in the L2 cost
+# font — and leave the number that hit in _mp_last.
+fn _mp_time_misses(id, n) {
+    var t0 = now_ns();
+    var hits = 0;
+    var k = 0;
+    while (k < n) {
+        if (_mp_seq(id, 2, 0x4000 + k, 0x42, 0, 0) != 0 - 1) { hits = hits + 1; }
+        k = k + 1;
+    }
+    _mp_last = hits;
+    return now_ns() - t0;
+}
+
+# The bound a hostile run must stay under, given the benign run's time.
+fn _mp_bound(t_benign) {
+    return 4 * t_benign + 300000000;
+}
+
+# ===========================================================================
+# Registry
+# ===========================================================================
+
+# Before any runtime font exists the registry is not even allocated; the
+# first runtime id must still answer with the documented sentinels.
+fn test_registry_before_first_font() {
+    test_group("registry: ids before the first runtime font");
+    assert_eq(kashi_font_total(), KASHI_RT_FONT_BASE, "no runtime font yet: total 3");
+    assert_eq(kashi_rt_glyph_ptr(KASHI_RT_FONT_BASE, 0), 0, "id 3 glyph ptr -> null");
+    assert_eq(kashi_rt_font_stride(KASHI_RT_FONT_BASE), 0, "id 3 stride -> 0");
+    var tab[8];
+    store8(&tab, 0x41);
+    store8(&tab + 1, 0xFF);
+    assert_eq(kashi_attach_unicode_table(KASHI_RT_FONT_BASE, &tab, 2, KASHI_PSF_KIND_PSF2),
+      0 - KASHI_EINVAL, "attach to id 3 -> EINVAL");
+    assert_eq(kashi_attach_unicode_text(KASHI_RT_FONT_BASE, "0x0 U+41\n", 9),
+      0 - KASHI_EINVAL, "text attach to id 3 -> EINVAL");
+    assert_eq(_mp_seq(KASHI_RT_FONT_BASE, 1, 0x41, 0, 0, 0), 0 - 1, "id 3 ligature -> -1");
+    return 0;
+}
+
+# L6: the first registration creates the registry. Until 1.3.0 a failed
+# vec_new was not checked and the record was pushed onto a null vec (a
+# crash). ALLOC_MAX = 100 lets the 1-byte glyph store, vec_new's 24-byte
+# header and the 88-byte record through, but not vec_new's 128-byte data
+# block. Must run before any font is registered (audit 2026-10-30, L6).
+fn test_l6_registry_oom() {
+    test_group("L6: registry creation refused");
+    var g[8];
+    store8(&g, 0x5A);
+    var saved = ALLOC_MAX;
+    ALLOC_MAX = 100;
+    var rc = kashi_register_font(8, 1, &g, 1);
+    var total = kashi_font_total();
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EINVAL, "vec_new refused -> EINVAL, no crash");
+    assert_eq(total, KASHI_RT_FONT_BASE, "nothing registered");
+    assert_eq(kashi_font_row(KASHI_RT_FONT_BASE, 0, 0), 0, "id 3 still unknown");
+    var id = kashi_register_font(8, 1, &g, 1);
+    assert_eq(id, KASHI_RT_FONT_BASE, "next registration creates the registry: id 3");
+    assert_eq(kashi_font_row(id, 0, 0), 0x5A, "and reads back");
+    return 0;
+}
+
+# The first unregistered id is font_id == kashi_font_total(): one past the
+# registry's last slot. An off-by-one in _kashi_rt_get there aborts the
+# process in vec_get instead of answering 0 (audit 2026-10-30, K61).
+fn _mp_unknown_ok(id) {
+    var bad = 0;
+    if (kashi_font_ptr(id, 0) != 0) { bad = bad + 1; }
+    if (kashi_font_row(id, 0x41, 0) != 0) { bad = bad + 1; }
+    if (kashi_font_row_byte(id, 0x41, 0, 0) != 0) { bad = bad + 1; }
+    if (kashi_rt_glyph_ptr(id, 0) != 0) { bad = bad + 1; }
+    if (kashi_rt_glyph_row(id, 0, 0) != 0) { bad = bad + 1; }
+    if (kashi_rt_glyph_row_byte(id, 0, 0, 0) != 0) { bad = bad + 1; }
+    if (kashi_rt_font_width(id) != 0) { bad = bad + 1; }
+    if (kashi_rt_font_height(id) != 0) { bad = bad + 1; }
+    if (kashi_rt_font_count(id) != 0) { bad = bad + 1; }
+    if (kashi_rt_font_stride(id) != 0) { bad = bad + 1; }
+    if (_mp_seq(id, 2, 0x41, 0x42, 0, 0) != 0 - 1) { bad = bad + 1; }
+    var tab[8];
+    store8(&tab, 0x41);
+    store8(&tab + 1, 0xFF);
+    if (kashi_attach_unicode_table(id, &tab, 2, KASHI_PSF_KIND_PSF2) != 0 - KASHI_EINVAL) { bad = bad + 1; }
+    if (kashi_attach_unicode_text(id, "0x0 U+41\n", 9) != 0 - KASHI_EINVAL) { bad = bad + 1; }
+    if (kashi_set_active_font(id) != 0 - KASHI_EINVAL) { bad = bad + 1; }
+    return bad;
+}
+
+fn test_registry_bounds() {
+    test_group("registry: the first unregistered id");
+    var total = kashi_font_total();
+    assert_gte(total, KASHI_RT_FONT_BASE + 2, "suite registered fonts");
+    # The last registered id is live ...
+    assert_gte(kashi_rt_font_count(total - 1), 1, "id total-1 is the last font");
+    assert_eq(kashi_set_active_font(total - 1), KASHI_OK, "id total-1 can be made active");
+    kashi_set_active_font(0);
+    # ... and every accessor answers the sentinel one past it.
+    assert_eq(kashi_font_ptr(total, 0x41), 0, "font_ptr(total) -> null");
+    assert_eq(kashi_font_row(total, 0, 0), 0, "font_row(total, 0) -> 0");
+    assert_eq(kashi_rt_glyph_row(total, 0, 0), 0, "rt_glyph_row(total) -> 0");
+    assert_eq(kashi_rt_font_width(total), 0, "rt_font_width(total) -> 0");
+    assert_eq(_mp_unknown_ok(total), 0, "every accessor at id total -> sentinel");
+    assert_eq(_mp_unknown_ok(total + 1), 0, "every accessor at id total+1 -> sentinel");
+    assert_eq(_mp_unknown_ok(total + 1000), 0, "every accessor at id total+1000 -> sentinel");
+    assert_eq(_mp_unknown_ok(0x7FFFFFFFFFFF), 0, "every accessor at a huge id -> sentinel");
+    # Registering one more font makes `total` that font, and moves the edge.
+    var id = _mp_reg(2);
+    assert_eq(id, total, "next font gets id total");
+    assert_eq(kashi_font_row(id, 1, 0), _mp_gb(1), "and is addressable");
+    assert_eq(_mp_unknown_ok(total + 1), 0, "new edge total+1 -> sentinel");
+    return 0;
+}
+
+# ===========================================================================
+# L1: unsorted input on every map builder
+# ===========================================================================
+
+# A PSF2 table in glyph order whose codepoints come from three bands, each
+# permuted differently: 3-byte UTF-8 (a stride-97 shuffle), 4-byte UTF-8
+# (descending) and ASCII (a stride-7 shuffle) on the first 90 glyphs.
+fn test_l1_psf2_interleaved() {
+    test_group("L1: PSF2 inline table, interleaved codepoints");
+    var n = 300;
+    var buf = alloc(32 + n + n * 10);
+    var p = _mp_psf2(buf, n, 1);
+    var g = 0;
+    while (g < n) {
+        p = _mp_utf8(buf, p, 0x3000 + ((g * 97) % n));
+        p = _mp_utf8(buf, p, 0x1F000 + (n - 1 - g));
+        if (g < 90) { p = _mp_utf8(buf, p, 0x20 + ((g * 7) % 90)); }
+        store8(buf + p, 0xFF);
+        p = p + 1;
+        g = g + 1;
+    }
+    var id = kashi_load_psf(buf, p);
+    assert_gte(id, KASHI_RT_FONT_BASE, "interleaved psf2 loads");
+    var bad = 0;
+    g = 0;
+    while (g < n) {
+        if (_mp_hits(id, 0x3000 + ((g * 97) % n), g) == 0) { bad = bad + 1; }
+        if (_mp_hits(id, 0x1F000 + (n - 1 - g), g) == 0) { bad = bad + 1; }
+        if (g < 90) {
+            if (_mp_hits(id, 0x20 + ((g * 7) % 90), g) == 0) { bad = bad + 1; }
+        }
+        g = g + 1;
+    }
+    assert_eq(bad, 0, "all 690 codepoints resolve to their glyph");
+    assert_eq(_mp_ucount(id), 690, "map holds 690 pairs");
+    var edge = _mp_misses(id, 0x2FFF) + _mp_misses(id, 0x3000 + n);
+    edge = edge + _mp_misses(id, 0x1EFFF) + _mp_misses(id, 0x1F000 + n);
+    edge = edge + _mp_misses(id, 0x1F) + _mp_misses(id, 0x7A);
+    assert_eq(edge, 6, "the codepoint past each band's ends misses");
+    # Below 0x20 every codepoint is a valid glyph INDEX; a table font must
+    # not fall back to identity for them.
+    assert_eq(_mp_count_hits(id, 0, 0x1F), 0, "U+0000..U+001F unmapped");
+    return 0;
+}
+
+# PSF1 (LE u16) with 512 glyphs: glyph g lists 0x4E00 + (511 - g)
+# (descending) and 0x0100 + 7g mod 512 (shuffled); every 64th glyph also
+# lists the ligature A,B, which must not leak into the single map.
+fn test_l1_psf1_reverse() {
+    test_group("L1: PSF1 512-glyph table, descending codepoints");
+    var buf = alloc(4 + 512 + 512 * 14);
+    var p = _mp_psf1(buf, 0x03);
+    var g = 0;
+    while (g < 512) {
+        p = _mp_u16(buf, p, 0x4E00 + (511 - g));
+        p = _mp_u16(buf, p, 0x0100 + ((g * 7) % 512));
+        if ((g % 64) == 0) {
+            p = _mp_u16(buf, p, 0xFFFE);
+            p = _mp_u16(buf, p, 0x41);
+            p = _mp_u16(buf, p, 0x42);
+        }
+        p = _mp_u16(buf, p, 0xFFFF);
+        g = g + 1;
+    }
+    var id = kashi_load_psf(buf, p);
+    assert_gte(id, KASHI_RT_FONT_BASE, "psf1-512 loads");
+    assert_eq(kashi_rt_font_count(id), 512, "512 glyphs");
+    var bad = 0;
+    g = 0;
+    while (g < 512) {
+        if (_mp_hits(id, 0x4E00 + (511 - g), g) == 0) { bad = bad + 1; }
+        if (_mp_hits(id, 0x0100 + ((g * 7) % 512), g) == 0) { bad = bad + 1; }
+        g = g + 1;
+    }
+    assert_eq(bad, 0, "all 1024 codepoints resolve to their glyph");
+    assert_eq(_mp_ucount(id), 1024, "map holds 1024 pairs");
+    var edge = _mp_misses(id, 0x4DFF) + _mp_misses(id, 0x5000);
+    edge = edge + _mp_misses(id, 0xFF) + _mp_misses(id, 0x300);
+    assert_eq(edge, 4, "codepoints past both bands miss");
+    assert_eq(_mp_misses(id, 0x41), 1, "'A' only in a ligature: not a single");
+    # L2 on the PSF1 path: the same ligature on glyphs 0, 64, ..., 448.
+    assert_eq(_mp_seq(id, 2, 0x41, 0x42, 0, 0), 448, "repeated PSF1 ligature -> highest glyph");
+    assert_eq(_mp_seqcount(id), 1, "one distinct ligature kept");
+    return 0;
+}
+
+# BDF glyph indices follow file order, so a font listed in descending
+# ENCODING order hands the map builder descending codepoints.
+fn test_l1_bdf_unsorted() {
+    test_group("L1: BDF, descending and shuffled ENCODING");
+    var n = 200;
+    var buf = alloc(256 + n * 64);
+    var p = _mp_bdf_head(buf, n);
+    var i = 0;
+    while (i < n) {
+        p = _mp_bdf_glyph(buf, p, 0x400 + (n - 1 - i), _mp_gb(i));
+        i = i + 1;
+    }
+    p = _mp_str(buf, p, "ENDFONT\n");
+    var id = kashi_load_bdf(buf, p);
+    assert_gte(id, KASHI_RT_FONT_BASE, "descending bdf loads");
+    var bad = 0;
+    var k = 0;
+    while (k < n) {
+        if (_mp_hits(id, 0x400 + k, n - 1 - k) == 0) { bad = bad + 1; }
+        k = k + 1;
+    }
+    assert_eq(bad, 0, "all 200 encodings resolve to their glyph");
+    assert_eq(_mp_misses(id, 0x3FF) + _mp_misses(id, 0x400 + n), 2, "neighbours miss");
+
+    # Shuffled (stride 37 over 150) with every fifth glyph ENCODING -1: the
+    # skipped glyphs take no index, and their codepoint stays unmapped.
+    var m = 150;
+    var b2 = alloc(256 + m * 64);
+    var q = _mp_bdf_head(b2, m);
+    var w = 0;
+    i = 0;
+    while (i < m) {
+        if ((i % 5) == 4) { q = _mp_bdf_glyph(b2, q, 0 - 1, 0xFF); }
+        if ((i % 5) != 4) {
+            q = _mp_bdf_glyph(b2, q, 0x600 + ((i * 37) % m), _mp_gb(w));
+            w = w + 1;
+        }
+        i = i + 1;
+    }
+    q = _mp_str(b2, q, "ENDFONT\n");
+    var id2 = kashi_load_bdf(b2, q);
+    assert_gte(id2, KASHI_RT_FONT_BASE, "shuffled bdf loads");
+    assert_eq(kashi_rt_font_count(id2), 120, "120 encoded glyphs kept");
+    var bad2 = 0;
+    var skipped_hit = 0;
+    w = 0;
+    i = 0;
+    while (i < m) {
+        var cp = 0x600 + ((i * 37) % m);
+        if ((i % 5) == 4) { skipped_hit = skipped_hit + 1 - _mp_misses(id2, cp); }
+        if ((i % 5) != 4) {
+            if (_mp_hits(id2, cp, w) == 0) { bad2 = bad2 + 1; }
+            w = w + 1;
+        }
+        i = i + 1;
+    }
+    assert_eq(bad2, 0, "all 120 encodings resolve to their glyph");
+    assert_eq(skipped_hit, 0, "codepoints of the 30 skipped slots miss");
+    return 0;
+}
+
+# Text table lines in shuffled glyph order (stride 7 over 300), two
+# codepoints each — one descending band, one shuffled band — with comment
+# and blank lines interleaved.
+fn test_l1_text_unsorted() {
+    test_group("L1: text-table attach, shuffled lines");
+    var n = 300;
+    var id = _mp_reg(n);
+    assert_gte(id, KASHI_RT_FONT_BASE, "300-glyph font registered");
+    var buf = alloc(n * 40);
+    var p = 0;
+    var i = 0;
+    while (i < n) {
+        var g = (i * 7) % n;
+        p = _mp_tab_line(buf, p, g, 0x2000 + (n - 1 - g), 0x10000 + ((g * 11) % n));
+        if ((i % 10) == 0) { p = _mp_str(buf, p, "# comment\n\n"); }
+        i = i + 1;
+    }
+    assert_eq(kashi_attach_unicode_text(id, buf, p), KASHI_OK, "attach ok");
+    var bad = 0;
+    var g2 = 0;
+    while (g2 < n) {
+        if (_mp_hits(id, 0x2000 + (n - 1 - g2), g2) == 0) { bad = bad + 1; }
+        if (_mp_hits(id, 0x10000 + ((g2 * 11) % n), g2) == 0) { bad = bad + 1; }
+        g2 = g2 + 1;
+    }
+    assert_eq(bad, 0, "all 600 codepoints resolve to their glyph");
+    assert_eq(_mp_ucount(id), 600, "map holds 600 pairs");
+    var edge = _mp_misses(id, 0x1FFF) + _mp_misses(id, 0x2000 + n);
+    edge = edge + _mp_misses(id, 0xFFFF) + _mp_misses(id, 0x10000 + n);
+    assert_eq(edge, 4, "codepoints past both bands miss");
+    # The font had no table before: every index-range codepoint was
+    # identity-addressed. The attached map replaces that.
+    assert_eq(_mp_count_hits(id, 0, n - 1), 0, "identity addressing gone after attach");
+    return 0;
+}
+
+# Binary PSF2 table attached to a registered font, codepoints descending
+# and shuffled.
+fn test_l1_binary_attach_unsorted() {
+    test_group("L1: binary attach, descending codepoints");
+    var id = _mp_reg(64);
+    var tab = alloc(64 * 8);
+    var p = 0;
+    var g = 0;
+    while (g < 64) {
+        p = _mp_utf8(tab, p, 0x2500 + (63 - g));
+        p = _mp_utf8(tab, p, 0x41 + ((g * 5) % 64));
+        store8(tab + p, 0xFF);
+        p = p + 1;
+        g = g + 1;
+    }
+    assert_eq(kashi_attach_unicode_table(id, tab, p, KASHI_PSF_KIND_PSF2), KASHI_OK, "attach ok");
+    var bad = 0;
+    g = 0;
+    while (g < 64) {
+        if (_mp_hits(id, 0x2500 + (63 - g), g) == 0) { bad = bad + 1; }
+        if (_mp_hits(id, 0x41 + ((g * 5) % 64), g) == 0) { bad = bad + 1; }
+        g = g + 1;
+    }
+    assert_eq(bad, 0, "all 128 codepoints resolve to their glyph");
+    var edge = _mp_misses(id, 0x24FF) + _mp_misses(id, 0x2540);
+    edge = edge + _mp_misses(id, 0x40) + _mp_misses(id, 0x81);
+    assert_eq(edge, 4, "codepoints past both bands miss");
+    assert_eq(_mp_count_hits(id, 0, 0x40), 0, "identity addressing gone after attach");
+    return 0;
+}
+
+# --- L1 at scale: the ~200 s hostile table (audit 2026-10-30, L1) ---
+
+# PSF2 of n glyphs, glyph g listing 0x4000 + g (rev 0) or 0x4000 + n-1-g
+# (rev 1). n <= 32768 keeps every codepoint below the surrogates.
+fn _mp_psf2_scale(buf, n, rev) {
+    var p = _mp_psf2(buf, n, 1);
+    var g = 0;
+    while (g < n) {
+        var k = g;
+        if (rev == 1) { k = n - 1 - g; }
+        p = _mp_utf8(buf, p, 0x4000 + k);
+        store8(buf + p, 0xFF);
+        p = p + 1;
+        g = g + 1;
+    }
+    return p;
+}
+
+fn test_l1_scale_psf() {
+    test_group("L1: 32768-entry PSF2 table in reverse order");
+    var n = 32768;
+    var buf = alloc(32 + n + n * 4);
+    var len = _mp_psf2_scale(buf, n, 0);
+    var t_asc = _mp_time_psf(buf, len);
+    assert_gte(_mp_last, KASHI_RT_FONT_BASE, "ascending table loads");
+    len = _mp_psf2_scale(buf, n, 1);
+    var t_rev = _mp_time_psf(buf, len);
+    var tries = 1;
+    while (tries < 3) {
+        if (t_rev > _mp_bound(t_asc)) {
+            var t = _mp_time_psf(buf, len);
+            if (t < t_rev) { t_rev = t; }
+        }
+        tries = tries + 1;
+    }
+    var id = _mp_last;
+    assert_gte(id, KASHI_RT_FONT_BASE, "reverse table loads");
+    assert_lte(t_rev, _mp_bound(t_asc), "reverse order costs no more than ascending (no quadratic sort)");
+    var bad = 0;
+    var k = 0;
+    while (k < n) {
+        if (_mp_hits(id, 0x4000 + k, n - 1 - k) == 0) { bad = bad + 1; }
+        k = k + 1;
+    }
+    assert_eq(bad, 0, "all 32768 codepoints resolve to their glyph");
+    assert_eq(_mp_misses(id, 0x3FFF) + _mp_misses(id, 0x4000 + n), 2, "neighbours miss");
+    return 0;
+}
+
+fn _mp_text_scale(buf, n, rev) {
+    var p = 0;
+    var g = 0;
+    while (g < n) {
+        var k = g;
+        if (rev == 1) { k = n - 1 - g; }
+        p = _mp_tab_line(buf, p, g, 0x4000 + k, 0 - 1);
+        g = g + 1;
+    }
+    return p;
+}
+
+fn test_l1_scale_text() {
+    test_group("L1: 32768-line text table in reverse order");
+    var n = 32768;
+    var id = _mp_reg(n);
+    var buf = alloc(n * 20);
+    var len = _mp_text_scale(buf, n, 0);
+    var t_asc = _mp_time_text(id, buf, len);
+    assert_eq(_mp_last, KASHI_OK, "ascending table attaches");
+    len = _mp_text_scale(buf, n, 1);
+    var t_rev = _mp_time_text(id, buf, len);
+    var tries = 1;
+    while (tries < 3) {
+        if (t_rev > _mp_bound(t_asc)) {
+            var t = _mp_time_text(id, buf, len);
+            if (t < t_rev) { t_rev = t; }
+        }
+        tries = tries + 1;
+    }
+    assert_eq(_mp_last, KASHI_OK, "reverse table attaches");
+    assert_lte(t_rev, _mp_bound(t_asc), "reverse order costs no more than ascending (no quadratic sort)");
+    var bad = 0;
+    var k = 0;
+    while (k < n) {
+        if (_mp_hits(id, 0x4000 + k, n - 1 - k) == 0) { bad = bad + 1; }
+        k = k + 1;
+    }
+    assert_eq(bad, 0, "all 32768 codepoints resolve to their glyph");
+    return 0;
+}
+
+fn _mp_bdf_scale(buf, n, rev) {
+    var p = _mp_bdf_head(buf, n);
+    var i = 0;
+    while (i < n) {
+        var k = i;
+        if (rev == 1) { k = n - 1 - i; }
+        p = _mp_bdf_glyph(buf, p, 0x4000 + k, _mp_gb(i));
+        i = i + 1;
+    }
+    return _mp_str(buf, p, "ENDFONT\n");
+}
+
+fn test_l1_scale_bdf() {
+    test_group("L1: 32768-glyph BDF in descending ENCODING order");
+    var n = 32768;
+    var buf = alloc(256 + n * 64);
+    var len = _mp_bdf_scale(buf, n, 0);
+    var t_asc = _mp_time_bdf(buf, len);
+    assert_gte(_mp_last, KASHI_RT_FONT_BASE, "ascending bdf loads");
+    len = _mp_bdf_scale(buf, n, 1);
+    var t_rev = _mp_time_bdf(buf, len);
+    var tries = 1;
+    while (tries < 3) {
+        if (t_rev > _mp_bound(t_asc)) {
+            var t = _mp_time_bdf(buf, len);
+            if (t < t_rev) { t_rev = t; }
+        }
+        tries = tries + 1;
+    }
+    var id = _mp_last;
+    assert_gte(id, KASHI_RT_FONT_BASE, "descending bdf loads");
+    assert_lte(t_rev, _mp_bound(t_asc), "descending order costs no more than ascending (no quadratic sort)");
+    var bad = 0;
+    var k = 0;
+    while (k < n) {
+        if (_mp_hits(id, 0x4000 + k, n - 1 - k) == 0) { bad = bad + 1; }
+        k = k + 1;
+    }
+    assert_eq(bad, 0, "all 32768 encodings resolve to their glyph");
+    return 0;
+}
+
+# ===========================================================================
+# L10: a codepoint listed on several glyphs resolves to the HIGHEST one
+# ===========================================================================
+#
+# Until 1.3.0 every duplicate was kept and the binary search returned
+# whichever one its first probe hit, so the answer moved with the size of
+# the map (audit 2026-10-30, L10; K23 / K30 / K40). The rule now is the
+# Linux console's: the highest glyph index wins, and the map holds one pair
+# per distinct codepoint.
+
+# PSF2: 'A' on glyphs 0..k-1, then f filler codepoints on the next glyphs.
+# The old winner depended on k and f; the new one is always glyph k-1.
+fn test_l10_psf2_grid() {
+    test_group("L10: PSF2 duplicate codepoint, every map size");
+    var buf = alloc(32 + 32 + 64);
+    var wrong = 0;
+    var wrong_fill = 0;
+    var wrong_count = 0;
+    var k = 1;
+    while (k <= 10) {
+        var f = 0;
+        while (f <= 7) {
+            var p = _mp_psf2(buf, k + f, 1);
+            var g = 0;
+            while (g < k + f) {
+                if (g < k) { store8(buf + p, 0x41); }
+                if (g >= k) { store8(buf + p, 0x42 + (g - k)); }
+                store8(buf + p + 1, 0xFF);
+                p = p + 2;
+                g = g + 1;
+            }
+            var id = kashi_load_psf(buf, p);
+            if (_mp_hits(id, 0x41, k - 1) == 0) { wrong = wrong + 1; }
+            var j = 0;
+            while (j < f) {
+                if (_mp_hits(id, 0x42 + j, k + j) == 0) { wrong_fill = wrong_fill + 1; }
+                j = j + 1;
+            }
+            if (_mp_ucount(id) != 1 + f) { wrong_count = wrong_count + 1; }
+            f = f + 1;
+        }
+        k = k + 1;
+    }
+    assert_eq(wrong, 0, "'A' -> its highest glyph for all 80 (k, f) shapes");
+    assert_eq(wrong_fill, 0, "fillers next to the duplicates resolve");
+    assert_eq(wrong_count, 0, "map holds one pair per distinct codepoint");
+    return 0;
+}
+
+# Many duplicates at once: 200 glyphs, glyph g lists 'A' + g mod 7 (each of
+# seven codepoints ~28 times) and one unique codepoint, plus one glyph
+# that lists the same codepoint twice.
+fn test_l10_psf2_many() {
+    test_group("L10: PSF2 table, many duplicates");
+    var n = 200;
+    var buf = alloc(32 + n + n * 8);
+    var p = _mp_psf2(buf, n, 1);
+    var g = 0;
+    while (g < n) {
+        p = _mp_utf8(buf, p, 0x2000 + (n - 1 - g));
+        p = _mp_utf8(buf, p, 0x41 + (g % 7));
+        if (g == 50) { p = _mp_utf8(buf, p, 0x41 + (g % 7)); }
+        store8(buf + p, 0xFF);
+        p = p + 1;
+        g = g + 1;
+    }
+    var id = kashi_load_psf(buf, p);
+    var bad = 0;
+    var j = 0;
+    while (j < 7) {
+        # Highest g < 200 with g mod 7 == j.
+        var top = j + 7 * ((n - 1 - j) / 7);
+        if (_mp_hits(id, 0x41 + j, top) == 0) { bad = bad + 1; }
+        j = j + 1;
+    }
+    assert_eq(bad, 0, "each of 7 repeated codepoints -> its highest glyph");
+    var ubad = 0;
+    g = 0;
+    while (g < n) {
+        if (_mp_hits(id, 0x2000 + (n - 1 - g), g) == 0) { ubad = ubad + 1; }
+        g = g + 1;
+    }
+    assert_eq(ubad, 0, "200 unique codepoints between the runs resolve");
+    assert_eq(_mp_ucount(id), 207, "207 distinct codepoints, 207 pairs");
+    assert_eq(_mp_misses(id, 0x48) + _mp_misses(id, 0x40), 2, "neighbours of the runs miss");
+    return 0;
+}
+
+# PSF1 inline table: U+263A on glyphs 1, 2 and 255 (CP437's smiley is on
+# glyph 1 in real fonts; a later glyph may repeat it).
+fn test_l10_psf1() {
+    test_group("L10: PSF1 duplicate codepoint");
+    var buf = alloc(4 + 256 + 256 * 6);
+    var p = _mp_psf1(buf, 0x02);
+    var g = 0;
+    while (g < 256) {
+        if (g == 1) { p = _mp_u16(buf, p, 0x263A); }
+        if (g == 2) { p = _mp_u16(buf, p, 0x263A); }
+        if (g == 0x41) { p = _mp_u16(buf, p, 0x41); }
+        if (g == 255) { p = _mp_u16(buf, p, 0x263A); }
+        p = _mp_u16(buf, p, 0xFFFF);
+        g = g + 1;
+    }
+    var id = kashi_load_psf(buf, p);
+    assert_eq(_mp_hits(id, 0x263A, 255), 1, "U+263A -> glyph 255, the highest");
+    assert_eq(_mp_hits(id, 0x41, 0x41), 1, "'A' -> glyph 0x41");
+    assert_eq(_mp_ucount(id), 2, "two distinct codepoints");
+    return 0;
+}
+
+# Text table: the rule is the highest glyph, not the last line — a text
+# table may list glyphs in any order.
+fn test_l10_text() {
+    test_group("L10: text table duplicate codepoint");
+    var id = _mp_reg(16);
+    var buf = alloc(512);
+    var wrong = 0;
+    var k = 0;
+    while (k <= 10) {
+        var p = _mp_str(buf, 0, "0x1 U+41\n0x2 U+41\n0x3 U+41\n");
+        var j = 0;
+        while (j < k) {
+            p = _mp_tab_line(buf, p, 4 + j, 0x61 + j, 0 - 1);
+            j = j + 1;
+        }
+        if (kashi_attach_unicode_text(id, buf, p) != KASHI_OK) { wrong = wrong + 1; }
+        if (_mp_hits(id, 0x41, 3) == 0) { wrong = wrong + 1; }
+        if (_mp_ucount(id) != 1 + k) { wrong = wrong + 1; }
+        k = k + 1;
+    }
+    assert_eq(wrong, 0, "U+41 on glyphs 1..3 -> glyph 3 with 0..10 fillers");
+    var q = _mp_str(buf, 0, "0x5 U+41\n0x9 U+42\n0x2 U+41 U+43\n0x4 U+42\n");
+    assert_eq(kashi_attach_unicode_text(id, buf, q), KASHI_OK, "attach ok");
+    assert_eq(_mp_hits(id, 0x41, 5), 1, "U+41 listed on 5 then 2 -> glyph 5");
+    assert_eq(_mp_hits(id, 0x42, 9), 1, "U+42 listed on 9 then 4 -> glyph 9");
+    assert_eq(_mp_hits(id, 0x43, 2), 1, "U+43 -> glyph 2");
+    assert_eq(_mp_ucount(id), 3, "three distinct codepoints");
+    # Only the glyphs are out of order here: the codepoints never descend,
+    # so an "already sorted?" check that compares codepoints alone skips
+    # the sort and keeps the last line's glyph.
+    var r = _mp_str(buf, 0, "0x6 U+41\n0x2 U+41\n0x9 U+42\n0x7 U+42\n");
+    assert_eq(kashi_attach_unicode_text(id, buf, r), KASHI_OK, "attach ok");
+    assert_eq(_mp_hits(id, 0x41, 6), 1, "U+41 on 6 then 2, codepoints in order -> glyph 6");
+    assert_eq(_mp_hits(id, 0x42, 9), 1, "U+42 on 9 then 7 -> glyph 9");
+    return 0;
+}
+
+# Binary attach: U+2603 on glyphs 2, 7 (twice) and 9.
+fn test_l10_binary_attach() {
+    test_group("L10: binary attach duplicate codepoint");
+    var id = _mp_reg(12);
+    var tab = alloc(64);
+    var p = 0;
+    var g = 0;
+    while (g < 12) {
+        if (g == 2) { p = _mp_u16(tab, p, 0x2603); }
+        if (g == 7) {
+            p = _mp_u16(tab, p, 0x2603);
+            p = _mp_u16(tab, p, 0x2603);
+        }
+        if (g == 9) { p = _mp_u16(tab, p, 0x2603); }
+        if (g == 10) { p = _mp_u16(tab, p, 0x2602); }
+        p = _mp_u16(tab, p, 0xFFFF);
+        g = g + 1;
+    }
+    assert_eq(kashi_attach_unicode_table(id, tab, p, KASHI_PSF_KIND_PSF1), KASHI_OK, "attach ok");
+    assert_eq(_mp_hits(id, 0x2603, 9), 1, "U+2603 -> glyph 9, the highest");
+    assert_eq(_mp_hits(id, 0x2602, 10), 1, "U+2602 -> glyph 10");
+    assert_eq(_mp_ucount(id), 2, "two distinct codepoints");
+    return 0;
+}
+
+# BDF: a repeated ENCODING (K30). Glyph indices are file order, so the
+# highest index is the last definition.
+fn test_l10_bdf() {
+    test_group("L10: BDF duplicate ENCODING");
+    var buf = alloc(1024);
+    var p = _mp_bdf_head(buf, 2);
+    p = _mp_bdf_glyph(buf, p, 65, 0xF1);
+    p = _mp_bdf_glyph(buf, p, 65, 0xA2);
+    p = _mp_str(buf, p, "ENDFONT\n");
+    var id = kashi_load_bdf(buf, p);
+    assert_eq(kashi_font_row(id, 65, 0), 0xA2, "two glyphs for 65 -> the second");
+    p = _mp_bdf_head(buf, 3);
+    p = _mp_bdf_glyph(buf, p, 65, 0xF1);
+    p = _mp_bdf_glyph(buf, p, 65, 0xA2);
+    p = _mp_bdf_glyph(buf, p, 66, 0xB3);
+    p = _mp_str(buf, p, "ENDFONT\n");
+    var id2 = kashi_load_bdf(buf, p);
+    assert_eq(kashi_font_row(id2, 65, 0), 0xA2, "plus an unrelated glyph -> still the second");
+    assert_eq(kashi_font_row(id2, 66, 0), 0xB3, "66 resolves");
+    p = _mp_bdf_head(buf, 6);
+    p = _mp_bdf_glyph(buf, p, 67, 0xC0);
+    p = _mp_bdf_glyph(buf, p, 65, 0xC1);
+    p = _mp_bdf_glyph(buf, p, 66, 0xC2);
+    p = _mp_bdf_glyph(buf, p, 65, 0xC3);
+    p = _mp_bdf_glyph(buf, p, 65, 0xC4);
+    p = _mp_bdf_glyph(buf, p, 64, 0xC5);
+    p = _mp_str(buf, p, "ENDFONT\n");
+    var id3 = kashi_load_bdf(buf, p);
+    assert_eq(kashi_font_row(id3, 65, 0), 0xC4, "three definitions of 65 -> the last");
+    assert_eq(kashi_font_row(id3, 64, 0), 0xC5, "64 resolves");
+    assert_eq(kashi_font_row(id3, 66, 0), 0xC2, "66 resolves");
+    assert_eq(kashi_font_row(id3, 67, 0), 0xC0, "67 resolves");
+    assert_eq(_mp_ucount(id3), 4, "four distinct encodings");
+    return 0;
+}
+
+# ===========================================================================
+# L7: a table that maps no single codepoint gets the EMPTY map
+# ===========================================================================
+#
+# _KASHI_RT_UMAP == 0 means "no table": codepoints are raw glyph indices.
+# Until 1.3.0 a table that yielded no single codepoint also left it 0, so
+# a font that DID carry a table was identity-addressed and U+00E7 'ç' drew
+# glyph 0xE7 (audit 2026-10-30, L7; K14 / K18 / K19). Every glyph here has
+# a non-zero row, so identity addressing would show up as a hit.
+
+fn test_l7_psf_tables() {
+    test_group("L7: PSF table with no single codepoint");
+    var buf = alloc(32 + 256 + 512);
+    # Only a ligature (f, i) on glyph 0.
+    var p = _mp_psf2(buf, 256, 1);
+    store8(buf + p, 0xFE);
+    store8(buf + p + 1, 0x66);
+    store8(buf + p + 2, 0x69);
+    p = p + 3;
+    var g = 0;
+    while (g < 256) {
+        store8(buf + p, 0xFF);
+        p = p + 1;
+        g = g + 1;
+    }
+    var id = kashi_load_psf(buf, p);
+    assert_gte(id, KASHI_RT_FONT_BASE, "ligature-only psf2 loads");
+    assert_eq(_mp_count_hits(id, 0, 0x1FF), 0, "every codepoint misses (no identity fallback)");
+    assert_eq(_mp_misses(id, 0xE7), 1, "U+00E7 does not draw glyph 0xE7");
+    assert_eq(_mp_seq(id, 2, 0x66, 0x69, 0, 0), 0, "the ligature still resolves");
+    assert_neq(load64(_kashi_rt_get(id) + _KASHI_RT_UMAP), 0, "map present (empty), not 'no table'");
+    assert_eq(_mp_ucount(id), 0, "map is empty");
+    assert_eq(kashi_rt_glyph_row(id, 0xE7, 0), _mp_gb(0xE7), "raw index access unaffected");
+
+    # Only terminators.
+    p = _mp_psf2(buf, 256, 1);
+    g = 0;
+    while (g < 256) {
+        store8(buf + p, 0xFF);
+        p = p + 1;
+        g = g + 1;
+    }
+    var id2 = kashi_load_psf(buf, p);
+    assert_gte(id2, KASHI_RT_FONT_BASE, "terminator-only psf2 loads");
+    assert_eq(_mp_count_hits(id2, 0, 0x1FF), 0, "terminator-only psf2: every codepoint misses");
+
+    # A malformed first token (a stray continuation byte).
+    p = _mp_psf2(buf, 256, 1);
+    store8(buf + p, 0x80);
+    var id3 = kashi_load_psf(buf, p + 1);
+    assert_gte(id3, KASHI_RT_FONT_BASE, "malformed-table psf2 loads");
+    assert_eq(_mp_count_hits(id3, 0, 0x1FF), 0, "malformed table: every codepoint misses");
+
+    # Singles only for glyphs past the count: 4 glyphs, 'A' listed on a
+    # fifth entry.
+    p = _mp_psf2(buf, 4, 1);
+    store8(buf + p, 0xFF);
+    store8(buf + p + 1, 0xFF);
+    store8(buf + p + 2, 0xFF);
+    store8(buf + p + 3, 0xFF);
+    store8(buf + p + 4, 0x41);
+    store8(buf + p + 5, 0xFF);
+    var id4 = kashi_load_psf(buf, p + 6);
+    assert_gte(id4, KASHI_RT_FONT_BASE, "out-of-range-only psf2 loads");
+    assert_eq(_mp_count_hits(id4, 0, 0x7F), 0, "out-of-range-only table: every codepoint misses");
+
+    # PSF1 with HASTAB and only 0xFFFF terminators.
+    var b1 = alloc(4 + 256 + 512);
+    var q = _mp_psf1(b1, 0x02);
+    g = 0;
+    while (g < 256) {
+        q = _mp_u16(b1, q, 0xFFFF);
+        g = g + 1;
+    }
+    var id5 = kashi_load_psf(b1, q);
+    assert_gte(id5, KASHI_RT_FONT_BASE, "terminator-only psf1 loads");
+    assert_eq(_mp_count_hits(id5, 0, 0x1FF), 0, "terminator-only psf1: every codepoint misses");
+    return 0;
+}
+
+# A binary attach that yields only ligatures succeeds and REPLACES the map
+# with the empty one: nothing that was mapped before, and nothing in the
+# index range, resolves afterwards (K18 / K19 triggers).
+fn test_l7_attach_ligature_only() {
+    test_group("L7: attaching a ligature-only table");
+    var id = _mp_reg(256);
+    assert_eq(kashi_attach_unicode_text(id, "0x5 U+41\n", 9), KASHI_OK, "text map attached");
+    assert_eq(_mp_hits(id, 0x41, 5), 1, "U+41 -> glyph 5 before");
+    var tab[8];
+    store8(&tab + 0, 0xFE);
+    store8(&tab + 1, 0x66);
+    store8(&tab + 2, 0x69);
+    store8(&tab + 3, 0xFF);
+    assert_eq(kashi_attach_unicode_table(id, &tab, 4, KASHI_PSF_KIND_PSF2), KASHI_OK,
+      "ligature-only psf2 attach ok");
+    assert_eq(_mp_misses(id, 0x41), 1, "U+41 unmapped after");
+    assert_eq(_mp_misses(id, 0x42), 1, "U+42 still unmapped (not glyph 0x42)");
+    assert_eq(_mp_count_hits(id, 0, 0xFF), 0, "no codepoint in the index range resolves");
+    assert_eq(_mp_seq(id, 2, 0x66, 0x69, 0, 0), 0, "ligature f,i -> glyph 0");
+
+    # PSF1 kind on a table-less font: identity before, empty map after.
+    var id2 = _mp_reg(256);
+    assert_eq(_mp_hits(id2, 0xFF, 0xFF), 1, "table-less font: identity before");
+    var t1[8];
+    _mp_u16(&t1, 0, 0xFFFE);
+    _mp_u16(&t1, 2, 0x41);
+    _mp_u16(&t1, 4, 0x301);
+    _mp_u16(&t1, 6, 0xFFFF);
+    assert_eq(kashi_attach_unicode_table(id2, &t1, 8, KASHI_PSF_KIND_PSF1), KASHI_OK,
+      "ligature-only psf1 attach ok");
+    assert_eq(_mp_count_hits(id2, 0, 0x1FF), 0, "every codepoint misses after");
+    assert_eq(_mp_seq(id2, 2, 0x41, 0x301, 0, 0), 0, "ligature A + U+0301 -> glyph 0");
+    return 0;
+}
+
+# ===========================================================================
+# L2: sorted ligatures, binary search
+# ===========================================================================
+#
+# Until 1.3.0 ligatures were kept in table order and scanned linearly, and
+# a repeated ligature resolved to its FIRST glyph (audit 2026-10-30, L2).
+# Now they are sorted by codepoints then length, binary-searched, and a
+# repeated one resolves to its highest glyph like a codepoint does.
+
+fn test_l2_sequences() {
+    test_group("L2: ligatures with shared prefixes and lengths");
+    var buf = alloc(32 + 16 + 256);
+    var p = _mp_psf2(buf, 16, 1);
+    # g0: single 'Z'
+    p = _mp_str(buf, p, "Z");
+    store8(buf + p, 0xFF);
+    p = p + 1;
+    # g1: ffi   g2: ff   g3: fi   g4: ffl
+    store8(buf + p, 0xFE);
+    p = _mp_str(buf, p + 1, "ffi");
+    store8(buf + p, 0xFF);
+    store8(buf + p + 1, 0xFE);
+    p = _mp_str(buf, p + 2, "ff");
+    store8(buf + p, 0xFF);
+    store8(buf + p + 1, 0xFE);
+    p = _mp_str(buf, p + 2, "fi");
+    store8(buf + p, 0xFF);
+    store8(buf + p + 1, 0xFE);
+    p = _mp_str(buf, p + 2, "ffl");
+    store8(buf + p, 0xFF);
+    p = p + 1;
+    # g5: single 'Y' plus two ligatures, ae and oe
+    p = _mp_str(buf, p, "Y");
+    store8(buf + p, 0xFE);
+    p = _mp_str(buf, p + 1, "ae");
+    store8(buf + p, 0xFE);
+    p = _mp_str(buf, p + 1, "oe");
+    store8(buf + p, 0xFF);
+    p = p + 1;
+    # g6: U+00E9 U+0301 (multi-byte)
+    store8(buf + p, 0xFE);
+    p = _mp_utf8(buf, p + 1, 0xE9);
+    p = _mp_utf8(buf, p, 0x301);
+    store8(buf + p, 0xFF);
+    p = p + 1;
+    # g7: ff again
+    store8(buf + p, 0xFE);
+    p = _mp_str(buf, p + 1, "ff");
+    store8(buf + p, 0xFF);
+    p = p + 1;
+    # g8: zzzz
+    store8(buf + p, 0xFE);
+    p = _mp_str(buf, p + 1, "zzzz");
+    store8(buf + p, 0xFF);
+    p = p + 1;
+    # g9: U+10FFFF U+0000 (the extremes of the codepoint range)
+    store8(buf + p, 0xFE);
+    p = _mp_utf8(buf, p + 1, 0x10FFFF);
+    store8(buf + p, 0);
+    store8(buf + p + 1, 0xFF);
+    p = p + 2;
+    # g10: a one-codepoint ligature, 'a'
+    store8(buf + p, 0xFE);
+    store8(buf + p + 1, 0x61);
+    store8(buf + p + 2, 0xFF);
+    p = p + 3;
+    # g11: ff a third time
+    store8(buf + p, 0xFE);
+    p = _mp_str(buf, p + 1, "ff");
+    store8(buf + p, 0xFF);
+    p = p + 1;
+    # g12..g15: empty
+    var g = 12;
+    while (g < 16) {
+        store8(buf + p, 0xFF);
+        p = p + 1;
+        g = g + 1;
+    }
+    var id = kashi_load_psf(buf, p);
+    assert_gte(id, KASHI_RT_FONT_BASE, "ligature font loads");
+    assert_eq(_mp_seqcount(id), 10, "10 distinct ligatures kept");
+    # Hits.
+    assert_eq(_mp_seq(id, 3, 0x66, 0x66, 0x69, 0), 1, "ffi -> 1");
+    assert_eq(_mp_seq(id, 2, 0x66, 0x66, 0, 0), 11, "ff on glyphs 2, 7, 11 -> 11 (highest)");
+    assert_eq(_mp_seq(id, 2, 0x66, 0x69, 0, 0), 3, "fi -> 3");
+    assert_eq(_mp_seq(id, 3, 0x66, 0x66, 0x6C, 0), 4, "ffl -> 4");
+    assert_eq(_mp_seq(id, 2, 0x61, 0x65, 0, 0), 5, "ae -> 5");
+    assert_eq(_mp_seq(id, 2, 0x6F, 0x65, 0, 0), 5, "oe -> 5 (second ligature on a glyph)");
+    assert_eq(_mp_seq(id, 2, 0xE9, 0x301, 0, 0), 6, "U+00E9 U+0301 -> 6");
+    assert_eq(_mp_seq(id, 4, 0x7A, 0x7A, 0x7A, 0x7A), 8, "zzzz -> 8");
+    assert_eq(_mp_seq(id, 2, 0x10FFFF, 0, 0, 0), 9, "U+10FFFF U+0000 -> 9");
+    assert_eq(_mp_seq(id, 1, 0x61, 0, 0, 0), 10, "one-codepoint ligature 'a' -> 10");
+    # Misses: prefixes, extensions, near neighbours, wrong lengths.
+    var miss = 0;
+    if (_mp_seq(id, 1, 0x66, 0, 0, 0) == 0 - 1) { miss = miss + 1; }
+    if (_mp_seq(id, 3, 0x66, 0x66, 0x78, 0) == 0 - 1) { miss = miss + 1; }
+    if (_mp_seq(id, 4, 0x66, 0x66, 0x69, 0x6C) == 0 - 1) { miss = miss + 1; }
+    if (_mp_seq(id, 2, 0x66, 0x6A, 0, 0) == 0 - 1) { miss = miss + 1; }
+    if (_mp_seq(id, 2, 0x69, 0x66, 0, 0) == 0 - 1) { miss = miss + 1; }
+    if (_mp_seq(id, 3, 0x7A, 0x7A, 0x7A, 0) == 0 - 1) { miss = miss + 1; }
+    if (_mp_seq(id, 1, 0xE9, 0, 0, 0) == 0 - 1) { miss = miss + 1; }
+    if (_mp_seq(id, 1, 0x10FFFF, 0, 0, 0) == 0 - 1) { miss = miss + 1; }
+    if (_mp_seq(id, 1, 0, 0, 0, 0) == 0 - 1) { miss = miss + 1; }
+    if (_mp_seq(id, 3, 0x10FFFF, 0, 0, 0) == 0 - 1) { miss = miss + 1; }
+    if (_mp_seq(id, 1, 0x62, 0, 0, 0) == 0 - 1) { miss = miss + 1; }
+    if (_mp_seq(id, 2, 0x61, 0x66, 0, 0) == 0 - 1) { miss = miss + 1; }
+    assert_eq(miss, 12, "12 near-miss ligatures -> -1");
+    store64(&_mp_q + 32, 0x7A);
+    assert_eq(_mp_seq(id, 4, 0x7A, 0x7A, 0x7A, 0x7A), 8, "zzzz still hits with a 5th cp parked");
+    assert_eq(kashi_font_seq_glyph(id, &_mp_q, 5), 0 - 1, "zzzzz (too long) -> -1");
+    # Singles are unaffected by the ligatures around them.
+    assert_eq(_mp_hits(id, 0x5A, 0), 1, "single 'Z' -> 0");
+    assert_eq(_mp_hits(id, 0x59, 5), 1, "single 'Y' -> 5");
+    assert_eq(_mp_misses(id, 0x66) + _mp_misses(id, 0x61), 2, "'f' and 'a' are not singles");
+    assert_eq(_mp_ucount(id), 2, "two singles");
+    return 0;
+}
+
+# 4096 ligatures: glyph g's ligature spells n-1-g in hex digits, so they
+# arrive in descending order, share prefixes ("1", "1F", "1FF") and have
+# lengths 1..3. Every one must hit and every one-digit extension or
+# non-digit tail must miss.
+fn _mp_digits(v, out) {
+    var n = 1;
+    var x = v >> 4;
+    while (x > 0) {
+        n = n + 1;
+        x = x >> 4;
+    }
+    var i = n;
+    x = v;
+    while (i > 0) {
+        i = i - 1;
+        store64(out + i * 8, _mp_hexdigit(x & 15));
+        x = x >> 4;
+    }
+    return n;
+}
+
+fn test_l2_scale() {
+    test_group("L2: 4096 ligatures in descending order");
+    var n = 4096;
+    var buf = alloc(32 + n + n * 6);
+    var p = _mp_psf2(buf, n, 1);
+    var d[64];
+    var g = 0;
+    while (g < n) {
+        var len = _mp_digits(n - 1 - g, &d);
+        store8(buf + p, 0xFE);
+        p = p + 1;
+        var i = 0;
+        while (i < len) {
+            store8(buf + p, load64(&d + i * 8));
+            p = p + 1;
+            i = i + 1;
+        }
+        store8(buf + p, 0xFF);
+        p = p + 1;
+        g = g + 1;
+    }
+    var id = kashi_load_psf(buf, p);
+    assert_gte(id, KASHI_RT_FONT_BASE, "4096-ligature font loads");
+    assert_eq(_mp_seqcount(id), n, "4096 ligatures kept");
+    var bad = 0;
+    var miss_bad = 0;
+    var v = 0;
+    while (v < n) {
+        var l = _mp_digits(v, &d);
+        if (kashi_font_seq_glyph(id, &d, l) != n - 1 - v) { bad = bad + 1; }
+        # A trailing ':' (one past '9') is never a hex digit.
+        store64(&d + l * 8, 0x3A);
+        if (kashi_font_seq_glyph(id, &d, l + 1) != 0 - 1) { miss_bad = miss_bad + 1; }
+        # A leading zero spells no ligature but "0" itself.
+        if (v > 0) {
+            var k = l;
+            while (k > 0) {
+                store64(&d + k * 8, load64(&d + (k - 1) * 8));
+                k = k - 1;
+            }
+            store64(&d, 0x30);
+            if (kashi_font_seq_glyph(id, &d, l + 1) != 0 - 1) { miss_bad = miss_bad + 1; }
+        }
+        v = v + 1;
+    }
+    assert_eq(bad, 0, "every ligature resolves to its glyph");
+    assert_eq(miss_bad, 0, "8191 near-miss ligatures -> -1");
+    return 0;
+}
+
+# Lookup cost (audit 2026-10-30, L2: ~0.8 ms per call on a hostile font).
+# 16384 two-codepoint ligatures; 16384 lookups that miss. A linear scan
+# visits every ligature on every miss (~2.7e8 visits); a binary search ~14.
+fn test_l2_lookup_cost() {
+    test_group("L2: ligature lookup cost");
+    var n = 16384;
+    var buf = alloc(32 + n + n * 6);
+    var p = _mp_psf2(buf, n, 1);
+    var g = 0;
+    while (g < n) {
+        store8(buf + p, 0xFE);
+        p = _mp_utf8(buf, p + 1, 0x4000 + (n - 1 - g));
+        store8(buf + p, 0x41);
+        store8(buf + p + 1, 0xFF);
+        p = p + 2;
+        g = g + 1;
+    }
+    var t_load = _mp_time_psf(buf, p);
+    var id = _mp_last;
+    assert_gte(id, KASHI_RT_FONT_BASE, "16384-ligature font loads");
+    var t_look = _mp_time_misses(id, n);
+    var tries = 1;
+    while (tries < 3) {
+        if (t_look > _mp_bound(t_load)) {
+            var t = _mp_time_misses(id, n);
+            if (t < t_look) { t_look = t; }
+        }
+        tries = tries + 1;
+    }
+    assert_eq(_mp_last, 0, "16384 lookups miss");
+    assert_lte(t_look, _mp_bound(t_load), "16384 misses cost no more than the load (no linear scan)");
+    assert_eq(_mp_seq(id, 2, 0x4000 + 123, 0x41, 0, 0), n - 1 - 123, "a hit resolves");
+    return 0;
+}
+
+# ===========================================================================
+# L8 / F9: a failed attach leaves the record exactly as it was
+# ===========================================================================
+#
+# The 0.8.0 F9 test used a font without ligatures, so dropping them on a
+# failed attach went unnoticed (audit 2026-10-30, K57). Since 1.3.0 the new
+# maps are built aside and stored only on success (L8): the record's five
+# map fields must be bit-identical after any failed attach.
+
+# PSF2, 8 glyphs: g0 'A', g1 ligature AB, g2 ligature CD, g3 'E' + ligature
+# EF, g4 U+00E9. Codepoints out of order on purpose.
+fn _mp_lig_font() {
+    var buf = alloc(32 + 8 + 64);
+    var p = _mp_psf2(buf, 8, 1);
+    p = _mp_str(buf, p, "A");
+    store8(buf + p, 0xFF);
+    store8(buf + p + 1, 0xFE);
+    p = _mp_str(buf, p + 2, "AB");
+    store8(buf + p, 0xFF);
+    store8(buf + p + 1, 0xFE);
+    p = _mp_str(buf, p + 2, "CD");
+    store8(buf + p, 0xFF);
+    p = _mp_str(buf, p + 1, "E");
+    store8(buf + p, 0xFE);
+    p = _mp_str(buf, p + 1, "EF");
+    store8(buf + p, 0xFF);
+    p = _mp_utf8(buf, p + 1, 0xE9);
+    store8(buf + p, 0xFF);
+    store8(buf + p + 1, 0xFF);
+    store8(buf + p + 2, 0xFF);
+    store8(buf + p + 3, 0xFF);
+    return kashi_load_psf(buf, p + 4);
+}
+
+# Number of the font's original singles and ligatures that no longer
+# resolve as built by _mp_lig_font (0 = intact).
+fn _mp_lig_font_broken(id) {
+    var bad = 0;
+    bad = bad + 1 - _mp_hits(id, 0x41, 0);
+    bad = bad + 1 - _mp_hits(id, 0x45, 3);
+    bad = bad + 1 - _mp_hits(id, 0xE9, 4);
+    bad = bad + 1 - _mp_misses(id, 0x42);
+    bad = bad + 1 - _mp_misses(id, 0x03);
+    if (_mp_seq(id, 2, 0x41, 0x42, 0, 0) != 1) { bad = bad + 1; }
+    if (_mp_seq(id, 2, 0x43, 0x44, 0, 0) != 2) { bad = bad + 1; }
+    if (_mp_seq(id, 2, 0x45, 0x46, 0, 0) != 3) { bad = bad + 1; }
+    return bad;
+}
+
+fn test_l8_failed_attach() {
+    test_group("L8: failed attach on a font with ligatures");
+    var id = _mp_lig_font();
+    assert_gte(id, KASHI_RT_FONT_BASE, "ligature font loads");
+    assert_eq(_mp_lig_font_broken(id), 0, "map and ligatures resolve before");
+    var snap[40];
+    _mp_snap(id, &snap);
+    var t[32];
+    var bad_rc = 0;
+    var changed = 0;
+    var broken = 0;
+    # 1: PSF1 table with one empty entry.
+    _mp_u16(&t, 0, 0xFFFF);
+    if (kashi_attach_unicode_table(id, &t, 2, KASHI_PSF_KIND_PSF1) != 0 - KASHI_EFORMAT) { bad_rc = bad_rc + 1; }
+    changed = changed + 1 - _mp_same(id, &snap);
+    broken = broken + _mp_lig_font_broken(id);
+    # 2: PSF2 table that starts with a stray continuation byte.
+    store8(&t, 0x80);
+    if (kashi_attach_unicode_table(id, &t, 1, KASHI_PSF_KIND_PSF2) != 0 - KASHI_EFORMAT) { bad_rc = bad_rc + 1; }
+    changed = changed + 1 - _mp_same(id, &snap);
+    broken = broken + _mp_lig_font_broken(id);
+    # 3: an empty table.
+    if (kashi_attach_unicode_table(id, &t, 0, KASHI_PSF_KIND_PSF2) != 0 - KASHI_EFORMAT) { bad_rc = bad_rc + 1; }
+    changed = changed + 1 - _mp_same(id, &snap);
+    broken = broken + _mp_lig_font_broken(id);
+    # 4: singles only for glyphs past the font's 8.
+    var i = 0;
+    while (i < 8) {
+        store8(&t + i, 0xFF);
+        i = i + 1;
+    }
+    store8(&t + 8, 0x5A);
+    store8(&t + 9, 0xFF);
+    if (kashi_attach_unicode_table(id, &t, 10, KASHI_PSF_KIND_PSF2) != 0 - KASHI_EFORMAT) { bad_rc = bad_rc + 1; }
+    changed = changed + 1 - _mp_same(id, &snap);
+    broken = broken + _mp_lig_font_broken(id);
+    # 5: PSF1 separator with no codepoints after it.
+    _mp_u16(&t, 0, 0xFFFE);
+    _mp_u16(&t, 2, 0xFFFF);
+    if (kashi_attach_unicode_table(id, &t, 4, KASHI_PSF_KIND_PSF1) != 0 - KASHI_EFORMAT) { bad_rc = bad_rc + 1; }
+    changed = changed + 1 - _mp_same(id, &snap);
+    broken = broken + _mp_lig_font_broken(id);
+    # 6: a text table with no valid pair.
+    if (kashi_attach_unicode_text(id, "# none\n", 7) != 0 - KASHI_EFORMAT) { bad_rc = bad_rc + 1; }
+    changed = changed + 1 - _mp_same(id, &snap);
+    broken = broken + _mp_lig_font_broken(id);
+    assert_eq(bad_rc, 0, "six failing attaches -> EFORMAT");
+    assert_eq(changed, 0, "record's map fields unchanged after each");
+    assert_eq(broken, 0, "singles and ligatures all still resolve");
+
+    # A successful attach replaces BOTH structures: a table with singles
+    # only drops the old ligatures, a text table carries none.
+    store8(&t, 0x51);
+    store8(&t + 1, 0xFF);
+    assert_eq(kashi_attach_unicode_table(id, &t, 2, KASHI_PSF_KIND_PSF2), KASHI_OK, "singles-only attach ok");
+    assert_eq(_mp_hits(id, 0x51, 0), 1, "new single resolves");
+    assert_eq(_mp_misses(id, 0x41) + _mp_misses(id, 0x45), 2, "old singles gone");
+    assert_eq(_mp_seq(id, 2, 0x41, 0x42, 0, 0), 0 - 1, "old ligatures gone");
+    var id2 = _mp_lig_font();
+    assert_eq(kashi_attach_unicode_text(id2, "0x7 U+51\n", 9), KASHI_OK, "text attach ok");
+    assert_eq(_mp_seq(id2, 2, 0x43, 0x44, 0, 0), 0 - 1, "text attach drops the ligatures");
+    assert_eq(_mp_hits(id2, 0x51, 7), 1, "text map in place");
+    return 0;
+}
+
+# ===========================================================================
+# L6 (+ L8): an allocation failure while building fails the call
+# ===========================================================================
+#
+# Until 1.3.0 kashi_load_psf registered the font first and built its maps
+# after, ignoring a failed allocation: the load reported success for a font
+# with no map (identity-addressed) or no ligatures. Binary attach ignored
+# it too, and reported success with whatever half got built (audit
+# 2026-10-30, L6 / L8; K16). Now nothing is registered or replaced.
+
+# glyph 0 of a 2-glyph PSF2 lists `nsingles` codepoints (0x100..); glyph 1
+# lists one ligature of `seqlen` codepoints (0x4000..). Returns the length.
+fn _mp_oom_psf(buf, nsingles, seqlen) {
+    var p = _mp_psf2(buf, 2, 1);
+    var i = 0;
+    while (i < nsingles) {
+        p = _mp_utf8(buf, p, 0x100 + i);
+        i = i + 1;
+    }
+    store8(buf + p, 0xFF);
+    store8(buf + p + 1, 0xFE);
+    p = p + 2;
+    i = 0;
+    while (i < seqlen) {
+        p = _mp_utf8(buf, p, 0x4000 + i);
+        i = i + 1;
+    }
+    store8(buf + p, 0xFF);
+    return p + 1;
+}
+
+fn test_l6_load_oom() {
+    test_group("L6: allocation failure while loading");
+    var buf = alloc(64 + 4096 * 3 + 4096 * 3);
+    var saved = ALLOC_MAX;
+    # Map refused: 4096 singles need 64 KiB, the cap is 16 KiB.
+    var len = _mp_oom_psf(buf, 4096, 2);
+    var before = kashi_font_total();
+    ALLOC_MAX = 16384;
+    var rc = kashi_load_psf(buf, len);
+    var after = kashi_font_total();
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EFORMAT, "map allocation refused -> EFORMAT");
+    assert_eq(after, before, "no half-built font registered");
+    var ok = kashi_load_psf(buf, len);
+    assert_gte(ok, KASHI_RT_FONT_BASE, "same buffer loads without the cap");
+    assert_eq(_mp_hits(ok, 0x100 + 4095, 0) + _mp_hits(ok, 0x100, 0), 2, "and maps");
+
+    # Ligature store refused: one 4096-codepoint ligature needs 32 KiB.
+    len = _mp_oom_psf(buf, 1, 4096);
+    before = kashi_font_total();
+    ALLOC_MAX = 16384;
+    rc = kashi_load_psf(buf, len);
+    after = kashi_font_total();
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EFORMAT, "ligature allocation refused -> EFORMAT");
+    assert_eq(after, before, "no font without its ligatures registered");
+    ok = kashi_load_psf(buf, len);
+    assert_gte(ok, KASHI_RT_FONT_BASE, "same buffer loads without the cap");
+    assert_eq(_mp_seqcount(ok), 1, "with its ligature");
+
+    # Glyph store refused: 32768 glyphs x 1 byte against an 8 KiB cap.
+    var big = alloc(32 + 32768 + 2);
+    var bl = _mp_psf2(big, 32768, 1);
+    store8(big + bl, 0x41);
+    store8(big + bl + 1, 0xFF);
+    before = kashi_font_total();
+    ALLOC_MAX = 8192;
+    rc = kashi_load_psf(big, bl + 2);
+    after = kashi_font_total();
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EFORMAT, "glyph store refused -> EFORMAT");
+    assert_eq(after, before, "nothing registered");
+    return 0;
+}
+
+fn test_l6_attach_oom() {
+    test_group("L6 / L8: allocation failure while attaching");
+    var id = _mp_lig_font();
+    var snap[40];
+    _mp_snap(id, &snap);
+    var buf = alloc(64 + 4096 * 3 + 4096 * 3);
+    var saved = ALLOC_MAX;
+    # _mp_oom_psf's table starts at byte 34 (32-byte header, 2 glyph rows);
+    # attached raw, its glyphs 0 and 1 land on this font's glyphs 0 and 1.
+    # The new map is refused but the new ligature fits: before 1.3.0 the
+    # attach succeeded with no map (identity addressing).
+    var len = _mp_oom_psf(buf, 4096, 2);
+    ALLOC_MAX = 16384;
+    var rc = kashi_attach_unicode_table(id, buf + 34, len - 34, KASHI_PSF_KIND_PSF2);
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EFORMAT, "map refused -> EFORMAT");
+    assert_eq(_mp_same(id, &snap), 1, "record untouched");
+    assert_eq(_mp_lig_font_broken(id), 0, "old map and ligatures resolve");
+    # The new map fits but the new ligature store is refused: before 1.3.0
+    # the attach succeeded and the old ligatures were gone.
+    len = _mp_oom_psf(buf, 1, 4096);
+    ALLOC_MAX = 16384;
+    rc = kashi_attach_unicode_table(id, buf + 34, len - 34, KASHI_PSF_KIND_PSF2);
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EFORMAT, "ligature store refused -> EFORMAT");
+    assert_eq(_mp_same(id, &snap), 1, "record untouched");
+    assert_eq(_mp_lig_font_broken(id), 0, "old map and ligatures resolve");
+    # Text attach: 2048 lines need a 32 KiB pair array.
+    var tab = alloc(2048 * 20);
+    var p = 0;
+    var i = 0;
+    while (i < 2048) {
+        p = _mp_tab_line(tab, p, i % 8, 0x100 + i, 0 - 1);
+        i = i + 1;
+    }
+    ALLOC_MAX = 16384;
+    rc = kashi_attach_unicode_text(id, tab, p);
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EFORMAT, "text pairs refused -> EFORMAT");
+    assert_eq(_mp_same(id, &snap), 1, "record untouched");
+    # Without the cap both tables attach.
+    assert_eq(kashi_attach_unicode_table(id, buf + 34, len - 34, KASHI_PSF_KIND_PSF2), KASHI_OK,
+      "uncapped attach ok");
+    assert_eq(_mp_seqcount(id), 1, "new ligature in place");
+    return 0;
+}
+
+# L6: the ligature RECORDS refused while the codepoint store fits: 1,000
+# one-codepoint ligatures need 24,000 B of records but only 8,000 B of
+# codepoints, against a 16 KiB cap. A builder that ignored the refused
+# records would write them through a null pointer (audit 2026-10-30, L6).
+fn test_l6_ligature_records_oom() {
+    test_group("L6: ligature records refused");
+    var buf = alloc(32 + 1 + 1 + 1000 * 2 + 1);
+    var p = _mp_psf2(buf, 1, 1);
+    store8(buf + p, 0x41);
+    p = p + 1;
+    var i = 0;
+    while (i < 1000) {
+        store8(buf + p, 0xFE);
+        store8(buf + p + 1, 0x42);
+        p = p + 2;
+        i = i + 1;
+    }
+    store8(buf + p, 0xFF);
+    p = p + 1;
+    var saved = ALLOC_MAX;
+    var before = kashi_font_total();
+    ALLOC_MAX = 16384;
+    var rc = kashi_load_psf(buf, p);
+    var after = kashi_font_total();
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EFORMAT, "ligature records refused -> EFORMAT");
+    assert_eq(after, before, "no font registered without its ligatures");
+    var ok = kashi_load_psf(buf, p);
+    assert_gte(ok, KASHI_RT_FONT_BASE, "same buffer loads without the cap");
+    assert_eq(_mp_seqcount(ok), 1, "its 1,000 identical ligatures collapse to one");
+    return 0;
+}
+
+# L6: the BDF loader's codepoint map refused while its glyph store fits:
+# 1,000 8x1 glyphs need 1,000 B of store and 16,000 B of map, against an
+# 8 KiB cap (audit 2026-10-30, L6).
+fn test_l6_bdf_map_oom() {
+    test_group("L6: BDF map refused");
+    var buf = alloc(80 + 1000 * 64 + 16);
+    var p = _mp_bdf_head(buf, 1000);
+    var g = 0;
+    while (g < 1000) {
+        p = _mp_bdf_glyph(buf, p, 0x100 + g, g & 0xFF);
+        g = g + 1;
+    }
+    p = _mp_str(buf, p, "ENDFONT\n");
+    var saved = ALLOC_MAX;
+    var before = kashi_font_total();
+    ALLOC_MAX = 8192;
+    var rc = kashi_load_bdf(buf, p);
+    var after = kashi_font_total();
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EFORMAT, "BDF map refused -> EFORMAT, no crash");
+    assert_eq(after, before, "nothing registered");
+    var ok = kashi_load_bdf(buf, p);
+    assert_gte(ok, KASHI_RT_FONT_BASE, "same buffer loads without the cap");
+    assert_eq(_mp_hits(ok, 0x100 + 999, 999), 1, "and maps its last glyph");
+    return 0;
+}
+
+# L6: the 88-byte record refused while the 1-byte glyph store fits. The
+# registry exists by now, so only the record allocation is in play
+# (audit 2026-10-30, L6).
+fn test_l6_record_oom() {
+    test_group("L6: font record refused");
+    var g[8];
+    store8(&g, 0x5A);
+    var saved = ALLOC_MAX;
+    var before = kashi_font_total();
+    ALLOC_MAX = 64;
+    var rc = kashi_register_font(8, 1, &g, 1);
+    var after = kashi_font_total();
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EINVAL, "record refused -> EINVAL, no crash");
+    assert_eq(after, before, "nothing registered");
+    return 0;
+}
+
+# L6: the registry is full (its length a power of two from 16 on, where the
+# next push must double the array) and the doubled array is refused. Until
+# 1.3.0's switch to vec_push_a, vec_push aborted the whole process here
+# ("vec: alloc failed"); now the registration fails and the next one, with
+# memory back, succeeds (audit 2026-10-30, L6).
+fn test_l6_registry_grow_oom() {
+    test_group("L6: registry growth refused");
+    var g[8];
+    store8(&g, 0x5A);
+    var len = kashi_font_total() - KASHI_RT_FONT_BASE;
+    var full = 0;
+    while (full == 0) {
+        var pow2 = 0;
+        if (len >= 16) {
+            if ((len & (len - 1)) == 0) { pow2 = 1; }
+        }
+        if (pow2 == 1) { full = 1; }
+        if (pow2 == 0) {
+            kashi_register_font(8, 1, &g, 1);
+            len = len + 1;
+        }
+    }
+    var saved = ALLOC_MAX;
+    var before = kashi_font_total();
+    ALLOC_MAX = 200;
+    var rc = kashi_register_font(8, 1, &g, 1);
+    var after = kashi_font_total();
+    ALLOC_MAX = saved;
+    assert_eq(rc, 0 - KASHI_EINVAL, "growth refused -> EINVAL, process alive");
+    assert_eq(after, before, "nothing registered");
+    var ok = kashi_register_font(8, 1, &g, 1);
+    assert_eq(ok, before, "the next registration grows the registry");
+    assert_eq(kashi_rt_font_count(ok), 1, "and the font is there");
+    return 0;
+}
+
+# L9: a text-table U+ value must be a Unicode scalar: U+10FFFF and the
+# values either side of the surrogate block are accepted, U+110000 and both
+# surrogate ends are refused — as the binary tables' decoder refuses them.
+# A refused table leaves the font's map as it was (audit 2026-10-30, L9).
+fn _mp_text_rc(id, s) {
+    return kashi_attach_unicode_text(id, s, strlen(s));
+}
+
+fn test_l9_text_range() {
+    test_group("L9: text-table codepoint range");
+    var id = _mp_reg(8);
+    assert_eq(_mp_text_rc(id, "0x1 U+10FFFF\n"), KASHI_OK, "U+10FFFF accepted");
+    assert_eq(_mp_hits(id, 0x10FFFF, 1), 1, "and mapped");
+    assert_eq(_mp_text_rc(id, "0x2 U+110000\n"), 0 - KASHI_EFORMAT, "U+110000 refused");
+    assert_eq(_mp_hits(id, 0x10FFFF, 1), 1, "previous map kept");
+    assert_eq(_mp_text_rc(id, "0x3 U+D7FF\n"), KASHI_OK, "U+D7FF accepted");
+    assert_eq(_mp_text_rc(id, "0x4 U+D800\n"), 0 - KASHI_EFORMAT, "U+D800 refused");
+    assert_eq(_mp_text_rc(id, "0x5 U+DFFF\n"), 0 - KASHI_EFORMAT, "U+DFFF refused");
+    assert_eq(_mp_hits(id, 0xD7FF, 3), 1, "map from the last good table kept");
+    assert_eq(_mp_text_rc(id, "0x6 U+E000\n"), KASHI_OK, "U+E000 accepted");
+    assert_eq(_mp_hits(id, 0xE000, 6), 1, "and mapped");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    kashi_font_init();
+
+    # These two need an empty registry: keep them first.
+    test_registry_before_first_font();
+    test_l6_registry_oom();
+
+    test_l6_load_oom();
+    test_l6_attach_oom();
+    test_l6_ligature_records_oom();
+    test_l6_bdf_map_oom();
+    test_l6_record_oom();
+    test_l9_text_range();
+    test_l1_psf2_interleaved();
+    test_l1_psf1_reverse();
+    test_l1_bdf_unsorted();
+    test_l1_text_unsorted();
+    test_l1_binary_attach_unsorted();
+    test_l10_psf2_grid();
+    test_l10_psf2_many();
+    test_l10_psf1();
+    test_l10_text();
+    test_l10_binary_attach();
+    test_l10_bdf();
+    test_l7_psf_tables();
+    test_l7_attach_ligature_only();
+    test_l2_sequences();
+    test_l2_scale();
+    test_l8_failed_attach();
+    test_l1_scale_psf();
+    test_l1_scale_text();
+    test_l1_scale_bdf();
+    test_l2_lookup_cost();
+    test_registry_bounds();
+    test_l6_registry_grow_oom();
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(SYS_EXIT, exit_code);

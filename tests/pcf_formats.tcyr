@@ -1,0 +1,1138 @@
+# kashi — PCF / BDF format-matrix suite (1.3.0; audit 2026-10-30, K39 / K52
+# / K58). Stdlib auto-included via cyrius.cyml; `cyrius test
+# tests/pcf_formats.tcyr` runs it on its own.
+#
+# Why this file exists. Until 1.3.0 every PCF the suites built was
+# little-endian, MSB bit order, scan unit 1, glyph pad 1, 8 px wide, with
+# byte1 == 0 encodings, and every BDF they loaded was 8 px wide. So the
+# scan-unit byte swap, the big-endian table loaders, the signed i16 metrics,
+# glyph_pad > 1, widths other than 8, multi-row BDF_ENCODINGS and the BDF row
+# stride were never compared with expected bytes — not even for the layout
+# bdftopcf writes by default (format 0x0E: MSB byte, MSB bit, pad 4, scan 1),
+# the most common PCF there is. The audit broke each of those paths in turn
+# and every mutant passed all three suites.
+#
+# The reference is written HERE, from the X11 definition of a bitmap row,
+# not from kashi's code. A stored row is ceil(width / (8 * pad)) * pad bytes,
+# read as scanline units of `scan` bytes. Pixel i of a unit is bit
+# (8 * scan - 1 - i) of the unit's integer under MSB bit order, bit i under
+# LSB bit order, and that integer is stored most-significant byte first under
+# MSB byte order, least-significant byte first under LSB byte order
+# (_pf_put_row). The parser instead swaps bytes when byte order != bit order
+# and then bit-reverses: an encoder that copied that recipe would share its
+# bugs. kashi's canonical form (a row is ceil(width / 8) bytes, bit 7 of
+# byte 0 is the leftmost pixel) is computed from the same pixel grid.
+#
+# What runs (all of it; well under a second):
+#   - test_pcf_anchors: hand-written stored rows for each byte order x bit
+#     order (scan 1 / 2 / 4 / 8), checked against literal values a reader can
+#     verify without trusting the encoder; bdftopcf's 0x0E at 8 and 16 px.
+#   - test_pcf_matrix_*: EVERY byte order x bit order x valid (scan, pad)
+#     pair (pad >= scan: 10 pairs) x width 1 7 8 9 16 17 24 32 = 320 fonts,
+#     not a sample. Each font also rotates through: compressed / uncompressed
+#     METRICS; METRICS and BDF_ENCODINGS byte orders independent of BITMAPS;
+#     left bearing 0 / -1 / -3 (biased u8 and signed i16); height 1 / 5 /
+#     13 / 32 with a descent; 3 / 4 / 5 glyphs stored in REVERSE order in the
+#     bitmap blob (only the offset table finds them); three multi-row
+#     encoding layouts (byte1 from 0x00 to 0x33, byte2 up to 0xFF) with holes
+#     and a dangling glyph index; and a bdftopcf-like 9-table TOC or a
+#     reversed 3-table one. Every glyph is decoded with
+#     kashi_pcf_decode_glyph and through kashi_load_pcf, every row byte is
+#     compared, and every cell of the encodings rectangle and its border is
+#     resolved with kashi_pcf_cp_to_idx and kashi_font_ptr /
+#     kashi_font_row_byte.
+#   - test_pcf_rejected_layouts: the 6 (scan > pad) pairs and two failures in
+#     later tables; the ctx a failed parse leaves must be inert (F1).
+#   - test_bdf_widths / test_bdf_wide_rows_malformed: BDF fonts 1 5 7 9 12 16
+#     17 24 31 32 px wide through kashi_load_bdf + kashi_font_row_byte, every
+#     row byte checked; wrong-length wide rows and an extra row (B3).
+
+include "src/lib.cyr"
+
+enum PfConst {
+    _PF_BUF = 8192;       # bytes in _pf_buf (largest font built: ~2 KiB)
+}
+
+# Scratch buffers, allocated once in main().
+var _pf_buf = 0;          # the font being built
+var _pf_exp = 0;          # canonical rows of the current font, glyph-major
+var _pf_dest = 0;         # kashi_pcf_decode_glyph output (+ guard bytes)
+var _pf_rawbuf = 0;       # anchor rows parsed from hex
+
+# Builder parameters: set by the caller, read by _pf_build and the checks.
+var _pf_be = 0;           # BITMAPS byte order: 1 = most-significant byte first
+var _pf_bitmsb = 1;       # bit order: 1 = pixel 0 is the unit's top bit
+var _pf_scode = 0;        # scan unit = 1 << code bytes
+var _pf_pcode = 0;        # glyph pad = 1 << code bytes
+var _pf_w = 8;
+var _pf_h = 8;
+var _pf_n = 3;            # glyph count
+var _pf_comp = 1;         # 1 = compressed METRICS
+var _pf_mbe = 0;          # METRICS byte order
+var _pf_ebe = 0;          # BDF_ENCODINGS byte order
+var _pf_lb = 0;           # left side bearing (may be negative)
+var _pf_desc = 0;         # descent; ascent = height - descent
+var _pf_minb1 = 0;
+var _pf_maxb1 = 0;
+var _pf_minb2 = 0;
+var _pf_maxb2 = 0;
+var _pf_full = 0;         # 1 = bdftopcf-like 9-table TOC, 0 = reversed 3-table TOC
+var _pf_raw = 0;          # nonzero: stored rows are copied from here (anchors)
+var _pf_seed = 0;
+var _pf_moff = 0;         # where _pf_build put METRICS / BDF_ENCODINGS
+var _pf_eoff = 0;
+
+# Matrix tallies (reset per byte order x bit order block).
+var _pf_cfg = 0;          # running font number: picks the rotating options
+var _pf_runs = 0;
+var _pf_bad_parse = 0;
+var _pf_bad_decode = 0;
+var _pf_bad_load = 0;
+var _pf_bad_map = 0;
+
+# --- small writers (the test's own; nothing borrowed from font_pcf.cyr) ---
+
+fn _pf_zero(buf, n) {
+    var i = 0;
+    while (i < n) {
+        store8(buf + i, 0);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Store `v` as a u16 / u32 at `buf + off`, most-significant byte first when
+# `be` is 1.
+fn _pf_w16(buf, off, v, be) {
+    if (be == 1) {
+        store8(buf + off, (v >> 8) & 0xFF);
+        store8(buf + off + 1, v & 0xFF);
+        return 0;
+    }
+    store8(buf + off, v & 0xFF);
+    store8(buf + off + 1, (v >> 8) & 0xFF);
+    return 0;
+}
+
+fn _pf_w32(buf, off, v, be) {
+    if (be == 1) {
+        _pf_w16(buf, off, (v >> 16) & 0xFFFF, 1);
+        _pf_w16(buf, off + 2, v & 0xFFFF, 1);
+        return 0;
+    }
+    _pf_w16(buf, off, v & 0xFFFF, 0);
+    _pf_w16(buf, off + 2, (v >> 16) & 0xFFFF, 0);
+    return 0;
+}
+
+fn _pf_r32le(buf, off) {
+    var lo = load8(buf + off) | (load8(buf + off + 1) << 8);
+    return lo | (load8(buf + off + 2) << 16) | (load8(buf + off + 3) << 24);
+}
+
+fn _pf_hexval(c) {
+    if (c <= 0x39) { return c - 0x30; }
+    if (c >= 0x61) { return c - 0x61 + 10; }
+    return c - 0x41 + 10;
+}
+
+# Parse a string of hex digit pairs (spaces ignored) into bytes at `dst`.
+# Returns the byte count.
+fn _pf_unhex(dst, s) {
+    var n = 0;
+    var i = 0;
+    var c = load8(s);
+    while (c != 0) {
+        if (c == 0x20) { i = i + 1; }
+        if (c != 0x20) {
+            store8(dst + n, (_pf_hexval(c) << 4) | _pf_hexval(load8(s + i + 1)));
+            n = n + 1;
+            i = i + 2;
+        }
+        c = load8(s + i);
+    }
+    return n;
+}
+
+# --- the pixel grid and the canonical (kashi) form of it ---
+
+fn _pf_stride() {
+    return (_pf_w + 7) / 8;
+}
+
+# Bytes per stored PCF row: the width padded to whole `pad`-byte groups.
+fn _pf_rowbytes(w, pad) {
+    return ((w + pad * 8 - 1) / (pad * 8)) * pad;
+}
+
+# Pixel (x, r) of glyph g: 1 = ink. Row 0 pins the row's edges — pixel 0
+# alone (glyph 0), the last pixel alone (glyph 1), every pixel (glyph 2),
+# alternate pixels (glyph 3+) — so a decoder that drops or moves the first
+# or last bit of a row fails even at height 1. Other rows are hashed from
+# (seed, g, r, x).
+fn _pf_pix(g, r, x) {
+    if (r == 0) {
+        if (g == 0) {
+            if (x == 0) { return 1; }
+            return 0;
+        }
+        if (g == 1) {
+            if (x == _pf_w - 1) { return 1; }
+            return 0;
+        }
+        if (g == 2) { return 1; }
+        return (x + g) & 1;
+    }
+    var v = _pf_seed * 977 + g * 7919 + r * 131 + x * 31;
+    v = (v * 2654435761) & 0xFFFFFFFF;
+    return (v >> 15) & 1;
+}
+
+# Canonical byte k of row r of glyph g: bit 7 = pixel 8k, padding bits 0.
+fn _pf_canon(g, r, k) {
+    var v = 0;
+    var j = 0;
+    while (j < 8) {
+        var x = k * 8 + j;
+        if (x < _pf_w) {
+            if (_pf_pix(g, r, x) == 1) { v = v | (0x80 >> j); }
+        }
+        j = j + 1;
+    }
+    return v;
+}
+
+# Fill _pf_exp with every canonical byte of the current font.
+fn _pf_fill_exp() {
+    var st = _pf_stride();
+    var g = 0;
+    while (g < _pf_n) {
+        var r = 0;
+        while (r < _pf_h) {
+            var k = 0;
+            while (k < st) {
+                store8(_pf_exp + (g * _pf_h + r) * st + k, _pf_canon(g, r, k));
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        g = g + 1;
+    }
+    return 0;
+}
+
+fn _pf_expb(g, r, k) {
+    var st = _pf_stride();
+    return load8(_pf_exp + (g * _pf_h + r) * st + k);
+}
+
+# One stored PCF row of glyph g, by the X11 definition (see the header).
+# `dst` is the zeroed row of `rb` bytes.
+fn _pf_put_row(dst, rb, g, r) {
+    var scan = 1 << _pf_scode;
+    var nb = scan * 8;
+    var x = 0;
+    while (x < _pf_w) {
+        if (_pf_pix(g, r, x) == 1) {
+            var i = x % nb;                     # the pixel's place in its unit
+            var bp = i;                         # its bit in the unit's integer
+            if (_pf_bitmsb == 1) { bp = nb - 1 - i; }
+            var ib = bp / 8;                    # integer byte, 0 = least significant
+            var fb = ib;                        # where that byte is stored
+            if (_pf_be == 1) { fb = scan - 1 - ib; }
+            var at = (x / nb) * scan + fb;
+            # A rejected layout (scan > pad) has units wider than the row:
+            # keep the writes inside it. The parser refuses such a font.
+            if (at < rb) { store8(dst + at, load8(dst + at) | (1 << (bp % 8))); }
+        }
+        x = x + 1;
+    }
+    return 0;
+}
+
+# --- BDF_ENCODINGS cells ---
+
+fn _pf_ncell() {
+    return (_pf_maxb1 - _pf_minb1 + 1) * (_pf_maxb2 - _pf_minb2 + 1);
+}
+
+# Glyph index stored in cell i (row-major, byte1 outer). The last cell names
+# glyph n (one past the count: must stay unmapped); every fourth cell from 2
+# is a hole (0xFFFF); the rest name glyphs n-1, n-2, ..., 0, n-1, ... so a
+# codepoint never maps to the glyph its cell number would suggest, and every
+# glyph is reachable.
+fn _pf_cell(i) {
+    if (i == _pf_ncell() - 1) { return _pf_n; }
+    if ((i % 4) == 2) { return 0xFFFF; }
+    var j = i - (i + 1) / 4;
+    return _pf_n - 1 - (j % _pf_n);
+}
+
+fn _pf_expect_idx(i) {
+    var v = _pf_cell(i);
+    if (v >= _pf_n) { return 0 - 1; }
+    return v;
+}
+
+# Three encodings rectangles. Each has byte1 and byte2 ranges of different
+# sizes (a row-index slip shows), several byte1 rows (a cp walk that drops
+# byte1's shift shows), and one starts at byte1 0 while another ends at
+# byte2 0xFF.
+fn _pf_layout(which) {
+    if (which == 0) {
+        _pf_minb1 = 0x00;
+        _pf_maxb1 = 0x02;
+        _pf_minb2 = 0x40;
+        _pf_maxb2 = 0x43;
+    }
+    if (which == 1) {
+        _pf_minb1 = 0x20;
+        _pf_maxb1 = 0x22;
+        _pf_minb2 = 0x10;
+        _pf_maxb2 = 0x14;
+    }
+    if (which == 2) {
+        _pf_minb1 = 0x30;
+        _pf_maxb1 = 0x33;
+        _pf_minb2 = 0xFD;
+        _pf_maxb2 = 0xFF;
+    }
+    return 0;
+}
+
+# --- the PCF builder ---
+
+# A table format word: pad and scan codes, byte order, bit order.
+fn _pf_fmt(be) {
+    return _pf_pcode | (be << 2) | (_pf_bitmsb << 3) | (_pf_scode << 4);
+}
+
+fn _pf_tsize(ty) {
+    if (ty == PCF_TYPE_METRICS) {
+        if (_pf_comp == 1) { return 6 + _pf_n * 5; }
+        return 8 + _pf_n * 12;
+    }
+    if (ty == PCF_TYPE_BITMAPS) {
+        return 24 + _pf_n * 4 + _pf_n * _pf_h * _pf_rowbytes(_pf_w, 1 << _pf_pcode);
+    }
+    if (ty == PCF_TYPE_BDF_ENCODINGS) { return 14 + 2 * _pf_ncell(); }
+    return 8;
+}
+
+fn _pf_metrics(buf, off) {
+    var be = _pf_mbe;
+    var asc = _pf_h - _pf_desc;
+    _pf_w32(buf, off, _pf_fmt(be) | (_pf_comp << 8), 0);
+    var p = off + 4;
+    if (_pf_comp == 1) {
+        _pf_w16(buf, p, _pf_n, be);
+        p = p + 2;
+    }
+    if (_pf_comp == 0) {
+        _pf_w32(buf, p, _pf_n, be);
+        p = p + 4;
+    }
+    var g = 0;
+    while (g < _pf_n) {
+        if (_pf_comp == 1) {
+            # Compressed fields are u8 biased by 0x80.
+            store8(buf + p, _pf_lb + 0x80);
+            store8(buf + p + 1, _pf_lb + _pf_w + 0x80);
+            store8(buf + p + 2, _pf_w + 0x80);
+            store8(buf + p + 3, asc + 0x80);
+            store8(buf + p + 4, _pf_desc + 0x80);
+            p = p + 5;
+        }
+        if (_pf_comp == 0) {
+            # Uncompressed fields are i16: a negative bearing is stored in
+            # two's complement, so width = right - left needs the sign.
+            _pf_w16(buf, p, _pf_lb & 0xFFFF, be);
+            _pf_w16(buf, p + 2, (_pf_lb + _pf_w) & 0xFFFF, be);
+            _pf_w16(buf, p + 4, _pf_w, be);
+            _pf_w16(buf, p + 6, asc, be);
+            _pf_w16(buf, p + 8, _pf_desc, be);
+            _pf_w16(buf, p + 10, 0, be);
+            p = p + 12;
+        }
+        g = g + 1;
+    }
+    return 0;
+}
+
+fn _pf_bitmaps(buf, off) {
+    var be = _pf_be;
+    var rb = _pf_rowbytes(_pf_w, 1 << _pf_pcode);
+    var gsize = _pf_h * rb;
+    _pf_w32(buf, off, _pf_fmt(be), 0);
+    _pf_w32(buf, off + 4, _pf_n, be);
+    # Glyph g sits in slot n-1-g: only the offset table finds it.
+    var g = 0;
+    while (g < _pf_n) {
+        _pf_w32(buf, off + 8 + g * 4, (_pf_n - 1 - g) * gsize, be);
+        g = g + 1;
+    }
+    # bitmapSizes[4]: the blob's size at pad 1, 2, 4, 8 (kashi reads none).
+    var sz = off + 8 + _pf_n * 4;
+    var i = 0;
+    while (i < 4) {
+        _pf_w32(buf, sz + i * 4, _pf_n * _pf_h * _pf_rowbytes(_pf_w, 1 << i), be);
+        i = i + 1;
+    }
+    var data = sz + 16;
+    g = 0;
+    while (g < _pf_n) {
+        var slot = data + (_pf_n - 1 - g) * gsize;
+        var r = 0;
+        while (r < _pf_h) {
+            if (_pf_raw != 0) { memcpy(buf + slot + r * rb, _pf_raw + g * gsize + r * rb, rb); }
+            if (_pf_raw == 0) { _pf_put_row(buf + slot + r * rb, rb, g, r); }
+            r = r + 1;
+        }
+        g = g + 1;
+    }
+    return 0;
+}
+
+fn _pf_encodings(buf, off) {
+    var be = _pf_ebe;
+    _pf_w32(buf, off, _pf_fmt(be), 0);
+    _pf_w16(buf, off + 4, _pf_minb2, be);
+    _pf_w16(buf, off + 6, _pf_maxb2, be);
+    _pf_w16(buf, off + 8, _pf_minb1, be);
+    _pf_w16(buf, off + 10, _pf_maxb1, be);
+    _pf_w16(buf, off + 12, 0, be);            # default_char (kashi ignores it)
+    var nc = _pf_ncell();
+    var i = 0;
+    while (i < nc) {
+        _pf_w16(buf, off + 14 + i * 2, _pf_cell(i), be);
+        i = i + 1;
+    }
+    return 0;
+}
+
+# Assemble the font in _pf_buf-sized `buf`; returns its length. Tables follow
+# the TOC order and start on 4-byte boundaries, as bdftopcf lays them out.
+# The full TOC is bdftopcf's: all nine types in ascending order, the six that
+# kashi ignores as 8-byte stubs, so the required tables are not entries 0-2.
+fn _pf_build(buf) {
+    _pf_zero(buf, _PF_BUF);
+    var types[72];
+    var nt = 3;
+    store64(&types + 0, PCF_TYPE_BDF_ENCODINGS);
+    store64(&types + 8, PCF_TYPE_BITMAPS);
+    store64(&types + 16, PCF_TYPE_METRICS);
+    if (_pf_full == 1) {
+        nt = 0;
+        while (nt < 9) {
+            store64(&types + nt * 8, 1 << nt);
+            nt = nt + 1;
+        }
+    }
+    store8(buf, 0x01);
+    store8(buf + 1, 0x66);
+    store8(buf + 2, 0x63);
+    store8(buf + 3, 0x70);
+    _pf_w32(buf, 4, nt, 0);
+    var off = 8 + nt * 16;
+    var t = 0;
+    while (t < nt) {
+        var ty = load64(&types + t * 8);
+        off = ((off + 3) / 4) * 4;
+        var fmt = _pf_fmt(_pf_be);
+        if (ty == PCF_TYPE_METRICS) {
+            fmt = _pf_fmt(_pf_mbe) | (_pf_comp << 8);
+            _pf_moff = off;
+            _pf_metrics(buf, off);
+        }
+        if (ty == PCF_TYPE_BITMAPS) { _pf_bitmaps(buf, off); }
+        if (ty == PCF_TYPE_BDF_ENCODINGS) {
+            fmt = _pf_fmt(_pf_ebe);
+            _pf_eoff = off;
+            _pf_encodings(buf, off);
+        }
+        if (_pf_tsize(ty) == 8) {
+            _pf_w32(buf, off, fmt, 0);
+            _pf_w32(buf, off + 4, 0, _pf_be);
+        }
+        # The TOC itself is always little-endian.
+        _pf_w32(buf, 8 + t * 16, ty, 0);
+        _pf_w32(buf, 12 + t * 16, fmt, 0);
+        _pf_w32(buf, 16 + t * 16, _pf_tsize(ty), 0);
+        _pf_w32(buf, 20 + t * 16, off, 0);
+        off = off + _pf_tsize(ty);
+        t = t + 1;
+    }
+    return off;
+}
+
+# --- checks: each returns its mismatch count (1000 = did not load at all) ---
+
+# The header and ctx the parser reports, against the builder's parameters.
+fn _pf_check_parse(buf, len, ctx) {
+    var hdr[56];
+    if (kashi_pcf_parse_header(buf, len, &hdr, ctx) != KASHI_PCF_OK) { return 1000; }
+    var st = _pf_stride();
+    var bad = 0;
+    if (load64(&hdr + PCF_PH_WIDTH) != _pf_w) { bad = bad + 1; }
+    if (load64(&hdr + PCF_PH_HEIGHT) != _pf_h) { bad = bad + 1; }
+    if (load64(&hdr + PCF_PH_COUNT) != _pf_n) { bad = bad + 1; }
+    if (load64(&hdr + PCF_PH_CHARSIZE) != _pf_h * st) { bad = bad + 1; }
+    if (load64(ctx + PCF_CTX_PCF_ROW_BYTES) != _pf_rowbytes(_pf_w, 1 << _pf_pcode)) { bad = bad + 1; }
+    if (load64(ctx + PCF_CTX_OUR_STRIDE) != st) { bad = bad + 1; }
+    return bad;
+}
+
+# Every glyph straight from kashi_pcf_decode_glyph, byte for byte; the 8
+# bytes after the glyph must be left alone.
+fn _pf_check_decode(buf, ctx) {
+    var need = _pf_h * _pf_stride();
+    var bad = 0;
+    var g = 0;
+    while (g < _pf_n) {
+        var i = 0;
+        while (i < need + 8) {
+            store8(_pf_dest + i, 0xA5);
+            i = i + 1;
+        }
+        if (kashi_pcf_decode_glyph(buf, ctx, g, _pf_dest, need) != KASHI_PCF_OK) { bad = bad + 1; }
+        i = 0;
+        while (i < need) {
+            if (load8(_pf_dest + i) != load8(_pf_exp + g * need + i)) { bad = bad + 1; }
+            i = i + 1;
+        }
+        while (i < need + 8) {
+            if (load8(_pf_dest + i) != 0xA5) { bad = bad + 1; }
+            i = i + 1;
+        }
+        g = g + 1;
+    }
+    return bad;
+}
+
+# The loaded font's metadata and every row byte of every glyph, by index.
+fn _pf_check_load(id) {
+    if (id < KASHI_RT_FONT_BASE) { return 1000; }
+    var st = _pf_stride();
+    var bad = 0;
+    if (kashi_rt_font_width(id) != _pf_w) { bad = bad + 1; }
+    if (kashi_rt_font_height(id) != _pf_h) { bad = bad + 1; }
+    if (kashi_rt_font_count(id) != _pf_n) { bad = bad + 1; }
+    if (kashi_rt_font_stride(id) != st) { bad = bad + 1; }
+    var g = 0;
+    while (g < _pf_n) {
+        var r = 0;
+        while (r < _pf_h) {
+            var k = 0;
+            while (k < st) {
+                if (kashi_rt_glyph_row_byte(id, g, r, k) != _pf_expb(g, r, k)) { bad = bad + 1; }
+                k = k + 1;
+            }
+            r = r + 1;
+        }
+        g = g + 1;
+    }
+    return bad;
+}
+
+# Every cell of the encodings rectangle and its one-cell border, through the
+# parser (kashi_pcf_cp_to_idx) and the loaded font (kashi_font_ptr,
+# kashi_font_row_byte): a mapped cell reaches exactly its glyph, every row
+# byte of it; a hole, the dangling index and the border all miss.
+fn _pf_check_map(buf, ctx, id) {
+    var st = _pf_stride();
+    var cols = _pf_maxb2 - _pf_minb2 + 1;
+    var bad = 0;
+    var b1 = _pf_minb1 - 1;
+    while (b1 <= _pf_maxb1 + 1) {
+        var b2 = _pf_minb2 - 1;
+        while (b2 <= _pf_maxb2 + 1) {
+            var real = 1;
+            if (b1 < 0) { real = 0; }
+            if (b1 > 0xFF) { real = 0; }
+            if (b2 < 0) { real = 0; }
+            if (b2 > 0xFF) { real = 0; }
+            if (real == 1) {
+                var cp = b1 * 256 + b2;
+                var inside = 1;
+                if (b1 < _pf_minb1) { inside = 0; }
+                if (b1 > _pf_maxb1) { inside = 0; }
+                if (b2 < _pf_minb2) { inside = 0; }
+                if (b2 > _pf_maxb2) { inside = 0; }
+                var e = 0 - 1;
+                if (inside == 1) { e = _pf_expect_idx((b1 - _pf_minb1) * cols + (b2 - _pf_minb2)); }
+                if (kashi_pcf_cp_to_idx(buf, ctx, cp) != e) { bad = bad + 1; }
+                var ptr = kashi_font_ptr(id, cp);
+                if (e < 0) {
+                    if (ptr != 0) { bad = bad + 1; }
+                }
+                if (e >= 0) {
+                    if (ptr != kashi_rt_glyph_ptr(id, e)) { bad = bad + 1; }
+                    var r = 0;
+                    while (r < _pf_h) {
+                        var k = 0;
+                        while (k < st) {
+                            if (kashi_font_row_byte(id, cp, r, k) != _pf_expb(e, r, k)) { bad = bad + 1; }
+                            k = k + 1;
+                        }
+                        r = r + 1;
+                    }
+                    # One byte past the stride reads the sentinel 0.
+                    if (kashi_font_row_byte(id, cp, 0, st) != 0) { bad = bad + 1; }
+                }
+            }
+            b2 = b2 + 1;
+        }
+        b1 = b1 + 1;
+    }
+    return bad;
+}
+
+# --- PCF: hand-written anchors ---
+
+# Build and load a 2-glyph, 2-row font whose stored rows are `hex` (glyph
+# 0's two rows, then glyph 1's), every table in the BITMAPS byte order as
+# bdftopcf writes them, bdftopcf's 9-table TOC. Its encodings span two byte1
+# rows: U+0142 -> glyph 0, U+0141 -> glyph 1, U+0241 a hole, U+0242 a
+# dangling index. Returns the font id, or 0 - 99 if `hex` has the wrong
+# length for the layout.
+fn _pf_anchor(be, bitmsb, scode, pcode, w, hex) {
+    _pf_be = be;
+    _pf_bitmsb = bitmsb;
+    _pf_scode = scode;
+    _pf_pcode = pcode;
+    _pf_w = w;
+    _pf_h = 2;
+    _pf_n = 2;
+    _pf_mbe = be;
+    _pf_ebe = be;
+    _pf_comp = 1;
+    _pf_lb = 0;
+    _pf_desc = 0;
+    _pf_full = 1;
+    _pf_minb1 = 0x01;
+    _pf_maxb1 = 0x02;
+    _pf_minb2 = 0x41;
+    _pf_maxb2 = 0x42;
+    if (_pf_unhex(_pf_rawbuf, hex) != 4 * _pf_rowbytes(w, 1 << pcode)) { return 0 - 99; }
+    _pf_raw = _pf_rawbuf;
+    var len = _pf_build(_pf_buf);
+    _pf_raw = 0;
+    return kashi_load_pcf(_pf_buf, len);
+}
+
+# Row r of the glyph at `cp`, its bytes packed most significant first
+# (stride <= 4, so it fits): 0x8001 means bytes 80 01.
+fn _pf_row(id, cp, r) {
+    var st = kashi_rt_font_stride(id);
+    var v = 0;
+    var k = 0;
+    while (k < st) {
+        v = (v << 8) | kashi_font_row_byte(id, cp, r, k);
+        k = k + 1;
+    }
+    return v;
+}
+
+fn test_pcf_anchors() {
+    test_group("pcf hand-written rows, each byte / bit order (audit 2026-10-30, K39)");
+    # bdftopcf's default, format 0x0E: MSB byte, MSB bit, scan 1, pad 4. A
+    # stored row is the canonical bytes, zero-padded to 4; nothing moves.
+    var id = _pf_anchor(1, 1, 0, 2, 16, "80010000 FFFE0000 12340000 C35A0000");
+    assert_gte(id, KASHI_RT_FONT_BASE, "0x0E 16 px: loads");
+    # TOC entry 3 is BITMAPS, entry 2 METRICS (bdftopcf's order).
+    assert_eq(_pf_r32le(_pf_buf, 8 + 3 * 16 + 4), 0x0E, "0x0E 16 px: BITMAPS format word is 0x0E");
+    assert_eq(_pf_r32le(_pf_buf, 8 + 2 * 16 + 4), 0x10E, "0x0E 16 px: METRICS format word is 0x10E");
+    assert_eq(_pf_row(id, 0x0142, 0), 0x8001, "0x0E 16 px: glyph 0 row 0 = 80 01 (first + last pixel)");
+    assert_eq(_pf_row(id, 0x0142, 1), 0xFFFE, "0x0E 16 px: glyph 0 row 1 = FF FE");
+    assert_eq(_pf_row(id, 0x0141, 0), 0x1234, "0x0E 16 px: glyph 1 row 0 = 12 34");
+    assert_eq(_pf_row(id, 0x0141, 1), 0xC35A, "0x0E 16 px: glyph 1 row 1 = C3 5A");
+    assert_eq(kashi_font_ptr(id, 0x0241), 0, "0x0E 16 px: hole cell U+0241 misses");
+    assert_eq(kashi_font_ptr(id, 0x0242), 0, "0x0E 16 px: dangling cell U+0242 misses");
+
+    id = _pf_anchor(1, 1, 0, 2, 8, "81000000 7E000000 18000000 24000000");
+    assert_gte(id, KASHI_RT_FONT_BASE, "0x0E 8 px: loads");
+    assert_eq(_pf_row(id, 0x0142, 0), 0x81, "0x0E 8 px: glyph 0 row 0 = 81");
+    assert_eq(_pf_row(id, 0x0142, 1), 0x7E, "0x0E 8 px: glyph 0 row 1 = 7E");
+    assert_eq(_pf_row(id, 0x0141, 0), 0x18, "0x0E 8 px: glyph 1 row 0 = 18");
+    assert_eq(_pf_row(id, 0x0141, 1), 0x24, "0x0E 8 px: glyph 1 row 1 = 24");
+
+    # LSB byte, MSB bit, scan 4, pad 4 (0x2A): each 4-byte unit is the
+    # canonical bytes as a big number, stored low byte first — reversed.
+    id = _pf_anchor(0, 1, 2, 2, 16, "00000180 00000FF0 00003412 00005AC3");
+    assert_gte(id, KASHI_RT_FONT_BASE, "LSB byte MSB bit scan 4: loads");
+    assert_eq(_pf_row(id, 0x0142, 0), 0x8001, "LSB byte MSB bit scan 4: 00 00 01 80 -> 80 01");
+    assert_eq(_pf_row(id, 0x0142, 1), 0xF00F, "LSB byte MSB bit scan 4: 00 00 0F F0 -> F0 0F");
+    assert_eq(_pf_row(id, 0x0141, 0), 0x1234, "LSB byte MSB bit scan 4: 00 00 34 12 -> 12 34");
+    assert_eq(_pf_row(id, 0x0141, 1), 0xC35A, "LSB byte MSB bit scan 4: 00 00 5A C3 -> C3 5A");
+
+    # MSB byte, LSB bit, scan 2, pad 2 (0x15), 9 px: pixel i is bit i of a
+    # big-endian u16, so pixel 0 is the low bit of the SECOND byte.
+    id = _pf_anchor(1, 0, 1, 1, 9, "0101 0103 0080 01FE");
+    assert_gte(id, KASHI_RT_FONT_BASE, "MSB byte LSB bit scan 2: loads");
+    assert_eq(_pf_row(id, 0x0142, 0), 0x8080, "MSB byte LSB bit scan 2: 01 01 -> 80 80 (pixels 0, 8)");
+    assert_eq(_pf_row(id, 0x0142, 1), 0xC080, "MSB byte LSB bit scan 2: 01 03 -> C0 80");
+    assert_eq(_pf_row(id, 0x0141, 0), 0x0100, "MSB byte LSB bit scan 2: 00 80 -> 01 00 (pixel 7)");
+    assert_eq(_pf_row(id, 0x0141, 1), 0x7F80, "MSB byte LSB bit scan 2: 01 FE -> 7F 80");
+
+    # LSB byte, LSB bit, scan 1, pad 8 (0x03), 24 px: each byte bit-reversed
+    # in place; rows padded to 8 bytes.
+    id = _pf_anchor(0, 0, 0, 3, 24, "0100800000000000 0FF03C0000000000 8040200000000000 55AAFF0000000000");
+    assert_gte(id, KASHI_RT_FONT_BASE, "LSB byte LSB bit pad 8: loads");
+    assert_eq(_pf_row(id, 0x0142, 0), 0x800001, "LSB byte LSB bit pad 8: 01 00 80 -> 80 00 01");
+    assert_eq(_pf_row(id, 0x0142, 1), 0xF00F3C, "LSB byte LSB bit pad 8: 0F F0 3C -> F0 0F 3C");
+    assert_eq(_pf_row(id, 0x0141, 0), 0x010204, "LSB byte LSB bit pad 8: 80 40 20 -> 01 02 04");
+    assert_eq(_pf_row(id, 0x0141, 1), 0xAA55FF, "LSB byte LSB bit pad 8: 55 AA FF -> AA 55 FF");
+
+    # MSB byte, MSB bit, scan 8, pad 8 (0x3F), 32 px: no swap, no reverse.
+    id = _pf_anchor(1, 1, 3, 3, 32, "8000000100000000 1234567800000000 FF00FF0000000000 0123456700000000");
+    assert_gte(id, KASHI_RT_FONT_BASE, "MSB byte MSB bit scan 8: loads");
+    assert_eq(_pf_row(id, 0x0142, 0), 0x80000001, "MSB byte MSB bit scan 8: glyph 0 row 0");
+    assert_eq(_pf_row(id, 0x0142, 1), 0x12345678, "MSB byte MSB bit scan 8: glyph 0 row 1");
+    assert_eq(_pf_row(id, 0x0141, 0), 0xFF00FF00, "MSB byte MSB bit scan 8: glyph 1 row 0");
+    assert_eq(_pf_row(id, 0x0141, 1), 0x01234567, "MSB byte MSB bit scan 8: glyph 1 row 1");
+
+    # LSB byte, MSB bit, scan 8, pad 8 (0x3B), 32 px: the whole 8-byte unit is
+    # reversed, so pixel 0 is the top bit of the LAST stored byte.
+    id = _pf_anchor(0, 1, 3, 3, 32, "0000000001000080 0000000078563412 0000000000FF00FF 0000000067452301");
+    assert_gte(id, KASHI_RT_FONT_BASE, "LSB byte MSB bit scan 8: loads");
+    assert_eq(_pf_row(id, 0x0142, 0), 0x80000001, "LSB byte MSB bit scan 8: ..01 00 00 80 -> 80 00 00 01");
+    assert_eq(_pf_row(id, 0x0142, 1), 0x12345678, "LSB byte MSB bit scan 8: ..78 56 34 12 -> 12 34 56 78");
+    assert_eq(_pf_row(id, 0x0141, 0), 0xFF00FF00, "LSB byte MSB bit scan 8: ..00 FF 00 FF -> FF 00 FF 00");
+    assert_eq(_pf_row(id, 0x0141, 1), 0x01234567, "LSB byte MSB bit scan 8: ..67 45 23 01 -> 01 23 45 67");
+
+    # MSB byte, LSB bit, scan 4, pad 8 (0x27), 17 px: two 4-byte units per
+    # row; pixel i is bit i of the first big-endian u32.
+    id = _pf_anchor(1, 0, 2, 3, 17, "0001000100000000 0001FFFF00000000 0000800000000000 000055AA00000000");
+    assert_gte(id, KASHI_RT_FONT_BASE, "MSB byte LSB bit scan 4 pad 8: loads");
+    assert_eq(_pf_row(id, 0x0142, 0), 0x800080, "MSB byte LSB bit scan 4 pad 8: pixels 0 and 16");
+    assert_eq(_pf_row(id, 0x0142, 1), 0xFFFF80, "MSB byte LSB bit scan 4 pad 8: pixels 0..16");
+    assert_eq(_pf_row(id, 0x0141, 0), 0x000100, "MSB byte LSB bit scan 4 pad 8: pixel 15");
+    assert_eq(_pf_row(id, 0x0141, 1), 0x55AA00, "MSB byte LSB bit scan 4 pad 8: 55 AA");
+
+    # LSB byte, LSB bit, scan 2, pad 4 (0x12), 12 px: byte order == bit order,
+    # so bytes stay put and are only bit-reversed — no swap.
+    id = _pf_anchor(0, 0, 1, 2, 12, "01080000 FF0F0000 00080000 80010000");
+    assert_gte(id, KASHI_RT_FONT_BASE, "LSB byte LSB bit scan 2: loads");
+    assert_eq(_pf_row(id, 0x0142, 0), 0x8010, "LSB byte LSB bit scan 2: 01 08 -> 80 10 (pixels 0, 11)");
+    assert_eq(_pf_row(id, 0x0142, 1), 0xFFF0, "LSB byte LSB bit scan 2: FF 0F -> FF F0");
+    assert_eq(_pf_row(id, 0x0141, 0), 0x0010, "LSB byte LSB bit scan 2: 00 08 -> 00 10");
+    assert_eq(_pf_row(id, 0x0141, 1), 0x0180, "LSB byte LSB bit scan 2: 80 01 -> 01 80");
+    return 0;
+}
+
+# --- PCF: the full matrix ---
+
+fn _pf_width(i) {
+    if (i == 0) { return 1; }
+    if (i == 1) { return 7; }
+    if (i == 2) { return 8; }
+    if (i == 3) { return 9; }
+    if (i == 4) { return 16; }
+    if (i == 5) { return 17; }
+    if (i == 6) { return 24; }
+    return 32;
+}
+
+fn _pf_height(i) {
+    if (i == 0) { return 1; }
+    if (i == 1) { return 5; }
+    if (i == 2) { return 13; }
+    return 32;
+}
+
+# One font of the matrix. The caller set byte order, bit order, scan, pad
+# and width; the running font number picks the rest, and every choice cycles
+# within each block of 80 fonts, so each meets every byte / bit order.
+fn _pf_run_one() {
+    var c = _pf_cfg;
+    _pf_comp = c % 2;
+    _pf_lb = 0;
+    if ((c % 3) == 1) { _pf_lb = 0 - 1; }
+    if ((c % 3) == 2) { _pf_lb = 0 - 3; }
+    _pf_mbe = (c / 2) % 2;
+    _pf_ebe = (c / 3) % 2;
+    _pf_h = _pf_height((c / 5) % 4);
+    _pf_desc = 0;
+    if (_pf_h > 1) { _pf_desc = 1 + (c / 4) % 2; }
+    _pf_n = 3 + (c / 7) % 3;
+    _pf_layout((c / 11) % 3);
+    _pf_full = (c / 13) % 2;
+    _pf_seed = c;
+    _pf_raw = 0;
+    _pf_fill_exp();
+    var len = _pf_build(_pf_buf);
+    var ctx[144];
+    _pf_bad_parse = _pf_bad_parse + _pf_check_parse(_pf_buf, len, &ctx);
+    _pf_bad_decode = _pf_bad_decode + _pf_check_decode(_pf_buf, &ctx);
+    var id = kashi_load_pcf(_pf_buf, len);
+    _pf_bad_load = _pf_bad_load + _pf_check_load(id);
+    _pf_bad_map = _pf_bad_map + _pf_check_map(_pf_buf, &ctx, id);
+    _pf_cfg = _pf_cfg + 1;
+    _pf_runs = _pf_runs + 1;
+    return 0;
+}
+
+# Every valid (scan, pad) pair x every width, for one byte / bit order.
+fn _pf_matrix(be, bitmsb) {
+    _pf_runs = 0;
+    _pf_bad_parse = 0;
+    _pf_bad_decode = 0;
+    _pf_bad_load = 0;
+    _pf_bad_map = 0;
+    _pf_be = be;
+    _pf_bitmsb = bitmsb;
+    var sc = 0;
+    while (sc < 4) {
+        var pc = sc;
+        while (pc < 4) {
+            var wi = 0;
+            while (wi < 8) {
+                _pf_scode = sc;
+                _pf_pcode = pc;
+                _pf_w = _pf_width(wi);
+                _pf_run_one();
+                wi = wi + 1;
+            }
+            pc = pc + 1;
+        }
+        sc = sc + 1;
+    }
+    return 0;
+}
+
+fn test_pcf_matrix_lsb_byte_msb_bit() {
+    test_group("pcf matrix: LSB byte, MSB bit (audit 2026-10-30, K39 / K52)");
+    _pf_matrix(0, 1);
+    assert_eq(_pf_runs, 80, "LSB byte MSB bit: 10 scan/pad pairs x 8 widths built");
+    assert_eq(_pf_bad_parse, 0, "LSB byte MSB bit: header + ctx right for every font");
+    assert_eq(_pf_bad_decode, 0, "LSB byte MSB bit: decode_glyph matches every row byte");
+    assert_eq(_pf_bad_load, 0, "LSB byte MSB bit: kashi_load_pcf stores every row byte");
+    assert_eq(_pf_bad_map, 0, "LSB byte MSB bit: every encodings cell hits its glyph or misses");
+    return 0;
+}
+
+fn test_pcf_matrix_msb_byte_msb_bit() {
+    test_group("pcf matrix: MSB byte, MSB bit (audit 2026-10-30, K39 / K52)");
+    _pf_matrix(1, 1);
+    assert_eq(_pf_runs, 80, "MSB byte MSB bit: 10 scan/pad pairs x 8 widths built");
+    assert_eq(_pf_bad_parse, 0, "MSB byte MSB bit: header + ctx right for every font");
+    assert_eq(_pf_bad_decode, 0, "MSB byte MSB bit: decode_glyph matches every row byte");
+    assert_eq(_pf_bad_load, 0, "MSB byte MSB bit: kashi_load_pcf stores every row byte");
+    assert_eq(_pf_bad_map, 0, "MSB byte MSB bit: every encodings cell hits its glyph or misses");
+    return 0;
+}
+
+fn test_pcf_matrix_lsb_byte_lsb_bit() {
+    test_group("pcf matrix: LSB byte, LSB bit (audit 2026-10-30, K39 / K52)");
+    _pf_matrix(0, 0);
+    assert_eq(_pf_runs, 80, "LSB byte LSB bit: 10 scan/pad pairs x 8 widths built");
+    assert_eq(_pf_bad_parse, 0, "LSB byte LSB bit: header + ctx right for every font");
+    assert_eq(_pf_bad_decode, 0, "LSB byte LSB bit: decode_glyph matches every row byte");
+    assert_eq(_pf_bad_load, 0, "LSB byte LSB bit: kashi_load_pcf stores every row byte");
+    assert_eq(_pf_bad_map, 0, "LSB byte LSB bit: every encodings cell hits its glyph or misses");
+    return 0;
+}
+
+fn test_pcf_matrix_msb_byte_lsb_bit() {
+    test_group("pcf matrix: MSB byte, LSB bit (audit 2026-10-30, K39 / K52)");
+    _pf_matrix(1, 0);
+    assert_eq(_pf_runs, 80, "MSB byte LSB bit: 10 scan/pad pairs x 8 widths built");
+    assert_eq(_pf_bad_parse, 0, "MSB byte LSB bit: header + ctx right for every font");
+    assert_eq(_pf_bad_decode, 0, "MSB byte LSB bit: decode_glyph matches every row byte");
+    assert_eq(_pf_bad_load, 0, "MSB byte LSB bit: kashi_load_pcf stores every row byte");
+    assert_eq(_pf_bad_map, 0, "MSB byte LSB bit: every encodings cell hits its glyph or misses");
+    return 0;
+}
+
+# --- PCF: rejected layouts leave an inert ctx ---
+
+# A 16 x 5, 3-glyph font with the given scan / pad codes, encodings layout 1
+# (first cell U+2010 -> glyph 2).
+fn _pf_small(scode, pcode) {
+    _pf_be = 1;
+    _pf_bitmsb = 1;
+    _pf_scode = scode;
+    _pf_pcode = pcode;
+    _pf_w = 16;
+    _pf_h = 5;
+    _pf_n = 3;
+    _pf_comp = 1;
+    _pf_mbe = 1;
+    _pf_ebe = 1;
+    _pf_lb = 0;
+    _pf_desc = 1;
+    _pf_full = 0;
+    _pf_seed = 7;
+    _pf_raw = 0;
+    _pf_layout(1);
+    return _pf_build(_pf_buf);
+}
+
+# 1 if a ctx left by a failed parse is inert: decode_glyph refuses it
+# (EINVAL) and cp_to_idx maps nothing, not even the first cell.
+fn _pf_inert(ctx) {
+    if (kashi_pcf_decode_glyph(_pf_buf, ctx, 0, _pf_dest, 4096) != KASHI_PCF_EINVAL) { return 0; }
+    if (kashi_pcf_cp_to_idx(_pf_buf, ctx, 0x2010) != 0 - 1) { return 0; }
+    return 1;
+}
+
+fn test_pcf_rejected_layouts() {
+    test_group("pcf rejected layouts leave an inert ctx (audit 2026-10-30, F1)");
+    var hdr[56];
+    var ctx[144];
+    # The valid twin first, so the failures below are the layout's alone.
+    var len = _pf_small(0, 2);
+    assert_eq(kashi_pcf_parse_header(_pf_buf, len, &hdr, &ctx), KASHI_PCF_OK, "valid twin (scan 1, pad 4) parses");
+    assert_eq(kashi_pcf_cp_to_idx(_pf_buf, &ctx, 0x2010), 2, "valid twin: U+2010 -> glyph 2");
+
+    # scan unit > glyph pad would make the unit swap cross rows (ADR 0009).
+    # BITMAPS is parsed after METRICS has set width and height; until 1.3.0
+    # the count stayed set too, and decode_glyph read with half a ctx.
+    var rejected = 0;
+    var inert = 0;
+    var loads = 0;
+    var sc = 1;
+    while (sc < 4) {
+        var pc = 0;
+        while (pc < sc) {
+            len = _pf_small(sc, pc);
+            if (kashi_pcf_parse_header(_pf_buf, len, &hdr, &ctx) == KASHI_PCF_EFORMAT) { rejected = rejected + 1; }
+            inert = inert + _pf_inert(&ctx);
+            if (kashi_load_pcf(_pf_buf, len) == 0 - KASHI_EFORMAT) { loads = loads + 1; }
+            pc = pc + 1;
+        }
+        sc = sc + 1;
+    }
+    assert_eq(rejected, 6, "all 6 scan > pad pairs: parse is EFORMAT");
+    assert_eq(inert, 6, "all 6 scan > pad pairs: the ctx left is inert");
+    assert_eq(loads, 6, "all 6 scan > pad pairs: kashi_load_pcf is 0 - EFORMAT");
+
+    # byte1 rows inverted (min_byte1 > max_byte1): BDF_ENCODINGS is parsed
+    # last, so METRICS and BITMAPS had filled the whole ctx — until 1.3.0
+    # decode_glyph went on decoding glyphs of a font the parser had rejected.
+    len = _pf_small(0, 2);
+    _pf_w16(_pf_buf, _pf_eoff + 8, 0x22, 1);
+    _pf_w16(_pf_buf, _pf_eoff + 10, 0x20, 1);
+    assert_eq(kashi_pcf_parse_header(_pf_buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT, "inverted byte1 rows: EFORMAT");
+    assert_eq(_pf_inert(&ctx), 1, "inverted byte1 rows: the ctx left is inert");
+
+    # Big-endian uncompressed METRICS where glyph 1 is one row taller: the
+    # first table checked fails after the count was set.
+    _pf_small(0, 2);
+    _pf_comp = 0;
+    len = _pf_build(_pf_buf);
+    _pf_w16(_pf_buf, _pf_moff + 8 + 12 + 6, _pf_h - _pf_desc + 1, 1);
+    assert_eq(kashi_pcf_parse_header(_pf_buf, len, &hdr, &ctx), KASHI_PCF_EFORMAT, "uneven BE metrics: EFORMAT");
+    assert_eq(_pf_inert(&ctx), 1, "uneven BE metrics: the ctx left is inert");
+    return 0;
+}
+
+# --- BDF: wide (and narrow) glyphs ---
+
+fn _pf_str(buf, p, s) {
+    var i = 0;
+    while (load8(s + i) != 0) {
+        store8(buf + p + i, load8(s + i));
+        i = i + 1;
+    }
+    return p + i;
+}
+
+# Decimal, with a leading '-' for a negative value.
+fn _pf_dec(buf, p, v) {
+    if (v < 0) {
+        store8(buf + p, 0x2D);
+        p = p + 1;
+        v = 0 - v;
+    }
+    var digits[24];
+    var n = 0;
+    if (v == 0) {
+        store8(&digits, 0x30);
+        n = 1;
+    }
+    while (v > 0) {
+        store8(&digits + n, 0x30 + v % 10);
+        v = v / 10;
+        n = n + 1;
+    }
+    while (n > 0) {
+        n = n - 1;
+        store8(buf + p, load8(&digits + n));
+        p = p + 1;
+    }
+    return p;
+}
+
+fn _pf_nyb(v, lower) {
+    if (v < 10) { return 0x30 + v; }
+    if (lower == 1) { return 0x61 + v - 10; }
+    return 0x41 + v - 10;
+}
+
+# Encoding of BDF glyph g: glyph 2 is ENCODING -1 (skipped, never stored).
+fn _pf_bdf_cp(g) {
+    if (g == 0) { return 0x41; }
+    if (g == 1) { return 0x2603; }
+    if (g == 2) { return 0 - 1; }
+    return 0x10FFFF;
+}
+
+# A 4-glyph `_pf_w` x `_pf_h` BDF. Glyph g's rows come from the pixel grid
+# as ceil(w / 8) hex bytes each (BDF pads a row to whole bytes, MSB first);
+# glyph 1 is written in lowercase hex. `rowfix` 1 / 2 writes glyph 0's row 0
+# one byte short / long; `extra` 1 adds a row past the declared height to
+# glyph 3. Returns the length.
+fn _pf_bdf_build(buf, rowfix, extra) {
+    var st = _pf_stride();
+    var p = 0;
+    p = _pf_str(buf, p, "STARTFONT 2.1\nFONT -kashi-formats-medium-r-normal--16-160-75-75-c-80-iso10646-1\n");
+    p = _pf_str(buf, p, "SIZE 16 75 75\nFONTBOUNDINGBOX ");
+    p = _pf_dec(buf, p, _pf_w);
+    p = _pf_str(buf, p, " ");
+    p = _pf_dec(buf, p, _pf_h);
+    p = _pf_str(buf, p, " 0 -2\nSTARTPROPERTIES 1\nFONT_DESCENT 2\nENDPROPERTIES\nCHARS 4\n");
+    var g = 0;
+    while (g < 4) {
+        p = _pf_str(buf, p, "STARTCHAR g\nENCODING ");
+        p = _pf_dec(buf, p, _pf_bdf_cp(g));
+        p = _pf_str(buf, p, "\nSWIDTH 500 0\nDWIDTH ");
+        p = _pf_dec(buf, p, _pf_w);
+        p = _pf_str(buf, p, " 0\nBBX ");
+        p = _pf_dec(buf, p, _pf_w);
+        p = _pf_str(buf, p, " ");
+        p = _pf_dec(buf, p, _pf_h);
+        p = _pf_str(buf, p, " 0 -2\nBITMAP\n");
+        var lower = 0;
+        if (g == 1) { lower = 1; }
+        var r = 0;
+        while (r < _pf_h) {
+            var nb = st;
+            if (g == 0) {
+                if (r == 0) {
+                    if (rowfix == 1) { nb = st - 1; }
+                    if (rowfix == 2) { nb = st + 1; }
+                }
+            }
+            var k = 0;
+            while (k < nb) {
+                var b = 0;
+                if (k < st) { b = _pf_canon(g, r, k); }
+                store8(buf + p, _pf_nyb((b >> 4) & 0xF, lower));
+                store8(buf + p + 1, _pf_nyb(b & 0xF, lower));
+                p = p + 2;
+                k = k + 1;
+            }
+            p = _pf_str(buf, p, "\n");
+            r = r + 1;
+        }
+        if (extra == 1) {
+            if (g == 3) {
+                var e = 0;
+                while (e < st) {
+                    p = _pf_str(buf, p, "FF");
+                    e = e + 1;
+                }
+                p = _pf_str(buf, p, "\n");
+            }
+        }
+        p = _pf_str(buf, p, "ENDCHAR\n");
+        g = g + 1;
+    }
+    p = _pf_str(buf, p, "ENDFONT\n");
+    return p;
+}
+
+# Load a w x h BDF and compare every row byte of its three encoded glyphs by
+# codepoint, plus the byte one past the stride (reads 0). Returns 1000 if the
+# load failed, else the number of mismatches.
+fn _pf_bdf_case(w, h) {
+    _pf_w = w;
+    _pf_h = h;
+    _pf_seed = 1000 + w;
+    var len = _pf_bdf_build(_pf_buf, 0, 0);
+    var id = kashi_load_bdf(_pf_buf, len);
+    if (id < KASHI_RT_FONT_BASE) { return 1000; }
+    var st = _pf_stride();
+    var bad = 0;
+    if (kashi_rt_font_count(id) != 3) { bad = bad + 1; }
+    if (kashi_rt_font_width(id) != w) { bad = bad + 1; }
+    if (kashi_rt_font_height(id) != h) { bad = bad + 1; }
+    if (kashi_rt_font_stride(id) != st) { bad = bad + 1; }
+    var g = 0;
+    while (g < 4) {
+        var cp = _pf_bdf_cp(g);
+        if (cp >= 0) {
+            var r = 0;
+            while (r < h) {
+                var k = 0;
+                while (k < st) {
+                    if (kashi_font_row_byte(id, cp, r, k) != _pf_canon(g, r, k)) { bad = bad + 1; }
+                    k = k + 1;
+                }
+                if (kashi_font_row_byte(id, cp, r, st) != 0) { bad = bad + 1; }
+                r = r + 1;
+            }
+        }
+        g = g + 1;
+    }
+    return bad;
+}
+
+fn test_bdf_widths() {
+    test_group("bdf glyphs 1..32 px wide, every row byte (audit 2026-10-30, K58)");
+    # ADR 0005 allows widths 1..32; until 1.3.0 only 8 was ever loaded, so a
+    # stride of w / 8 (0 for w < 8) or rows written stride-1 apart passed.
+    assert_eq(_pf_bdf_case(1, 7), 0, "bdf 1 px (stride 1, sub-byte): every row byte matches");
+    assert_eq(_pf_bdf_case(5, 13), 0, "bdf 5 px (stride 1): every row byte matches");
+    assert_eq(_pf_bdf_case(7, 1), 0, "bdf 7 px, 1 row: every row byte matches");
+    assert_eq(_pf_bdf_case(9, 16), 0, "bdf 9 px (stride 2): every row byte matches");
+    assert_eq(_pf_bdf_case(12, 5), 0, "bdf 12 px (stride 2): every row byte matches");
+    assert_eq(_pf_bdf_case(16, 32), 0, "bdf 16 px x 32 (stride 2): every row byte matches");
+    assert_eq(_pf_bdf_case(17, 9), 0, "bdf 17 px (stride 3): every row byte matches");
+    assert_eq(_pf_bdf_case(24, 3), 0, "bdf 24 px (stride 3): every row byte matches");
+    assert_eq(_pf_bdf_case(31, 11), 0, "bdf 31 px (stride 4): every row byte matches");
+    assert_eq(_pf_bdf_case(32, 32), 0, "bdf 32 x 32 (stride 4, the maximum): every row byte matches");
+    return 0;
+}
+
+fn test_bdf_wide_rows_malformed() {
+    test_group("bdf wide rows of the wrong shape are rejected (audit 2026-10-30, K58 / B3)");
+    _pf_w = 17;
+    _pf_h = 6;
+    _pf_seed = 17;
+    var len = _pf_bdf_build(_pf_buf, 0, 0);
+    assert_gte(kashi_load_bdf(_pf_buf, len), KASHI_RT_FONT_BASE, "bdf 17 px: the well-formed twin loads");
+    len = _pf_bdf_build(_pf_buf, 1, 0);
+    assert_eq(kashi_load_bdf(_pf_buf, len), 0 - KASHI_EFORMAT, "bdf 17 px: a 2-byte row (stride 3) is EFORMAT");
+    len = _pf_bdf_build(_pf_buf, 2, 0);
+    assert_eq(kashi_load_bdf(_pf_buf, len), 0 - KASHI_EFORMAT, "bdf 17 px: a 4-byte row is EFORMAT");
+    # B3: a BITMAP runs exactly `height` rows to ENDCHAR. Until 1.3.0 a row
+    # past the declared height was skipped as an unknown line.
+    len = _pf_bdf_build(_pf_buf, 0, 1);
+    assert_eq(kashi_load_bdf(_pf_buf, len), 0 - KASHI_EFORMAT, "bdf 17 px: a 7th row in a 6-row glyph is EFORMAT");
+    return 0;
+}
+
+fn main() {
+    alloc_init();
+    kashi_font_init();
+    _pf_buf = alloc(_PF_BUF);
+    _pf_exp = alloc(5 * 32 * 4);          # <= 5 glyphs x 32 rows x stride 4
+    _pf_dest = alloc(4096 + 16);
+    _pf_rawbuf = alloc(256);
+
+    test_pcf_anchors();
+    test_pcf_matrix_lsb_byte_msb_bit();
+    test_pcf_matrix_msb_byte_msb_bit();
+    test_pcf_matrix_lsb_byte_lsb_bit();
+    test_pcf_matrix_msb_byte_lsb_bit();
+    test_pcf_rejected_layouts();
+    test_bdf_widths();
+    test_bdf_wide_rows_malformed();
+
+    return assert_summary();
+}
+
+var exit_code = main();
+syscall(SYS_EXIT, exit_code);

@@ -126,9 +126,12 @@ smaller `glyph_pad` than `scan_unit` are rejected with
 
 ### File-size cap
 
-`kashi_load_pcf_file` reads at most **4 MiB** of source
+`kashi_load_pcf_file` takes a regular file of at most **4 MiB**
 (`KASHI_PCF_FILE_CAP`). PCF is binary and ~10× denser than BDF —
-4 MiB covers full Unifont. Files larger than the cap are rejected.
+4 MiB covers full Unifont. A larger file is rejected (`0 - KASHI_EINVAL`)
+— since 1.3.0; until then it was cut at the cap and loaded. A FIFO, tty
+or device path is refused too; see
+[`../api/loading.md`](../api/loading.md#reading-font-files).
 
 ## Limits and posture
 

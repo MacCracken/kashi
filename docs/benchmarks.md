@@ -37,7 +37,50 @@ few times and take the steady-state figure; sub-microsecond ops use a
 ≥1e6-iteration batch to amortize `clock_gettime` overhead (see the
 `tests/kashi.bcyr` header).
 
-## Current — 1.2.2 (2026-10-29, cyrius 6.7.18)
+## Current — 1.3.0 (2026-10-30, cyrius 6.7.18)
+
+Host: AMD Ryzen 7 5800H, x86_64 Linux (load average ~0.2). Two binaries,
+both built `CYRIUS_DCE=1` on 6.7.18 from the same 1.3.0 `tests/kashi.bcyr`:
+**1.2.2** (the tag, rebuilt in a scratch copy) and **1.3.0**. Nine
+interleaved rounds; the table gives the median of the per-op means.
+
+1.3.0 adds four **load-path** benches, the first since 0.1.0, booked by
+the roadmap and called for by the 2026-10-30 audit. Each is fed an
+in-memory font built by the bench itself:
+- `load_psf2_512`: 512 glyphs 8×16 with one codepoint each;
+- `load_psf2_rev_4096`: 4,096 table entries in reverse codepoint order,
+  the old insertion sort's worst case at a size 1.2.2 still finishes;
+- `load_bdf_256`: 256 glyphs 8×16;
+- `load_pcf_256`: 256 glyphs 8×16, compressed metrics.
+
+| Benchmark | 1.3.0 | 1.2.2 | Δ | iters |
+|---|---|---|---|---|
+| `glyph_row` | 17.5 ns | 17.7 ns | −1.0 % | 1,000,000 |
+| `glyph_ptr` | 7.0 ns | 6.9 ns | +0.5 % | 1,000,000 |
+| `scan_vga_8x16` | 57.7 µs | 58.1 µs | −0.7 % | 10,000 |
+| `font_row_builtin` | 22.4 ns | 22.6 ns | −0.7 % | 1,000,000 |
+| `font_row_runtime` | 43.9 ns | 44.0 ns | −0.3 % | 1,000,000 |
+| `font_row_runtime_cp` | 58.9 ns | 59.0 ns | −0.1 % | 1,000,000 |
+| `cp437_from_unicode_ascii` | 3.5 ns | 3.5 ns | +0.3 % | 1,000,000 |
+| `cp437_from_unicode_high` | 25.2 ns | 24.6 ns | +2.4 % | 1,000,000 |
+| `font_row_builtin_cp` | 41.0 ns | 40.3 ns | +1.7 % | 1,000,000 |
+| `font_init` | 20.9 µs | 20.9 µs | 0.0 % | 10,000 |
+| `load_psf2_512` | 63.2 µs | 60.7 µs | +4.0 % | 500 |
+| `load_psf2_rev_4096` | **1.10 ms** | 44.2 ms | **−97.5 %** | 20 |
+| `load_bdf_256` | 270 µs | 252 µs | +6.8 % | 200 |
+| `load_pcf_256` | 42.3 µs | 41.8 µs | +1.3 % | 500 |
+
+- **Hot accessors: flat.** `cp437_from_unicode_high` +2.4 % is the C1
+  clamp's extra compare.
+- **Typical loads: 1 – 7 % slower.** That is the cost of:
+  - the already-sorted check that keeps them off the heapsort;
+  - building maps before registering;
+  - BDF's stricter parsing (field-boundary checks, the `ENDFONT` scan).
+- **The reverse-ordered table: 40× faster.** It is quadratic in 1.2.2.
+  At the 256 KiB cap the audit measured 204 s → 69 ms
+  (`docs/audit/2026-10-30-audit.md`, L1).
+
+## Previous — 1.2.2 (2026-10-29, cyrius 6.7.18)
 
 Host: AMD Ryzen 7 5800H, x86_64 Linux (load average ~0.3). Two binaries,
 both built `CYRIUS_DCE=1` on 6.7.18: **1.2.1** (the tag, rebuilt in a
@@ -61,7 +104,7 @@ median of the per-op means. 1.2.2's one code change is a guard in
 **Flat**: mixed signs; the largest, `glyph_ptr` −0.2 ns, is in code that
 did not change.
 
-## Previous — 1.2.1 (2026-10-29, cyrius 6.7.18)
+## Earlier — 1.2.1 (2026-10-29, cyrius 6.7.18)
 
 Host: AMD Ryzen 7 5800H, x86_64 Linux (load average ~1.0). Two binaries,
 both built `CYRIUS_DCE=1` from the same source: **1.2.0 on 6.7.9** (the
@@ -226,6 +269,8 @@ noise — only structural shifts are called out below.
 | **1.2.1** (2026-10-29, 6.7.18) | 18 | 7 | 59,314 | 23 | 45 | 60 |
 | 1.2.1 (re-run 2026-10-29) | 18 | 7 | 59,015 | 23 | 45 | 59 |
 | **1.2.2** (2026-10-29, 6.7.18) | 18 | 7 | 59,025 | 23 | 44 | 60 |
+| 1.2.2 (re-run 2026-10-30) | 18 | 7 | 58,134 | 23 | 44 | 59 |
+| **1.3.0** (2026-10-30, 6.7.18) | 18 | 7 | 57,709 | 22 | 44 | 59 |
 
 > The 0.7.x cuts (BDF, PCF, sidecar tables) added parsers / load paths
 > but **did not touch the hot accessors**, so they aren't separately
@@ -329,5 +374,5 @@ table renders the natural unit.
   baseline is unchanged across them.
 - `kashi_pcf_decode_glyph` (one-shot per glyph at load time) is not
   benched — it's amortized over the font lifetime, not per-render.
-  Load-path benchmarks are booked for 1.3.x (`development/roadmap.md`),
-  as the baseline for measuring the loaders' worst case.
+  The load paths are benched since 1.3.0 (`load_*`, see Current); the
+  per-glyph PCF decode is inside `load_pcf_256`.

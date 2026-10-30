@@ -54,6 +54,182 @@ fn bench_mk_psf2_tab(buf, count) {
     return pos;
 }
 
+# --- Load-path builders (1.3.0) ---
+#
+# The loaders were never benched until the 2026-10-30 audit measured them:
+# their codepoint maps were insertion-sorted, so a table in reverse order
+# cost O(n^2). These builders make in-memory fonts for the load benches
+# below; every glyph is 8 px wide.
+
+fn bench_put16(buf, off, v) {
+    store8(buf + off, v & 0xFF);
+    store8(buf + off + 1, (v >> 8) & 0xFF);
+    return 0;
+}
+
+fn bench_put32(buf, off, v) {
+    bench_put16(buf, off, v & 0xFFFF);
+    bench_put16(buf, off + 2, (v >> 16) & 0xFFFF);
+    return 0;
+}
+
+# UTF-8 encode `cp` (below U+10000) at buf + pos; returns the new position.
+fn bench_utf8(buf, pos, cp) {
+    if (cp < 0x80) {
+        store8(buf + pos, cp);
+        return pos + 1;
+    }
+    if (cp < 0x800) {
+        store8(buf + pos, 0xC0 | (cp >> 6));
+        store8(buf + pos + 1, 0x80 | (cp & 0x3F));
+        return pos + 2;
+    }
+    store8(buf + pos, 0xE0 | (cp >> 12));
+    store8(buf + pos + 1, 0x80 | ((cp >> 6) & 0x3F));
+    store8(buf + pos + 2, 0x80 | (cp & 0x3F));
+    return pos + 3;
+}
+
+# A PSF2 of `count` 8 x `height` glyphs whose Unicode table maps glyph g to
+# codepoint cp0 + g (ascending, rev == 0) or cp0 + count - 1 - g (every
+# entry lower than the one before, rev == 1: the old sort's worst case).
+# Returns the length.
+fn bench_mk_psf2(buf, count, height, cp0, rev) {
+    var i = 0;
+    while (i < 32) { store8(buf + i, 0); i = i + 1; }
+    store8(buf + 0, 0x72); store8(buf + 1, 0xB5); store8(buf + 2, 0x4A); store8(buf + 3, 0x86);
+    bench_put32(buf, 8, 32);
+    bench_put32(buf, 12, 1);
+    bench_put32(buf, 16, count);
+    bench_put32(buf, 20, height);
+    bench_put32(buf, 24, height);
+    bench_put32(buf, 28, 8);
+    var dataend = 32 + count * height;
+    var j = 32;
+    while (j < dataend) { store8(buf + j, j & 0xFF); j = j + 1; }
+    var pos = dataend;
+    var g = 0;
+    while (g < count) {
+        var cp = cp0 + g;
+        if (rev == 1) { cp = cp0 + count - 1 - g; }
+        pos = bench_utf8(buf, pos, cp);
+        store8(buf + pos, 0xFF);
+        pos = pos + 1;
+        g = g + 1;
+    }
+    return pos;
+}
+
+# Append the decimal digits of n (>= 0) at buf + pos; returns the new position.
+fn bench_dec(buf, pos, n) {
+    var tmp[24];
+    var k = 0;
+    var v = n;
+    if (v == 0) { store8(&tmp, 0x30); k = 1; }
+    while (v > 0) {
+        store8(&tmp + k, 0x30 + v % 10);
+        v = v / 10;
+        k = k + 1;
+    }
+    while (k > 0) {
+        k = k - 1;
+        store8(buf + pos, load8(&tmp + k));
+        pos = pos + 1;
+    }
+    return pos;
+}
+
+fn bench_str(buf, pos, s) {
+    var n = strlen(s);
+    memcpy(buf + pos, s, n);
+    return pos + n;
+}
+
+# A BDF of `count` 8x16 glyphs, glyph g encoded as 0x20 + g. Returns the length.
+fn bench_mk_bdf(buf, count) {
+    var pos = bench_str(buf, 0, "STARTFONT 2.1\nFONTBOUNDINGBOX 8 16 0 0\nCHARS ");
+    pos = bench_dec(buf, pos, count);
+    pos = bench_str(buf, pos, "\n");
+    var g = 0;
+    while (g < count) {
+        pos = bench_str(buf, pos, "STARTCHAR g\nENCODING ");
+        pos = bench_dec(buf, pos, 0x20 + g);
+        pos = bench_str(buf, pos, "\nBBX 8 16 0 0\nBITMAP\n");
+        var r = 0;
+        while (r < 16) {
+            pos = bench_str(buf, pos, "5A\n");
+            r = r + 1;
+        }
+        pos = bench_str(buf, pos, "ENDCHAR\n");
+        g = g + 1;
+    }
+    pos = bench_str(buf, pos, "ENDFONT\n");
+    return pos;
+}
+
+# A PCF of `count` (<= 256) 8x16 glyphs: compressed metrics, MSB-bit,
+# LSB-byte, glyph pad 1, scan unit 1; glyph g encoded as byte2 = g.
+# Returns the length.
+fn bench_mk_pcf(buf, count) {
+    var fmt = 0x08;
+    store8(buf + 0, 0x01); store8(buf + 1, 0x66); store8(buf + 2, 0x63); store8(buf + 3, 0x70);
+    bench_put32(buf, 4, 3);
+    var m_off = 56;
+    var m_size = 4 + 2 + count * 5;
+    var b_off = m_off + m_size;
+    var b_size = 4 + 4 + count * 4 + 16 + count * 16;
+    var e_off = b_off + b_size;
+    var e_size = 4 + 10 + count * 2;
+    bench_put32(buf, 8, 0x04); bench_put32(buf, 12, fmt | 0x100);
+    bench_put32(buf, 16, m_size); bench_put32(buf, 20, m_off);
+    bench_put32(buf, 24, 0x08); bench_put32(buf, 28, fmt);
+    bench_put32(buf, 32, b_size); bench_put32(buf, 36, b_off);
+    bench_put32(buf, 40, 0x20); bench_put32(buf, 44, fmt);
+    bench_put32(buf, 48, e_size); bench_put32(buf, 52, e_off);
+    bench_put32(buf, m_off, fmt | 0x100);
+    bench_put16(buf, m_off + 4, count);
+    var g = 0;
+    while (g < count) {
+        var m = m_off + 6 + g * 5;
+        store8(buf + m, 0x80);
+        store8(buf + m + 1, 0x88);
+        store8(buf + m + 2, 0x88);
+        store8(buf + m + 3, 0x90);
+        store8(buf + m + 4, 0x80);
+        g = g + 1;
+    }
+    bench_put32(buf, b_off, fmt);
+    bench_put32(buf, b_off + 4, count);
+    g = 0;
+    while (g < count) {
+        bench_put32(buf, b_off + 8 + g * 4, g * 16);
+        g = g + 1;
+    }
+    var sz = b_off + 8 + count * 4;
+    bench_put32(buf, sz, count * 16);
+    bench_put32(buf, sz + 4, count * 32);
+    bench_put32(buf, sz + 8, count * 64);
+    bench_put32(buf, sz + 12, count * 128);
+    var d = sz + 16;
+    var k = 0;
+    while (k < count * 16) {
+        store8(buf + d + k, k & 0xFF);
+        k = k + 1;
+    }
+    bench_put32(buf, e_off, fmt);
+    bench_put16(buf, e_off + 4, 0);
+    bench_put16(buf, e_off + 6, count - 1);
+    bench_put16(buf, e_off + 8, 0);
+    bench_put16(buf, e_off + 10, 0);
+    bench_put16(buf, e_off + 12, 0);
+    g = 0;
+    while (g < count) {
+        bench_put16(buf, e_off + 14 + g * 2, g);
+        g = g + 1;
+    }
+    return e_off + e_size;
+}
+
 fn main(): i64 {
     alloc_init();
     kashi_font_init();
@@ -181,6 +357,66 @@ fn main(): i64 {
     }
     bench_batch_stop(b10, 10000);
     bench_report(b10);
+
+    # --- Load paths (1.3.0) ---
+    # Loads allocate from the bump heap and never free, so the iteration
+    # counts stay modest. Each load is checked so a broken builder cannot
+    # bench an early error return.
+
+    # A typical console font: 512 glyphs, 8x16, one codepoint per glyph.
+    var lb = alloc(65536);
+    var llen = bench_mk_psf2(lb, 512, 16, 0x100, 0);
+    if (kashi_load_psf(lb, llen) < KASHI_RT_FONT_BASE) { return 1; }
+    var b11 = bench_new("load_psf2_512");
+    bench_batch_start(b11);
+    i = 0;
+    while (i < 500) {
+        sink = sink + kashi_load_psf(lb, llen);
+        i = i + 1;
+    }
+    bench_batch_stop(b11, 500);
+    bench_report(b11);
+
+    # 4,096 table entries in reverse codepoint order — the insertion sort's
+    # worst case, at a size 1.2.2 still finishes.
+    var rb = alloc(65536);
+    var rlen = bench_mk_psf2(rb, 4096, 8, 0x1000, 1);
+    if (kashi_load_psf(rb, rlen) < KASHI_RT_FONT_BASE) { return 1; }
+    var b12 = bench_new("load_psf2_rev_4096");
+    bench_batch_start(b12);
+    i = 0;
+    while (i < 20) {
+        sink = sink + kashi_load_psf(rb, rlen);
+        i = i + 1;
+    }
+    bench_batch_stop(b12, 20);
+    bench_report(b12);
+
+    var bb = alloc(65536);
+    var blen = bench_mk_bdf(bb, 256);
+    if (kashi_load_bdf(bb, blen) < KASHI_RT_FONT_BASE) { return 1; }
+    var b13 = bench_new("load_bdf_256");
+    bench_batch_start(b13);
+    i = 0;
+    while (i < 200) {
+        sink = sink + kashi_load_bdf(bb, blen);
+        i = i + 1;
+    }
+    bench_batch_stop(b13, 200);
+    bench_report(b13);
+
+    var pb = alloc(65536);
+    var plen = bench_mk_pcf(pb, 256);
+    if (kashi_load_pcf(pb, plen) < KASHI_RT_FONT_BASE) { return 1; }
+    var b14 = bench_new("load_pcf_256");
+    bench_batch_start(b14);
+    i = 0;
+    while (i < 500) {
+        sink = sink + kashi_load_pcf(pb, plen);
+        i = i + 1;
+    }
+    bench_batch_stop(b14, 500);
+    bench_report(b14);
 
     return 0;
 }

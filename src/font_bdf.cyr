@@ -191,6 +191,9 @@ fn _kashi_bdf_int(buf, pos, end, out) {
     }
     if (overflow != 0) { return 0; }
     if (pos == start) { return 0; }
+    # 1.3.0 (audit 2026-10-30, B4): the number must end at a field boundary.
+    # `ENCODING 0x41` parsed as 0 with "x41" left over.
+    if (_kashi_bdf_after_kw(buf, pos, end) == 0) { return 0; }
     store64(out + 0, n * sign);
     store64(out + 8, pos);
     return 1;
@@ -343,6 +346,22 @@ fn _kashi_bdf_is_endfont(buf, pos, end) {
     return _kashi_bdf_after_kw(buf, pos + 7, end);
 }
 
+# 1 if an ENDFONT line follows `pos` before any STARTCHAR, else 0. The
+# glyph cursor reports END both at ENDFONT and at the end of the buffer
+# (it serves partial buffers too); a loader asks this to tell a complete
+# font from a truncated one (1.3.0, audit 2026-10-30, B1). Internal.
+fn _kashi_bdf_has_endfont(buf, pos, end) {
+    var p = pos;
+    while (p < end) {
+        var ls = _kashi_bdf_ws(buf, p, end);
+        if (ls >= end) { return 0; }
+        if (_kashi_bdf_is_endfont(buf, ls, end) == 1) { return 1; }
+        if (_kashi_bdf_is_startchar(buf, ls, end) == 1) { return 0; }
+        p = _kashi_bdf_next_line(buf, ls, end);
+    }
+    return 0;
+}
+
 fn _kashi_bdf_is_startprops(buf, pos, end) {
     if (pos + 15 > end) { return 0; }
     if (load8(buf + pos + 0) != 0x53) { return 0; }   # S
@@ -461,6 +480,10 @@ fn kashi_bdf_parse_header(buf, len, hdr, ctx) {
                 # bare `p == ls` check would not advance for those).
                 if (advanced == 0) {
                     if (_kashi_bdf_is_startfont(buf, ls, len) == 1) {
+                        # 1.3.0 (audit 2026-10-30, B5): a header keyword that
+                        # repeats is malformed, not "last one wins" (the F8
+                        # duplicate-table rule, applied to BDF).
+                        if (saw_startfont == 1) { done = 1; }
                         saw_startfont = 1;
                         p = _kashi_bdf_next_line(buf, ls, len);
                         advanced = 1;
@@ -476,6 +499,7 @@ fn kashi_bdf_parse_header(buf, len, hdr, ctx) {
                     if (advanced == 0) {
                         if (_kashi_bdf_is_fontboundingbox(buf, ls, len) == 1) {
                             advanced = 1;
+                            if (saw_fbb == 1) { done = 1; }
                             var q = _kashi_bdf_ws(buf, ls + 15, len);
                             if (_kashi_bdf_int(buf, q, len, &nint) == 0) { done = 1; }
                             if (done == 0) {
@@ -518,6 +542,7 @@ fn kashi_bdf_parse_header(buf, len, hdr, ctx) {
                         if (_kashi_bdf_is_chars(buf, ls, len) == 1) {
                             advanced = 1;
                             if (saw_fbb == 0) { done = 1; }
+                            if (saw_chars == 1) { done = 1; }
                             if (done == 0) {
                                 var q = _kashi_bdf_ws(buf, ls + 5, len);
                                 if (_kashi_bdf_int(buf, q, len, &nint) == 0) { done = 1; }
@@ -619,6 +644,13 @@ fn kashi_bdf_next_glyph(buf, pos, end, ctx, dest, dest_size, gout) {
     var fbb_h = load64(ctx + BDF_CTX_H);
     var fbb_x = load64(ctx + BDF_CTX_X);
     var fbb_y = load64(ctx + BDF_CTX_Y);
+    # 1.3.0 (audit 2026-10-30, B6): bound the ctx before using it. A ctx from
+    # a failed parse is zeroed, and a forged one could make `need` wrap past
+    # the dest_size check.
+    if (fbb_w < 1) { return KASHI_BDF_EINVAL; }
+    if (fbb_w > KASHI_BDF_MAX_WIDTH) { return KASHI_BDF_EINVAL; }
+    if (fbb_h < 1) { return KASHI_BDF_EINVAL; }
+    if (fbb_h > KASHI_BDF_MAX_HEIGHT) { return KASHI_BDF_EINVAL; }
     var stride = (fbb_w + 7) / 8;
     var need = fbb_h * stride;
     if (dest_size < need) {
@@ -696,6 +728,14 @@ fn kashi_bdf_next_glyph(buf, pos, end, ctx, dest, dest_size, gout) {
                 blockend = _kashi_bdf_next_line(buf, ls, end);
                 inblock = 0;
                 advanced = 1;
+            }
+        }
+        # 1.3.0 (audit 2026-10-30, B3): BITMAP's rows run to ENDCHAR. Any
+        # other line after them — an extra row, junk, or a keyword such as a
+        # late ENCODING — is malformed. (They used to be skipped or parsed.)
+        if (inblock == 1) {
+            if (advanced == 0) {
+                if (saw_bitmap == 1) { return KASHI_BDF_EFORMAT; }
             }
         }
         if (inblock == 1) {

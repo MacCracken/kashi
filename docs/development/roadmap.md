@@ -1,54 +1,28 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-10-29 (after 1.2.2)
+> **Last Updated**: 2026-10-30 (after 1.3.0)
 >
 > Forward-facing only. What shipped is in [`CHANGELOG.md`](../../CHANGELOG.md);
 > the live state is in [`state.md`](state.md).
 >
-> **Next: 1.3.x, the hardening pass.** It is owed now. The milestones after
-> it each wait for a consumer to need them.
+> **1.3.0 shipped the hardening pass** (audit 2026-10-30). Three small
+> follow-ups remain under 1.3.x; the milestones after it each wait for a
+> consumer to need them.
 >
 > The version numbers set an order, not a schedule. If a later milestone's
 > trigger arrives first, that milestone ships first and the rest renumber.
 > Toolchain pin moves fall in between as patch releases (see *Moving the
 > cyrius pin* below).
 
-## 1.3.x — Hardening (next)
+## 1.3.x — Follow-ups to the 1.3.0 audit
 
-This is the P(-1) pass `CLAUDE.md` asks for before new features and at minor
-cuts. The newest audit record is 2026-05-28 (0.8.0): 1.1.0 and 1.2.0 shipped
-without one. No consumer has to ask for it.
-
-- [ ] **Security audit** → `docs/audit/YYYY-MM-DD-audit.md`, covering what
-  changed since 0.8.0:
-  - the Unicode reverse index `kashi_font_init` fills and
-    `kashi_cp437_from_unicode`'s search over it (1.1.0);
-  - the glyph buffers, which have had no slack since 1.1.1, so a packer
-    guard is the only thing between a table typo and the next buffer;
-  - the file paths' cap behaviour: a file over the cap is cut, not refused;
-  - the sidecar attach paths and their rollback on failure.
-- [ ] **Worst-case load cost.** The four codepoint-map builders in
-  `src/lib.cyr` (PSF, BDF, PCF, text table) insertion-sort their pairs.
-  That is quadratic in the number of entries, and the caps (256 KiB for PSF
-  and tables, 4 MiB for BDF and PCF) admit tens of thousands of entries in
-  reverse order. Measure the load time of such a file. If it runs to
-  seconds, move to an O(n log n) sort or bound the entry count. PCF builds
-  its pairs already in order, so it is the least exposed.
-- [ ] **Fuzz contracts that check answers, not only ranges.** The 1.2.2 PCF
-  bug sat behind a range-only check from 0.7.1 to 1.2.2. Give the PSF, BDF
-  and PCF fuzzers a round-trip oracle: generate a valid font, load it, and
-  compare every row and every mapped codepoint with what was generated.
-- [ ] **Load-path benchmarks.** `kashi_load_*` and `kashi_pcf_decode_glyph`
-  are not benched (`docs/benchmarks.md`, *Notes*). They give the
-  worst-case measurement a baseline to compare against.
-- [ ] **Docs.**
-  - Roll the ledger up into tiers (`docs/doc-health.md`, open since 1.1.0).
-  - `CLAUDE.md` has five stale statements (listed in the ledger). It is the
-    maintainer's file.
-
-**Done when** the audit file exists with every finding fixed or filed, the
-worst case is measured (and fixed if slow), and CI runs the round-trip
-contracts.
+- [ ] **aarch64 CI leg** (audit T8). Every suite passes under
+  qemu-aarch64 and the test files compile for `--aarch64` since 1.3.0. CI
+  still runs x86_64 only, though agnos builds the core for aarch64 too.
+- [ ] **Roll the doc ledger up into tiers** (`docs/doc-health.md`, open
+  since 1.1.0).
+- [ ] **`CLAUDE.md`'s five stale statements** (listed in the ledger). This
+  is the maintainer's file.
 
 ## 1.4.x — Unicode coverage (when a consumer names a glyph)
 
@@ -89,6 +63,13 @@ bigger buffer than the consumer can give.
 
 ## 1.x.x — Later, gated on something outside kashi
 
+- **A thread-safe library face** (audit L12). Today the contract is
+  "serialize registry, load and attach calls" (`docs/api/README.md`,
+  *Thread safety*), because kashi has no lock in its dependency set.
+  Publishing a font's map and count as one pointer would close the torn-read
+  window. **Gate:** a consumer that loads or attaches fonts from more than
+  one thread.
+
 - **A fourth built-in font** (id 3, e.g. a denser cell for agnos). It is
   additive in the freestanding core. `KASHI_RT_FONT_BASE` moves 3 → 4, which
   is semver-compatible because consumers reference the constant by name.
@@ -97,6 +78,14 @@ bigger buffer than the consumer can give.
   `[bytes / 8]` (cyrius 6.7.2). **Gate:** every consumer that compiles
   `src/font_data.cyr` pins cyrius ≥ 6.7.2. Today they are on 6.6.3 – 6.6.20
   ([`state.md`](state.md), *Consumers*).
+
+## 2.0 candidates (breaking; not booked)
+
+- **Prefix the parser struct constants** (audit L11). `BDF_PH_*`,
+  `BDF_CTX_*`, `BG_*`, `PCF_PH_*`, `PCF_CTX_*` and the like are documented
+  API, but the published bundle exports them unprefixed, so a consumer's
+  same-named global silently rebinds them. 1.3.0 prefixed the internal ones
+  (`_kashi_rt_registry`, `_KASHI_RT_*`).
 
 ## Any time — reactive patches
 
@@ -179,8 +168,11 @@ its CHANGELOG entry.
    - **Build.** `cyrius build` the library and the `CYRIUS_DCE=1` demo, and
      record both sizes. `tests/kashi.fcyr` also builds to `build/kashi`, so
      rebuild the library before comparing sizes or bytes.
-   - **Test.** `cyrius test` runs both suites; record both assertion
-     counts. Then `cyrius fuzz tests/kashi.fcyr`.
+   - **Test.** `cyrius test` runs every suite; record each assertion
+     count. Then `cyrius fuzz tests/kashi.fcyr`. Repeat both under the
+     allocator poison mode, `CYRIUS_POISON=1 cyrius test` and `cyrius fuzz
+     --poison tests/kashi.fcyr`, as CI does since 1.3.0. Where qemu is
+     available, `cyrius test --aarch64` too.
    - **Vet.** `cyrius vet` on the four freestanding files must print "no
      dependencies".
    - **Format and lint.** `cyrius fmt --check` and `cyrius lint

@@ -90,6 +90,13 @@ jobs:
         # `cyrius test src/test.cyr` step ran the unit suite; it would only
         # repeat it now.
         run: cyrius test
+      - name: Test under the allocator poison mode
+        # CYRIUS_POISON=1 builds every test with redzones around each
+        # allocation, so a heap write past a buffer stops the run (exit 86)
+        # instead of corrupting a neighbour silently. The 2026-10-30 audit
+        # found a heap-overflow mutant in kashi_load_bdf that every plain run
+        # passed and only this mode caught.
+        run: CYRIUS_POISON=1 cyrius test
 
   # ── Lint / format / freestanding boundary ──
   lint:
@@ -194,18 +201,22 @@ jobs:
       - name: Resolve deps
         run: cyrius deps
       - name: Run fuzz harnesses (30s budget each)
+        # Each harness finishes in seconds, so reaching the 30 s budget means a
+        # hang: any non-zero exit fails the step, a timeout (124) included.
+        # Until 1.3.0 a comment here called 124 a pass; the step failed on it
+        # anyway, only because GitHub runs steps under `bash -e`. Binaries are
+        # build/fz_<name>: build/<name> is build/kashi for tests/kashi.fcyr,
+        # the library's own output.
         run: |
           mkdir -p build
           pass=0; fail=0
           for f in tests/*.fcyr; do
             name=$(basename "$f" .fcyr)
             printf "  %-25s " "$name"
-            if CYRIUS_DCE=1 cyrius build "$f" "build/$name" >/dev/null 2>&1; then
-              timeout 30 "build/$name" >/dev/null 2>&1
-              rc=$?
-              # exit 0 = clean run, 124 = hit the timeout budget without
-              # crashing — both are a pass. Any other code is a fuzz crash.
-              if [ "$rc" -eq 0 ] || [ "$rc" -eq 124 ]; then
+            if CYRIUS_DCE=1 cyrius build "$f" "build/fz_$name" >/dev/null 2>&1; then
+              rc=0
+              timeout 30 "build/fz_$name" >/dev/null 2>&1 || rc=$?
+              if [ "$rc" -eq 0 ]; then
                 echo "OK"; pass=$((pass+1))
               else
                 echo "FAIL (exit $rc)"; fail=$((fail+1))
@@ -216,6 +227,8 @@ jobs:
           done
           echo "$pass passed, $fail failed"
           test $fail -eq 0
+      - name: Fuzz under the allocator poison mode
+        run: cyrius fuzz --poison tests/kashi.fcyr
 
   # ── Security ──
   security:
