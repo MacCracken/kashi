@@ -15,8 +15,8 @@ The freestanding core carries three built-in fonts, addressable by id:
 
 | Constant | Value | Font |
 |---|---|---|
-| `KASHI_FONT_VGA_8X16` | `0` | IBM VGA BIOS 8×16 ROM font (224 glyphs, full CP437; PD source = Linux's `font_8x16.c`). |
-| `KASHI_FONT_CGA_8X8` | `1` | Hand-drawn AGNOS-original 8×8 ASCII low half (`0x20..0x7F`) + Linux PD `font_8x8.c` high half (`0x80..0xFF`). 224 glyphs. |
+| `KASHI_FONT_VGA_8X16` | `0` | IBM VGA BIOS 8×16 ROM font (224 CP437 glyphs + the 2 extension cells; PD source = Linux's `font_8x16.c`). |
+| `KASHI_FONT_CGA_8X8` | `1` | Hand-drawn AGNOS-original 8×8 ASCII low half (`0x20..0x7F`) + Linux PD `font_8x8.c` high half (`0x80..0xFF`). 224 CP437 glyphs + the 2 extension cells. |
 | `KASHI_FONT_VGA_9X16` | `2` | VGA 9×16 derived at init from `KASHI_FONT_VGA_8X16` + the VGA col-9 replication rule for `0xC0..0xDF` ([ADR 0006](../adr/0006-vga-9x16-derived-builtin.md)). No new byte tables; computed at boot. |
 
 All three cover the CP437 cells `0x20..0xFF` (printable ASCII +
@@ -80,7 +80,7 @@ reset and refilled), so a reader racing a *re*-init never sees a wrong
 value. The *first* call must finish before another CPU reads — kashi
 has no synchronisation of its own.
 
-**Cost**: ~22 µs per call (1.1.0: +1.2 µs over 1.0.10 for the extension
+**Cost**: ~21 µs per call (1.2.1, cyrius 6.7.18; 1.1.0: +1.2 µs over 1.0.10 for the extension
 glyphs and the index fill; `font_init` in
 [`docs/benchmarks.md`](../benchmarks.md)). It is boot work: a consumer
 that calls it on every draw pays that per draw — check
@@ -137,7 +137,7 @@ bytes.
 
 | Param | Type | Range / meaning |
 |---|---|---|
-| `font_id` | `i64` | Font id (built-in 0..2; runtime ≥ 3). Unknown → returns 0. |
+| `font_id` | `i64` | Built-in font id, 0..2 only. Any other id, runtime ids included, returns 0; read runtime fonts through `kashi_font_row` / `kashi_rt_glyph_row`. |
 | `ch` | `i64` | Cell (`0x20..0xFF` CP437, `0x100..0x101` extension). Out-of-range → 0. |
 | `row` | `i64` | Row index 0..height-1. Out-of-range → 0. |
 
@@ -151,9 +151,10 @@ while (row < kashi_font_height(KASHI_FONT_VGA_8X16)) {
 }
 ```
 
-**Performance**: ~17 ns/call (see
+**Performance**: ~18 ns/call (see
 [`docs/benchmarks.md`](../benchmarks.md)). For a hot render path,
-prefer the `kashi_glyph_ptr` + `load8` pattern (~7 ns per row).
+prefer the `kashi_glyph_ptr` + `load8` pattern (~7 ns per glyph +
+~1 ns per row).
 
 ### `kashi_glyph_row_byte(font_id, ch, row, byte_idx)`
 
@@ -204,7 +205,7 @@ if (p != 0) {
 
 **This is the hot-path pattern**: one `kashi_glyph_ptr` call per
 glyph, then direct `load8` reads per row. ~7 ns + ~1 ns/row vs
-~17 ns/call through `kashi_glyph_row`.
+~18 ns/call through `kashi_glyph_row`.
 
 ### `kashi_glyph_encoded(ch)`
 
@@ -265,7 +266,7 @@ var p = kashi_glyph_ptr(KASHI_FONT_VGA_8X16, cell);           # resolve once per
 var ell = kashi_cp437_from_unicode(0x2026);
 ```
 
-**Performance**: ~4 ns for ASCII, ~26 ns for a high-half codepoint
+**Performance**: ~4 ns for ASCII, ~25 ns for a high-half codepoint
 (see [`docs/benchmarks.md`](../benchmarks.md)) — once per glyph, not
 per row.
 

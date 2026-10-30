@@ -5,6 +5,7 @@
 **Refines**: [ADR 0001](0001-freestanding-font-data-core.md) (widens the
 freestanding addressing range)
 **Superseded in part by**: [ADR 0007](0007-cga-high-half-from-linux-pd.md)
+**Storage re-sized**: 1.1.1 — `var X[N]` counts u64 slots and the 8× reservation is gone ([architecture note 001](../architecture/001-module-scope-var-array-byte-addressing.md)); the sizes below are as decided.
 (0.5.2) — the CGA 8×8 high half this ADR leaves blank was filled from the
 Linux PD `font_8x8.c`; the text below records the decision as made.
 **Extended by**: [ADR 0011](0011-unicode-to-cp437-and-extension-glyphs.md)

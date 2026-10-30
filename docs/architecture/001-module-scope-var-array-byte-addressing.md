@@ -1,6 +1,8 @@
 # 001 — Module-scope glyph buffers are byte-addressed inside u64-slot arrays
 
-> **Last Updated**: 2026-10-13 (1.1.1 — the buffers are declared in u64
+> **Last Updated**: 2026-10-29 (1.2.0 — array-size expressions compile from
+> cyrius 6.7.2; the core keeps enum sizes for its consumers' 6.6.x pins.
+> 1.1.1 — the buffers are declared in u64
 > slots, sized to exactly the bytes used; until 1.1.1 the element count was
 > the byte count, which reserved 8× and left 7/8 of every buffer unused)
 

@@ -1,6 +1,6 @@
 # 0003 — Codepoint addressing for runtime fonts via the PSF Unicode table
 
-**Status**: Accepted (built-in addressing refined by [ADR 0011](0011-unicode-to-cp437-and-extension-glyphs.md) — from 1.1.0 a built-in font maps `cp` through `kashi_cp437_from_unicode` instead of reading it as an "ASCII codepoint"/CP437 cell; the text below records the decision as made)
+**Status**: Accepted (built-in addressing refined by [ADR 0011](0011-unicode-to-cp437-and-extension-glyphs.md) — from 1.1.0 a built-in font maps `cp` through `kashi_cp437_from_unicode` instead of reading it as an "ASCII codepoint"/CP437 cell; the text below records the decision as made. The deferred PSF sequences were harvested in 0.5.0 by [ADR 0005](0005-wide-glyph-and-ligatures.md), and a table-less font can attach a sidecar map since 0.7.2 ([ADR 0010](0010-psf-u-variant.md)).)
 **Date**: 2026-05-27
 **Refines**: [ADR 0002](0002-runtime-font-registry.md)
 

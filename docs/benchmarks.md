@@ -37,7 +37,32 @@ few times and take the steady-state figure; sub-microsecond ops use a
 ≥1e6-iteration batch to amortize `clock_gettime` overhead (see the
 `tests/kashi.bcyr` header).
 
-## Current — 1.2.0 (2026-10-29, cyrius 6.7.9)
+## Current — 1.2.1 (2026-10-29, cyrius 6.7.18)
+
+Host: AMD Ryzen 7 5800H, x86_64 Linux (load average ~1.0). Two binaries,
+both built `CYRIUS_DCE=1` from the same source: **1.2.0 on 6.7.9** (the
+previous release, rebuilt in a scratch copy) and **1.2.1 on 6.7.18**. Nine
+interleaved rounds; the table gives the median of the per-op means. 1.2.1
+changes only the toolchain, so this table isolates cyrius 6.7.9 → 6.7.18.
+
+| Benchmark | 1.2.1 / 6.7.18 | 1.2.0 / 6.7.9 | Δ | iters |
+|---|---|---|---|---|
+| `glyph_row` | 17.8 ns | 17.8 ns | −0.4 % | 1,000,000 |
+| `glyph_ptr` | 7.1 ns | 7.1 ns | +0.4 % | 1,000,000 |
+| `scan_vga_8x16` | 59.3 µs | 59.9 µs | −0.9 % | 10,000 |
+| `font_row_builtin` | 22.8 ns | 22.7 ns | +0.2 % | 1,000,000 |
+| `font_row_runtime` | 44.7 ns | 45.0 ns | −0.6 % | 1,000,000 |
+| `font_row_runtime_cp` | 59.9 ns | 59.9 ns | 0.0 % | 1,000,000 |
+| `cp437_from_unicode_ascii` | 3.6 ns | 3.6 ns | +0.2 % | 1,000,000 |
+| `cp437_from_unicode_high` | 25.2 ns | 25.3 ns | −0.5 % | 1,000,000 |
+| `font_row_builtin_cp` | 41.0 ns | 41.3 ns | −0.8 % | 1,000,000 |
+| `font_init` | 21.2 µs | 21.1 µs | +0.2 % | 10,000 |
+
+**Flat**: every row is within ±0.9 %, with mixed signs. The binaries are
+the same size as 6.7.9's but not byte-identical (codegen and stdlib
+offsets moved), and none of that shows up in an accessor.
+
+## Previous — 1.2.0 (2026-10-29, cyrius 6.7.9)
 
 Host: AMD Ryzen 7 5800H, x86_64 Linux (load average ~1.4 at the start).
 Two binaries, both built `CYRIUS_DCE=1` from the same source: **1.1.1 on
@@ -65,7 +90,7 @@ toolchain moved nothing measurable. Absolute figures sit 1–3.5 % below the
 session-to-session drift, which is why the old pin is re-measured in the
 same session.
 
-## Previous — 1.1.1 (2026-10-13, cyrius 6.6.20)
+## Earlier — 1.1.1 (2026-10-13, cyrius 6.6.20)
 
 Host: AMD Ryzen 7 5800H, x86_64 Linux (load not recorded; only a read-only
 file search ran alongside). Three binaries, built `CYRIUS_DCE=1` and run
@@ -173,6 +198,8 @@ noise — only structural shifts are called out below.
 | **1.1.1** (2026-10-13, 6.6.20) | 18 | 8 | 62,962 | 24 | 47 | 63 |
 | 1.1.1 on 6.6.20 (re-run 2026-10-29) | 18 | 7 | 61,881 | 24 | 46 | 61 |
 | **1.2.0** (2026-10-29, 6.7.9) | 18 | 8 | 61,787 | 23 | 46 | 61 |
+| 1.2.0 on 6.7.9 (re-run 2026-10-29) | 18 | 7 | 59,858 | 23 | 45 | 60 |
+| **1.2.1** (2026-10-29, 6.7.18) | 18 | 7 | 59,314 | 23 | 45 | 60 |
 
 > The 0.7.x cuts (BDF, PCF, sidecar tables) added parsers / load paths
 > but **did not touch the hot accessors**, so they aren't separately
@@ -191,9 +218,10 @@ noise — only structural shifts are called out below.
 > one interleaved session (CSV versions `1.1.0-rerun`, `1.1.0-on-6.6.20`,
 > `1.1.1`, all ten benchmarks): compare them with each other.
 > `glyph_ptr` reads 8 there against 7 before — 7.5–7.6 ns rounding up,
-> the same in all three. The two 2026-10-29 rows (`1.1.1-on-6.6.20`,
-> `1.2.0`) are likewise one interleaved session: compare them with each
-> other.
+> the same in all three. The 2026-10-29 rows are two interleaved
+> sessions: `1.1.1-on-6.6.20` with `1.2.0`, then `1.2.0-on-6.7.9` with
+> `1.2.1`. Compare within a pair; the second pair ran ~3 % lower across
+> the board.
 
 ## Structural shifts called out
 
@@ -216,8 +244,8 @@ These are the only non-noise transitions in the table above:
   more valuable than 1 ns/row.
 - **1.0.10 → 1.1.0 (`font_row_builtin` 21 → 24 ns, same session)**: the
   built-in path now maps the codepoint (ADR 0011) — a real, intended cost,
-  per row on the convenience accessor; see "Current" for how to pay it once
-  per glyph. `font_init` +1.2 µs (+6 %) is the extension glyphs plus the
+  per row on the convenience accessor; see "Hot-path render pattern" below
+  for how to pay it once per glyph. `font_init` +1.2 µs (+6 %) is the extension glyphs plus the
   Unicode index fill; `scan_vga_8x16` +3 % is code placement (both shown
   above).
 - **1.0.0 → 1.0.9 (`scan_vga_8x16` 64,000 → 56,193; `font_row_runtime_cp`

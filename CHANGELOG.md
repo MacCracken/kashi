@@ -7,6 +7,152 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-29 — cyrius 6.7.18, and the 1.2 doc sweep
+
+Patch. The pin moves cyrius 6.7.9 → 6.7.18, `lib/` is re-vendored and re-locked from the 6.7.18 snapshot, and the
+full-tree documentation sweep that 1.2.0 left outstanding is done. **`src/`, `tests/` and `docs/examples/` are
+unchanged: no glyph, symbol, signature, offset or accessor result changed.**
+- The 678-line glyph sheet still hashes to the pin `5544d63f…`, and the demo's output is byte-identical to 6.7.9's.
+- 454 + 145 assertions pass, and fuzz is clean.
+- The library and demo are the same size as on 6.7.9: 199,968 B and 56,816 B.
+- Bench is flat: every row is within ±0.9 % of 1.2.0 on 6.7.9.
+
+### Changed
+
+- **Toolchain: cyrius 6.7.9 → 6.7.18.** All 6.7.10 – 6.7.18 consumer notes (cyrius's
+  `docs/development/ecosystem-migration.md`, ~6,700 lines) were screened against comment-stripped copies of kashi's
+  11 source files. Nothing reaches kashi:
+  - **No new reserved words.**
+  - **No name collisions.** The vendored stdlib gained 53 top-level names and lost 5; none matches any kashi
+    identifier, exact or case-insensitive.
+  - **New refusals, none hit.** Each was checked by scan:
+    - enum members without a separator (6.7.16): all 138 members across 22 enums are separated;
+    - a statement that is only a `load*` (6.7.17): every one of the 401 uses is inside an expression;
+    - trailing code on an `include` line (6.7.17): all 10 are bare;
+    - a top-level `return` (6.7.11): none;
+    - redeclared globals and redefined fns (6.7.12 – 6.7.16): none.
+  - **The new lint overrun and write-length rules** (6.7.11, 6.7.12): no constant-offset access passes the end of
+    its array, and each literal `syscall(1, …)` write passes the literal's exact length.
+  - **The stdlib fns kashi reaches (104):** `file_read_all`, `file_open` and `vec_push` / `vec_get` changed bodies,
+    with the same behaviour for kashi.
+  - **CLI:** no change to how `test`, `fuzz`, `bench`, `vet`, `fmt`, `distlib` or `[build] test` work for kashi. The
+    one removal, `cyrius tests` (6.7.12), is not used here.
+  - **Global layout:** no release in the range changes how module-scope variables are ordered.
+
+  All seven entry points (library, demo, both suites, bench, fuzz, glyph sheet) build on 6.7.18 with no warning.
+- **`lib/` and `cyrius.lock`.** `cyrius deps` re-vendored the 24 declared stdlib files from the 6.7.18 snapshot and
+  re-locked. 17 hashes moved since 6.7.9:
+  - `alloc`, `alloc_cx`, `alloc_windows`;
+  - `args_agnos`, `args_macos`;
+  - `fmt`, `fnptr`, `io`, `result`, `vec`;
+  - `syscalls` with its six platform peers.
+
+  `lib/` is byte-identical to the snapshot. `cyrius deps --verify` reports 24 verified, 0 failed, and `cyrius deps
+  --locked` is clean. kashi has no git deps; `[deps].stdlib` is unchanged.
+- **Size.** The library (199,968 B) and the `CYRIUS_DCE=1` demo (56,816 B) are unchanged in size, but not
+  byte-identical: codegen and stdlib offsets moved.
+- **Checked on 6.7.18:**
+  - **`cyrius vet`.** All four freestanding files report "no dependencies"; `src/lib.cyr` reports 4 deps, 0
+    untrusted.
+  - **fmt and strict lint** are clean on all 11 files.
+  - **The fset-guard check still sees all four guards.** Each of the four packer guards was removed in turn; each
+    mutant fails "guard: every core byte unchanged" (453 / 454). cycc still lays out module-scope variables in
+    declaration order.
+- **`dist/`.** `cyrius distlib` moved only the version stamp, and `dist/kashi.deps` is unchanged. A scratch consumer
+  (`git` + `tag` + `path`, `modules = ["dist/kashi.cyr"]`) builds the 1.2.1 bundle and runs on **6.6.3 and 6.6.6**
+  (the `path` wins below 6.7.6) and on **6.7.18** with `CYRIUS_LOCAL=1`: font init, both accessor faces, the
+  Unicode map and a loader's error path.
+- **Bench** (cyrius 6.7.18 vs 6.7.9). Two `CYRIUS_DCE=1` binaries, nine interleaved rounds, medians:
+
+  | Benchmark | 1.2.0 / 6.7.9 | 1.2.1 / 6.7.18 | Δ |
+  |---|---|---|---|
+  | `glyph_row` | 17.8 ns | 17.8 ns | −0.4 % |
+  | `glyph_ptr` | 7.1 ns | 7.1 ns | +0.4 % |
+  | `scan_vga_8x16` | 59.9 µs | 59.3 µs | −0.9 % |
+  | `font_row_builtin` | 22.7 ns | 22.8 ns | +0.2 % |
+  | `font_row_runtime` | 45.0 ns | 44.7 ns | −0.6 % |
+  | `font_row_runtime_cp` | 59.9 ns | 59.9 ns | 0.0 % |
+  | `cp437_from_unicode_ascii` | 3.6 ns | 3.6 ns | +0.2 % |
+  | `cp437_from_unicode_high` | 25.3 ns | 25.2 ns | −0.5 % |
+  | `font_row_builtin_cp` | 41.3 ns | 41.0 ns | −0.8 % |
+  | `font_init` | 21.1 µs | 21.2 µs | +0.2 % |
+
+  All flat. `docs/benchmarks/history.csv` gains `1.2.0-on-6.7.9` and `1.2.1` rows.
+- **Kernel side.** `src/font_data.cyr` is byte-identical to 1.1.1's, so agnos's build at its 6.6.20 pin is
+  unchanged. The core stays on 6.6.x syntax for its consumers' pins (agnos 6.6.20, aethersafha 6.6.11, dhancha, crab
+  and puka 6.6.6, jalwa 6.6.3).
+
+### Documentation
+
+**The full-tree sweep owed since the 1.2 minor.** Every file in scope was re-read against `src/`, the tests, the
+manifest and the consumer repos, and every finding was verified before it was fixed. Each file's grade is in
+`docs/doc-health.md`. The corrections that change what a reader would do:
+- **API reference** (`docs/api/`):
+  - **`api/README.md`.** The pure parsers do not share `KASHI_EINVAL` / `KASHI_EFORMAT`: BDF and PCF return their
+    own `KASHI_BDF_*` / `KASHI_PCF_*` codes (1 / 2). "Every function returns one of three shapes" is now "most",
+    with the exceptions listed. 1.1.0 "changed no signature" (it did change two results).
+  - **`api/core.md`.** `kashi_glyph_row` and the core accessors take built-in ids 0..2 only; a runtime id returns
+    0. The hot-path cost is ~7 ns per glyph + ~1 ns per row (it said "~7 ns per row"). Cost figures are refreshed
+    to 1.2.1.
+  - **`api/accessors.md`.** The perf block was still labelled 0.8.0 and is refreshed. `kashi_font_seq_glyph` can
+    hit on a BDF / PCF font with an attached binary table.
+  - **`api/attach.md`.** A sidecar file over 256 KiB is truncated, not rejected. The text-table example's
+    `tab_len` is 39 (it said 35, which cut the last line).
+  - **`api/parsers.md` and `api/loading.md`.** PCF output rows are `ceil(width / 8)` bytes, not "1-byte-stride".
+    `cyrius vet` replaces `cyaudit vet`, and the overlong-UTF-8 rule is credited to ADR 0010. **⚠ A caveat on
+    `kashi_pcf_cp_to_idx`** — see *Known issue*.
+  - **`api/codes.md`.** The header notes the 1.1.0 `KashiExtRange` and that `KASHI_EXT_LAST` / `_COUNT` can rise.
+- **Guides:**
+  - **`loading-psf-fonts.md`.** A load returns `font_id ≥ KASHI_RT_FONT_BASE` (3), not ≥ 2.
+    `kashi_rt_font_stride` is runtime-only (0 on a built-in). A sidecar attach on a built-in returns
+    `0 - KASHI_EINVAL`.
+  - **All three format guides** include `lib/kashi.cyr`, the consumer path; `src/lib.cyr` cannot resolve once
+    vendored.
+  - **`getting-started.md`.** The pin is 6.7.18 and `tag = "1.2.1"`. CI's fmt / lint walk includes
+    `docs/examples/`. The consumer-`path` description matches the stack: only crab keeps a live `path`.
+- **ADRs.** Status lines now point at what changed each decision later:
+  - 0001 → amendments, built-in set, 1.1.1 sizing;
+  - 0002 → width cap lifted by 0005, BDF / PCF in the include chain;
+  - 0003 → sequences (0005) and sidecar attach (0010);
+  - 0004, 0006, 0007 → the 1.1.1 storage sizes and 0011;
+  - 0005 → 0006's stride-2 font.
+
+  Two have been wrong since they were written:
+  - **ADR 0008's BDF API sketch** never matched the shipped one. Its status now lists the differences: the
+    signatures, `BG_KIND`, and that a missing `ENCODING` fails the parse.
+  - **ADR 0009** gave the PCF ctx as 128 bytes; it is 144 (136 used).
+
+  Also: 0010's replace semantics note the 0.8.0 F9 rollback, 0011's two stale lines are fixed, and the index is
+  updated.
+- **Audits.** The 2026-05-27 audit gets forward notes: the 8× reservation is gone since 1.1.1, and the `cyaudit`
+  workaround was retired at 1.0.1. The 0.8.0 audit's "422 assertions" is 442.
+- **Root files.**
+  - **`SECURITY.md`.** The fuzz rounds are ~8,500 across three parsers + the text-tab path (it said ~7,500 across
+    "four parsers"). The audit paragraph now says the P(-1) pass is at minor / v1.0 cuts, and that 1.1.0 / 1.2.0
+    have no audit file.
+  - **`README.md`.** Tag, status line, and a 6.7.6 caveat on agnos's path-only snippet.
+  - **`CONTRIBUTING.md`.** The pin.
+  - **`cyrius.cyml`.** A comment said agnos cannot link "the stdlib the other three modules use"; only
+    `src/lib.cyr` uses it.
+- **Roadmap.** The 6.7.9 → 6.7.18 precedent. Step 4's scratch-consumer recipe is updated for 6.7.6's git-first
+  resolution: `git` + `tag` + `path`, then `CYRIUS_LOCAL=1`.
+- **Benchmarks.** "Current" is 1.2.1, with the Trend rows; a stale "see Current" pointer is fixed.
+- **Left open on purpose** (listed in `docs/doc-health.md`):
+  - **`CLAUDE.md`** (five stale statements). It is operator-owned.
+  - **Stale comments in `src/`.** Editing them changes `src/` and `dist/kashi.cyr`; they belong in the next source
+    change.
+
+### Known issue
+
+- **`kashi_pcf_cp_to_idx` wraps a codepoint above U+FFFF into the BMP.** It keeps only the low 16 bits, so `0x10041`
+  resolves as U+0041 on a font that maps ASCII; it should return `0 - 1`. Present since 0.7.1.
+  - The library face's PCF loader is not affected: it calls the function only with in-range codepoints, and
+    `kashi_font_row` / `_ptr` on a PCF font go through the resulting map.
+  - The fuzz harness checks only that the index is in range, so it never saw this.
+  - Not fixed here, because 1.2.1 changes no source. The issue is filed in
+    `docs/development/issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md`, and `docs/api/parsers.md` carries the
+    caveat: pass `cp ≤ 0xFFFF`.
+
 ## [1.2.0] - 2026-10-29 — cyrius 6.7.9
 
 Minor. The pin moves cyrius 6.6.20 → 6.7.9, into cyrius's 6.7.x language minor, and `lib/` is re-vendored and

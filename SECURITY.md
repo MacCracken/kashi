@@ -50,8 +50,8 @@ Security-relevant areas:
   dependency-free** (`cyrius vet` reports "no dependencies"),
   validation-first (magic, header, geometry, glyph count, total
   length all checked before any indexed read past the fixed header),
-  and fuzzed in `tests/kashi.fcyr` (~7,500 rounds across the four
-  parsers and the text-tab attach path).
+  and fuzzed in `tests/kashi.fcyr` (~8,500 rounds: PSF 4,000, BDF
+  2,000, PCF 1,500, and the text-tab attach path 1,000).
 - **Untrusted Unicode tables** — the PSF2 UTF-8 decoder rejects
   codepoints > U+10FFFF, the UTF-16 surrogate range (audit F2,
   0.6.0), and overlong sequences per RFC 3629 (audit F3, 0.7.2).
@@ -73,9 +73,11 @@ not supported.
 ## Hardening
 
 Per [AGNOS first-party standards](https://github.com/MacCracken/agnosticos/blob/main/docs/development/first-party/first-party-standards.md#security-hardening-required-before-every-release),
-a security audit pass runs before every release; findings are
-recorded in `docs/audit/YYYY-MM-DD-audit.md`. The audit trail to
-date:
+a security audit pass belongs before every release; kashi runs one as
+its P(-1) step at minor and v1.0 cuts (`CLAUDE.md`), and findings are
+recorded in `docs/audit/YYYY-MM-DD-audit.md`. ⚠ The newest record is
+2026-05-28 (0.8.0): the 1.x minors (1.1.0, 1.2.0) have no audit file.
+The audit trail to date:
 
 - **`docs/audit/2026-05-27-audit.md`** — 0.2.0 P(-1) on the
   freestanding-core accessor surface. Proved memory-safe for the

@@ -90,7 +90,8 @@ same glyph).
 ### Replace semantics
 
 Attaching always **replaces** any existing umap and seqs on the
-runtime record. The bump allocator doesn't free the previous arrays;
+runtime record. (Since 0.8.0, a *failed* attach leaves the previous map
+intact: audit 2026-05-28-0.8.0, F9.) The bump allocator doesn't free the previous arrays;
 the storage is leaked-conceptually but harmless (allocations live
 until process exit). Callers that want to merge can read out the
 current map via `kashi_rt_*` accessors and rebuild. No "merge" API

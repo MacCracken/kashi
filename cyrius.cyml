@@ -5,7 +5,7 @@ description = "kashi — AGNOS console-font subsystem: freestanding bitmap glyph
 license = "GPL-3.0-only"
 repository = "https://github.com/MacCracken/kashi"
 language = "cyrius"
-cyrius = "6.7.9"
+cyrius = "6.7.18"
 
 [build]
 entry = "src/lib.cyr"
@@ -41,7 +41,7 @@ output = "kashi"
 # defect). Order is the include chain: font_data first (everything reads its tables), aggregator last.
 #
 # ⛔ `src/font_data.cyr` STAYS the freestanding entry point and is NOT replaced by this. agnos has
-# `[deps] stdlib = []` and physically cannot link the stdlib the other three modules use — ADR 0001
+# `[deps] stdlib = []` and physically cannot link the stdlib that `src/lib.cyr` uses — ADR 0001
 # is unchanged, this adds the missing second half of it.
 [lib]
 modules = [

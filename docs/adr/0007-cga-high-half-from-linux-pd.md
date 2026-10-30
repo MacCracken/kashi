@@ -1,6 +1,6 @@
 # 0007 — CGA 8×8 high half from Linux's public-domain `font_8x8.c`
 
-**Status**: Accepted
+**Status**: Accepted (since 1.1.0 the CGA font also carries two kashi-drawn extension cells, [ADR 0011](0011-unicode-to-cp437-and-extension-glyphs.md). The buffer has been 226 u64 slots = 1,808 B since 1.1.1, per [architecture note 001](../architecture/001-module-scope-var-array-byte-addressing.md).)
 **Date**: 2026-05-28
 **Refines / extends**: [ADR 0004](0004-cp437-glyph-range.md) (CP437 range
 widening was done for VGA 8×16; the CGA high half stayed blank then) and

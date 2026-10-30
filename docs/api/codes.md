@@ -1,8 +1,9 @@
 # Result codes + constants reference
 
-> **Frozen as of 0.9.0**. Numeric values for every exported enum
-> in kashi. Values won't change in a future cut; new members may
-> be added.
+> **Frozen as of 0.9.0**; extended in 1.1.0 (`KashiExtRange`). Numeric
+> values for every exported enum in kashi. Values won't change in a
+> future cut, except `KASHI_EXT_LAST` / `KASHI_EXT_COUNT`, which rise
+> when an extension cell is added; new members may be added.
 
 ## Result codes
 

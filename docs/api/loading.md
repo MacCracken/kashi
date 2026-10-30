@@ -93,8 +93,8 @@ Loads a PCF (Portable Compiled Format) bitmap font — X11's compiled
 binary, what `bdftopcf` produces. Validates the TOC, locates the
 three required tables (`PCF_METRICS`, `PCF_BITMAPS`,
 `PCF_BDF_ENCODINGS`), validates uniform metrics, canonicalizes glyph
-bitmaps to MSB-bit / 1-byte-stride form regardless of source
-endianness or bit order ([ADR 0009](../adr/0009-pcf-import.md)).
+bitmaps to MSB-bit form with unpadded rows of `ceil(width / 8)` bytes,
+regardless of source endianness or bit order ([ADR 0009](../adr/0009-pcf-import.md)).
 
 - **File-size cap**: `kashi_load_pcf_file` reads at most **4 MiB**
   (`KASHI_PCF_FILE_CAP`).

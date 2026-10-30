@@ -1,6 +1,10 @@
 # 0008 — BDF import
 
-**Status**: Accepted
+**Status**: Accepted (⚠ the shipped API differs from the sketch below; [`docs/api/parsers.md`](../api/parsers.md) is the reference. The differences:
+- the signatures are `kashi_bdf_parse_header(buf, len, hdr, ctx)` and `kashi_bdf_next_glyph(buf, pos, end, ctx, dest, dest_size, gout)`;
+- the header fields are `BDF_PH_*` (same offsets as `KASHI_PH_*`), and the parser has its own `KASHI_BDF_*` codes, which `lib.cyr` translates;
+- a glyph's outcome is a `BG_KIND` field (OK / SKIP / END), not sentinel codepoints in `BG_CP`;
+- a `STARTCHAR` with no `ENCODING` line fails the parse (`KASHI_BDF_EFORMAT`) rather than being skipped. Only `ENCODING -1` and out-of-range codepoints are skipped.)
 **Date**: 2026-05-28
 **Refines / extends**: [ADR 0002](0002-runtime-font-registry.md) (uses the
 same runtime registry and unified accessor dispatch),

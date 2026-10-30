@@ -1,7 +1,8 @@
 # Getting started with kashi
 
-> **Last Updated**: 2026-10-29 (1.2.0 — the pin at cyrius 6.7.9, `tag` lines
-> bumped, the 6.7.6 local-`path` rule; 1.1.1 — glyph buffers right-sized, a
+> **Last Updated**: 2026-10-29 (1.2.1 — the pin at cyrius 6.7.18, `tag`
+> lines bumped, the consumer-`path` description matches the stack; 1.2.0 —
+> the 6.7.6 local-`path` rule; 1.1.1 — glyph buffers right-sized, a
 > bare `cyrius test` runs both suites; 1.1.0 — Unicode
 > text: `kashi_cp437_from_unicode` and the extension glyphs; rewritten for the
 > frozen 1.0 surface at 1.0.9)
@@ -43,14 +44,14 @@ cyrius test                              # unit (src/test.cyr) + integration (te
 cyrius vet   src/font_data.cyr           # MUST print "no dependencies" — the freestanding boundary
 cyrius fuzz  tests/kashi.fcyr            # parser fuzz + accessor bounds contract
 cyrius bench tests/kashi.bcyr            # hot-path timings (CI runs it with CYRIUS_DCE=1)
-cyrius fmt   src/lib.cyr --check         # per file; CI checks src/*.cyr and tests/*
+cyrius fmt   src/lib.cyr --check         # per file; CI checks src/, tests/ and docs/examples/
 cyrius lint  src/lib.cyr                 # per file; expected: 0 warnings, 0 untracked deferrals
 cyrius distlib                           # regenerate dist/kashi.cyr + dist/kashi.deps (tracked; CI fails on drift)
 cyrius build docs/examples/glyph_sheet.cyr build/glyph_sheet && ./build/glyph_sheet | sha256sum
                                          # must equal docs/examples/glyph_sheet.sha256 (CI checks)
 ```
 
-There are two suites, and on the pinned cyrius (6.7.9; any pin from 6.6.17)
+There are two suites, and on the pinned cyrius (6.7.18; any pin from 6.6.17)
 a bare `cyrius test` runs both: first the `[build].test` entry, `src/test.cyr`
 (~450 assertions, including the byte-fidelity pins for the built-in tables and
 the storage-sizing checks), then every `tests/*.tcyr` (`tests/kashi.tcyr`,
@@ -98,18 +99,19 @@ reason to take it.
 ### Consume it
 
 Declare the core as a single-module dep. This is the shape every consumer
-in the stack uses (agnos uses `path` only; the others carry `git` + `tag`
-and, by stack convention, `path` too so a sibling checkout wins):
+in the stack uses (agnos uses `path` only; the others carry `git` + `tag`,
+and a `path` to a sibling checkout is an optional dev override that most
+keep commented out):
 
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.2.0"
+tag     = "1.2.1"
 path    = "../kashi"                  # optional; on cyrius >= 6.7.6, only under --local
 modules = ["src/font_data.cyr"]       # vendored as lib/kashi_font_data.cyr
 ```
 
-The sibling wins only below cyrius 6.7.6. From 6.7.6 a `path` beside
+Below cyrius 6.7.6 a live `path` wins over the tag. From 6.7.6 a `path` beside
 `git` / `tag` is a dev override: a default build builds the tag, the
 sibling is used only in local mode (`--local` / `CYRIUS_LOCAL=1`), and
 an entry with only a local `path` is refused.
@@ -217,7 +219,7 @@ amendment):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.2.0"
+tag     = "1.2.1"
 path    = "../kashi"
 modules = ["dist/kashi.cyr"]          # vendored as lib/kashi.cyr
 ```

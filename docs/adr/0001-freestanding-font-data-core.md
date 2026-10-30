@@ -1,6 +1,6 @@
 # 0001 — Freestanding font-data core, separate from the stdlib library face
 
-**Status**: Accepted
+**Status**: Accepted (amended 2026-08-17 for 1.0.6 and 2026-09-21 for 1.0.10 — see *Amendment* below: the library face ships as `dist/kashi.cyr`. The built-in set was extended by ADRs [0004](0004-cp437-glyph-range.md), [0006](0006-vga-9x16-derived-builtin.md), [0007](0007-cga-high-half-from-linux-pd.md) and [0011](0011-unicode-to-cp437-and-extension-glyphs.md). Buffer sizes are per [architecture note 001](../architecture/001-module-scope-var-array-byte-addressing.md) since 1.1.1. The text below records the decision as made.)
 **Date**: 2026-05-27
 
 ## Context

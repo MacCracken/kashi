@@ -1,8 +1,15 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-10-29 (1.2.0)
+> **Last Updated**: 2026-10-29 (1.2.1)
 >
-> **Status: No Open Work.**
+> **Status: one open issue, no feature work booked.**
+>
+> 1.2.1 (2026-10-29) moved the pin 6.7.9 → 6.7.18 and did the full-tree
+> doc sweep. The sweep found one code bug, filed as OPEN
+> ([issue](issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md)):
+> `kashi_pcf_cp_to_idx` wraps a codepoint above U+FFFF. Its fix, together
+> with the stale `src/` comments the sweep listed (`../doc-health.md`), is
+> the next source change.
 >
 > 1.2.0 (2026-10-29) moved the pin 6.6.20 → 6.7.9, into cyrius's 6.7.x
 > language minor, and changed no source. It is cut as a minor to mark the
@@ -158,7 +165,13 @@ kashi minor (1.2.0, 6.6.x → 6.7.x).
    fails on drift). A distlib change can move more than the stamp — 6.6.18
    added the requires block and shrank the sidecar to the leaves the
    compile-verify needs; check a scratch consumer still builds against the
-   bundle on the oldest pin a consumer uses.
+   bundle on the oldest pin a consumer uses. The consumer declares
+   `[deps.kashi]` with `git` + `tag` (any existing tag) + `path` = this
+   checkout + `modules = ["dist/kashi.cyr"]`. Below cyrius 6.7.6 the `path`
+   wins on a plain `cyrius deps`. From 6.7.6 a plain resolve builds the tag;
+   resolve and build with `CYRIUS_LOCAL=1` to get the working tree (it
+   resolves into `build/local-deps/lib/`). A path-only entry is refused
+   from 6.7.6. Check `head -2 lib/kashi.cyr` names the new version.
 5. **The glyph sheet**: `cyrius build docs/examples/glyph_sheet.cyr
    build/glyph_sheet && ./build/glyph_sheet | sha256sum` must equal
    `docs/examples/glyph_sheet.sha256`. CI does this on every push, so a
@@ -175,6 +188,49 @@ kashi minor (1.2.0, 6.6.x → 6.7.x).
 note here warned that the full snapshot's `sigil.cyr` / `mabda.cyr` folds fail
 `cyrfmt --check`. With `lib/` holding only what `cyrius deps` vendors, neither
 file is there.)
+
+### Precedent — 6.7.9 → 6.7.18 (1.2.1, 2026-10-29)
+
+Nine toolchain releases, all patch-level. **Checked against cyrius's
+`docs/development/ecosystem-migration.md` § 6.7.10 – 6.7.18**, about 6,700
+lines and too long to read inline. A subagent screened it against
+comment-stripped copies of the 11 source files, and its "needs a run" items
+were settled by the gate runs. Nothing reached kashi:
+- **No new reserved words.** The vendored stdlib gained 53 names (none
+  collides with a kashi identifier).
+- **New refusals, none hit:** enum members without a separator, a bare
+  `load*` statement, trailing code on an `include` line, a top-level
+  `return`, redeclared globals or fns.
+- **The new lint rules:** array overrun at a constant offset, and the
+  write length of a literal `syscall(1, …)`.
+- **No change to how module-scope variables are ordered.**
+
+Notes for the next move:
+
+- **A screen this size is a subagent's job.** Give it the source list, the
+  manifest and CI, then run the gates on its "needs a run" items yourself.
+- **After a pin bump, run a plain `cyrius deps`, not `cyrius deps
+  --lock`.** Checked on 6.7.18 in a scratch copy:
+  - With the old `lib/` present, `--lock` declines to re-lock. It leaves the
+    old pin's lock, names `cyrius deps` as the fix, and **still exits 0**.
+  - With no `lib/`, it writes an empty lock ("0 deps locked").
+
+  The first case would leave the lock stale; the second makes CI's next
+  `cyrius deps` fail.
+- **`cyrius tests` is gone** (6.7.12); use `cyrius test`.
+- **`tests/kashi.fcyr` also builds to `build/kashi`.** CI's fuzz loop
+  names each binary after its `.fcyr`, so it overwrites the library build
+  when both run in one checkout. Rebuild the library before comparing
+  sizes or bytes.
+
+**Result:** the glyph sheet was **byte-identical** (`5544d63f…`), and so was
+the demo's output. 454 + 145 assertions passed. Fuzz was clean. `cyrius vet`
+reported "no dependencies" for all four freestanding files. All four guard
+mutants were caught. The bench was flat (every row within ±0.9 %). The
+library and demo were the **same size** as on 6.7.9 (199,968 / 56,816 B),
+though not byte-identical. `dist/kashi.cyr` changed only in its stamp, and a
+scratch consumer built and ran it on 6.6.3, 6.6.6 and 6.7.18. Kernel side:
+unchanged (the core is 1.1.1's). Full numbers in `CHANGELOG.md` *1.2.1*.
 
 ### Precedent — 6.6.20 → 6.7.9 (1.2.0, 2026-10-29)
 

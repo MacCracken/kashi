@@ -1,6 +1,6 @@
 # 0005 — Wide-glyph rows + PSF ligature lookup
 
-**Status**: Accepted
+**Status**: Accepted (extended by [ADR 0006](0006-vga-9x16-derived-builtin.md): the 0.5.1 9×16 built-in has stride 2, so "both built-ins return `1`" below is true of the two 8-wide fonts only)
 **Date**: 2026-05-27
 **Refines / extends**: [ADR 0002](0002-runtime-font-registry.md) (accessor
 shape), [ADR 0003](0003-codepoint-addressing-runtime-fonts.md) (the

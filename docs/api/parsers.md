@@ -5,8 +5,9 @@
 > by byte, build a custom storage scheme on top of kashi's
 > byte-level guarantees.
 
-Each parser file is **dependency-free** (`cyaudit vet` reports
-"no dependencies"): only `load8`/`load32`/`load64` + arithmetic.
+Each parser file is **dependency-free** (`cyrius vet` reports
+"no dependencies"): only the load / store intrinsics + arithmetic (the
+stores write the caller's header / context struct).
 No allocations. Bounds-safe on any input, hostile or otherwise.
 
 Most consumers should use the higher-level `kashi_load_*` API in
@@ -34,7 +35,7 @@ which family parsed it.
 
 PSF defines the constants as `KASHI_PH_*` in `font_psf.cyr`. BDF
 re-declares them as `BDF_PH_*` in `font_bdf.cyr` (same offsets, same
-shape — duplicated to keep `cyaudit vet` reporting "no dependencies"
+shape — duplicated to keep `cyrius vet` reporting "no dependencies"
 for each parser). PCF uses `PCF_PH_*`. The values match across all
 three; you can pick whichever spelling matches the parser you're
 calling.
@@ -100,7 +101,7 @@ walk terminates rather than reading past the buffer. Pure: only
 
 **Strict UTF-8 (PSF2 only)**: rejects codepoints > U+10FFFF, the
 UTF-16 surrogate range U+D800..U+DFFF (audit F2, 0.6.0), and
-overlong sequences per RFC 3629 (audit F3, 0.7.2).
+overlong sequences per RFC 3629 (ADR 0010, 0.7.2).
 
 ```cyrius
 # Walk a PSF Unicode table glyph by glyph.
@@ -252,8 +253,8 @@ fn kashi_pcf_decode_glyph(buf, ctx, glyph_idx, dest, dest_size);
 
 Decodes the glyph at raw index `glyph_idx` into `dest`. Applies
 scan-unit byte swap (if `byte_order != bit_order`) + bit-reverse
-(if `bit_order` is LSB) to produce canonical MSB-bit / 1-byte-stride
-output (kashi's standard convention: byte 0 = leftmost 8 px, bit 7
+(if `bit_order` is LSB) to produce canonical MSB-bit output with
+unpadded rows of `ceil(width / 8)` bytes (kashi's standard convention: byte 0 = leftmost 8 px, bit 7
 = leftmost pixel).
 
 ```cyrius
@@ -278,6 +279,12 @@ Resolves a codepoint to a glyph index via the BDF_ENCODINGS table.
 Returns the glyph index (`0 ≤ idx < glyph_count`) or `0 - 1` if
 unmapped (out of the encoded range, or the table cell holds the
 sentinel `0xFFFF`).
+
+⚠ **Known bug: pass `cp ≤ 0xFFFF`.** The function keeps only the low
+16 bits of `cp`, so a codepoint above U+FFFF wraps: `0x10041` resolves
+as U+0041. It should return `0 - 1`. The library face's PCF loader is
+not affected, because it walks only the encoded byte ranges. Filed in
+[`../development/issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md`](../development/issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md).
 
 ```cyrius
 var idx = kashi_pcf_cp_to_idx(buf, &ctx, 0x41);
@@ -307,9 +314,9 @@ the others, none includes the stdlib. This means:
 
 - Embedding kashi's PSF or BDF or PCF parser in a non-kashi build
   is feasible by `include`-ing only the one parser file.
-- `cyaudit vet src/font_psf.cyr` → "no dependencies".
-- `cyaudit vet src/font_bdf.cyr` → "no dependencies".
-- `cyaudit vet src/font_pcf.cyr` → "no dependencies".
+- `cyrius vet src/font_psf.cyr` → "no dependencies".
+- `cyrius vet src/font_bdf.cyr` → "no dependencies".
+- `cyrius vet src/font_pcf.cyr` → "no dependencies".
 
 The freestanding boundary ([ADR 0001](../adr/0001-freestanding-font-data-core.md))
 extends to the parsers in this sense, even though they're nominally

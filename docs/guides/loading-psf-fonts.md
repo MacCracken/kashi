@@ -1,8 +1,8 @@
 # Loading PSF fonts at runtime
 
-> **Last Updated**: 2026-10-09 (1.1.0 — built-in addressing note: codepoints map through `kashi_cp437_from_unicode`; 0.7.2 added sidecar Unicode tables)
+> **Last Updated**: 2026-10-29 (1.2.1 — return convention, stride and attach-error corrections, the consumer include; 1.1.0 — built-in addressing note: codepoints map through `kashi_cp437_from_unicode`; 0.7.2 added sidecar Unicode tables)
 
-The **library face** (`src/lib.cyr`) can import [PC Screen Font][psf] files
+The **library face** (`src/lib.cyr`; consumers vendor it as `lib/kashi.cyr` from `dist/kashi.cyr`) can import [PC Screen Font][psf] files
 (PSF1 and PSF2) at runtime and serve their glyphs through the same accessor
 shape as the built-in fonts. This is the stdlib-using path — a freestanding
 kernel that only `include`s `src/font_data.cyr` does **not** get it (see
@@ -23,7 +23,7 @@ kernel that only `include`s `src/font_data.cyr` does **not** get it (see
 ## Loading
 
 ```cyrius
-include "src/lib.cyr"
+include "lib/kashi.cyr"       # "src/lib.cyr" inside this repo
 
 # From a file:
 var id = kashi_load_psf_file("/usr/share/kbd/consolefonts/default8x16.psf");
@@ -39,7 +39,7 @@ var id2 = kashi_load_psf(buf, len);
 var id3 = kashi_register_font(8, 16, glyph_bytes, 256);
 ```
 
-**Return convention**: success is a `font_id ≥ 2`; failure is a **negative**
+**Return convention**: success is a `font_id ≥ KASHI_RT_FONT_BASE` (3); failure is a **negative**
 `0 - <code>` (`KASHI_EINVAL` = bad args/unreadable, `KASHI_EFORMAT` =
 malformed/unsupported/truncated). Always check `if (id < 0)`.
 
@@ -91,7 +91,7 @@ For fonts wider than 8 pixels, each row spans multiple bytes
 (`stride = ceil(width/8)`). Use the byte-position accessors:
 
 ```cyrius
-var stride = kashi_rt_font_stride(id);   # bytes per row (built-ins: 1)
+var stride = kashi_rt_font_stride(id);   # bytes per row; runtime ids only (built-ins: kashi_font_stride)
 var row = 0;
 while (row < rows) {
     var bi = 0;
@@ -170,7 +170,7 @@ var rc2 = kashi_attach_unicode_text_file(id, "/path/to/font.tab");
 
 **Semantics:**
 - `font_id` must be a runtime id (≥ `KASHI_RT_FONT_BASE`). Built-in
-  fonts return `KASHI_EINVAL` — their mapping is fixed: the freestanding
+  fonts return `0 - KASHI_EINVAL` — their mapping is fixed: the freestanding
   core's `kashi_cp437_from_unicode` (ASCII + CP437 + U+2026 / U+FFFD).
 - Attach **replaces** any existing umap / seqs on the runtime record
   (the prior allocations leak-conceptually; the bump allocator

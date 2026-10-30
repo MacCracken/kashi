@@ -1,8 +1,8 @@
 # Loading PCF fonts at runtime
 
-> **Last Updated**: 2026-05-28 (0.7.1)
+> **Last Updated**: 2026-10-29 (1.2.1 — the consumer include; 0.7.1)
 
-The **library face** (`src/lib.cyr`) can import [PCF][pcf] files
+The **library face** (`src/lib.cyr`; consumers vendor it as `lib/kashi.cyr` from `dist/kashi.cyr`) can import [PCF][pcf] files
 (Portable Compiled Format — X11's compiled binary bitmap font). PCF
 is what `bdftopcf` produces and what X servers actually load at
 runtime; many distributions ship bitmap fonts (Terminus, Spleen,
@@ -15,7 +15,7 @@ Tamzen, Cozette, Unifont) as PCF only. The freestanding core
 ## Loading
 
 ```cyrius
-include "src/lib.cyr"
+include "lib/kashi.cyr"       # "src/lib.cyr" inside this repo
 
 # From a file:
 var id = kashi_load_pcf_file("/usr/share/fonts/X11/misc/ter-u14n.pcf");

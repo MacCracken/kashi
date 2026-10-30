@@ -87,7 +87,8 @@ two range rejections (`< U+00A0`, `> U+25A0` — the high half's bounds), then a
 binary search over a 128-entry reverse index `{codepoint, cell}`.
 Allocation-free, `load8` only, at most 8 probes. The index is one u64 slot per
 entry (`var kashi_cp437_rev[128]` = 1 KiB — the one buffer in the core not
-sized in bytes, and commented as such). Its source in `kashi_font_init` is
+sized in bytes, and commented as such, until 1.1.1; since then every core
+buffer counts u64 slots, architecture note 001). Its source in `kashi_font_init` is
 **already sorted by codepoint** — 16 lines of eight packed `0xCCCCLL` entries
 (codepoint, then cell), each line naming its slots — so init writes every
 entry straight into its own slot and runs no sort; the count is set once the
@@ -262,9 +263,9 @@ joins it on the baseline — in VGA 8×16 (rows 10–11)
   glyph (8 px plus a 1-px gap), so column 7 never meets a neighbour there,
   and the compositor's '…' is the last cell of a truncated title anyway.
 
-⚠ Decide before tagging, not after: `docs/api/core.md` promises that existing
-extension cells keep their glyphs, so once a release carries this '…',
-redrawing it is a stated exception to that promise, not a tweak.
+Shipped in 1.1.0 with this '…'. `docs/api/core.md` promises that existing
+extension cells keep their glyphs, so redrawing it now would be a stated
+exception to that promise, not a tweak.
 
 ### 5. The 1.0.0 freeze, relaxed additively
 

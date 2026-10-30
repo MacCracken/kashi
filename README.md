@@ -14,7 +14,8 @@ bumps, test, packaging and docs work; 1.1.0 added the Unicode → CP437
 mapping and two extension glyphs, changing nothing that existed; 1.1.1
 cut the core's glyph storage from 101 KB to 12.7 KB — 88 KB off every
 binary that links it — with no glyph, symbol or result changed; 1.2.0
-moved to the cyrius 6.7 language line, changing no source). The
+moved to the cyrius 6.7 language line, changing no source; 1.2.1 is a
+toolchain bump plus a documentation sweep). The
 full surface is documented in [`docs/api/`](docs/api/); stability
 promise is in [`docs/api/README.md`](docs/api/README.md).
 
@@ -129,7 +130,7 @@ the matching `include "lib/…"` lines, cyrius 6.6.18's requires block):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.2.0"
+tag     = "1.2.1"
 modules = ["dist/kashi.cyr"]
 ```
 
@@ -160,6 +161,10 @@ agnos's kernel integrated kashi at agnos 1.38.0 (2026-05-28). Its
 path    = "../kashi"
 modules = ["src/font_data.cyr"]
 ```
+
+(agnos pins cyrius 6.6.20. From 6.7.6 a path-only entry is refused, so
+this needs `git` + `tag` when agnos moves its pin; see the getting-started
+guide.)
 
 Only `src/font_data.cyr` is `include`d — the entire library face
 (parsers, allocations, file I/O) is invisible to the kernel link.

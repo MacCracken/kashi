@@ -4,9 +4,14 @@
 > has a stable signature and semantic guarantee through the 1.0.0
 > release and beyond. Breaking changes after 1.0.0 require a major
 > version bump. 1.1.0 (2026-10-09) added one function and one enum
-> group, changing none ([ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md)).
+> group and changed no signature
+> ([ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md)).
+> Two results changed with it: `kashi_glyph_encoded` now accepts
+> `0x100..0x101`, and the library face maps a built-in's codepoint (see
+> [`accessors.md`](accessors.md)).
 > 1.1.1 (2026-10-13) changed no public symbol: it right-sized the glyph
-> buffers' storage (an internal enum, below).
+> buffers' storage (an internal enum, below). 1.2.0 and 1.2.1
+> (2026-10-29) were toolchain-only and changed nothing here.
 
 This is the full reference for kashi's public surface — 44 public
 functions and 21 enum groups across two faces (freestanding + library).
@@ -97,12 +102,13 @@ programs (the demo binary does it) — just don't try to call
 
 ## Return-value conventions
 
-Every kashi function returns one of three shapes:
+Most kashi functions return one of three shapes:
 
-1. **`KASHI_OK = 0` on success, positive code on error** — used by the
-   pure parsers (`kashi_psf_parse`, `kashi_bdf_parse_header`, etc.).
-   Codes: `KASHI_EINVAL = 102` (bad args), `KASHI_EFORMAT = 103`
-   (malformed input). See [`codes.md`](codes.md).
+1. **`OK = 0` on success, positive code on error** — used by the pure
+   parsers. Each parser has its own codes: `kashi_psf_parse` returns
+   `KASHI_EINVAL = 102` (bad args) / `KASHI_EFORMAT = 103` (malformed
+   input), and the BDF / PCF parsers return `KASHI_BDF_*` /
+   `KASHI_PCF_*` (`EINVAL = 1`, `EFORMAT = 2`). See [`codes.md`](codes.md).
 2. **`font_id ≥ KASHI_RT_FONT_BASE` on success, `0 - <code>` on
    error** — used by the library face's load and register
    functions. Test with `if (id < 0)`.
@@ -110,6 +116,14 @@ Every kashi function returns one of three shapes:
    accessors. Out-of-range inputs return safe sentinels (row `0`,
    ptr `0`) rather than wild-deref. Bounds-safe for the full `i64`
    input domain.
+
+The exceptions:
+- The four `kashi_attach_unicode_*` functions and
+  `kashi_set_active_font` return `KASHI_OK` or `0 - <code>`.
+- `kashi_pcf_cp_to_idx` and `kashi_font_seq_glyph` return an index, or
+  `0 - 1` on a miss.
+- `kashi_psf_uni_token` writes its result through `out` and always
+  returns 0.
 
 See each function's entry for which convention applies.
 

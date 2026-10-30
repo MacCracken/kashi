@@ -77,8 +77,9 @@ fn kashi_attach_unicode_table_file(font_id, path, kind);
 
 File companion: reads at most `KASHI_TAB_FILE_CAP` (256 KiB) and
 delegates to `kashi_attach_unicode_table`. Returns `0 - KASHI_EINVAL`
-on a read error (missing / permission denied / oversized) and
-`0 - KASHI_EFORMAT` on an empty file.
+on a read error (missing / permission denied) and `0 - KASHI_EFORMAT`
+on an empty file. A file larger than the cap is not an error: its first
+256 KiB are read and attached.
 
 ```cyrius
 kashi_attach_unicode_table_file(id, "/path/to/font.tab", KASHI_PSF_KIND_PSF1);
@@ -120,7 +121,7 @@ Rules:
 
 ```cyrius
 var tab = "0x0041   U+0041 U+0391\n0x0042   U+0042\n";
-var tab_len = 35;
+var tab_len = 39;
 kashi_attach_unicode_text(id, tab, tab_len);
 ```
 

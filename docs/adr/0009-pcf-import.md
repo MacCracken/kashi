@@ -141,7 +141,7 @@ decision (ADR 0008).
 kashi_pcf_parse_header(buf, len, hdr, ctx)
   Validates magic, walks the TOC, validates the three required
   tables' format bytes and uniform metrics, computes width/height,
-  fills hdr (56-byte parsed-header struct; KIND=4) and ctx (128-byte
+  fills hdr (56-byte parsed-header struct; KIND=4) and ctx (144-byte, 136 used,
   PCF context: glyph_count, width, height, source/target row strides,
   table offsets within `buf`, format flags, BDF_ENCODINGS range).
 

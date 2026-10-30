@@ -1,6 +1,6 @@
 # 0002 — Runtime font registry and unified accessor dispatch
 
-**Status**: Accepted (glyph-index addressing refined by [ADR 0003](0003-codepoint-addressing-runtime-fonts.md); `KASHI_RT_FONT_BASE` moved 2 → 3 when [ADR 0006](0006-vga-9x16-derived-builtin.md) added the third built-in — the text below records the value as decided)
+**Status**: Accepted (glyph-index addressing refined by [ADR 0003](0003-codepoint-addressing-runtime-fonts.md); `KASHI_RT_FONT_BASE` moved 2 → 3 when [ADR 0006](0006-vga-9x16-derived-builtin.md) added the third built-in — the text below records the value as decided. The width ≤ 8 limit was lifted to 32 px by [ADR 0005](0005-wide-glyph-and-ligatures.md); the BDF and PCF parsers joined the include chain via [0008](0008-bdf-import.md) / [0009](0009-pcf-import.md).)
 **Date**: 2026-05-27
 
 ## Context

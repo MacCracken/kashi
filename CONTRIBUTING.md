@@ -12,7 +12,7 @@ and this repo's [`CLAUDE.md`](CLAUDE.md) before making changes.
 3. Build the library: `cyrius build src/lib.cyr build/kashi`
 4. Run tests: `cyrius test` (the unit suite `src/test.cyr`, then the
    integration suite `tests/*.tcyr` — a bare run covers both from cyrius
-   6.6.17; kashi pins 6.7.9), then `cyrius fuzz tests/kashi.fcyr`
+   6.6.17; kashi pins 6.7.18), then `cyrius fuzz tests/kashi.fcyr`
 5. Run the demo: `cyrius run src/main.cyr`
 6. Prove the boundary: `cyrius vet src/font_data.cyr` → "no dependencies"
 7. If you touched any `[lib]` module (`src/font_*.cyr`, `src/lib.cyr`):

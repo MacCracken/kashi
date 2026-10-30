@@ -1,6 +1,6 @@
 # 0006 — VGA 9×16 derived built-in (col-9 replication rule)
 
-**Status**: Accepted
+**Status**: Accepted (extended by [ADR 0011](0011-unicode-to-cp437-and-extension-glyphs.md): since 1.1.0 the derivation also covers the two extension cells. The buffer has been 904 u64 slots = 7,232 B since 1.1.1, per [architecture note 001](../architecture/001-module-scope-var-array-byte-addressing.md). The sizes and loop counts below are as decided.)
 **Date**: 2026-05-27
 **Refines / extends**: [ADR 0001](0001-freestanding-font-data-core.md)
 (adds a third freestanding built-in font),

@@ -219,7 +219,8 @@ function looks them up. Linear scan over the font's sequence list
 (typically few per font, so no hot-path concern).
 
 Returns `0 - 1` for any miss: no match, built-in id, font without
-a sequence table (BDF / PCF / raw-registered fonts), null
+a sequence table (BDF / PCF / raw-registered fonts, unless a binary
+table was attached with `kashi_attach_unicode_table`), null
 `cps_ptr`, or non-positive `len`.
 
 Added in 0.5.0 ([ADR 0005](../adr/0005-wide-glyph-and-ligatures.md)).
@@ -253,14 +254,17 @@ consumer.
 
 ## Performance notes
 
-See [`docs/benchmarks.md`](../benchmarks.md). At a glance (x86_64 0.8.0):
+See [`docs/benchmarks.md`](../benchmarks.md). At a glance (x86_64,
+1.2.1 on cyrius 6.7.18):
 
-- Hot path (`kashi_font_ptr` then `load8`): ~7 ns + ~1 ns/row.
-- `kashi_font_row` (built-in): ~20 ns/call; 1.1.0 adds the mapping —
-  +3 ns for ASCII, ~43 ns/call for a high-half codepoint (measured
-  2026-10-09, `docs/benchmarks.md`).
-- `kashi_font_row` (runtime, no map): ~43 ns/call.
-- `kashi_font_row` (runtime, with codepoint map): ~65 ns/call.
+- Hot path (one pointer fetch per glyph, then `load8` per row): ~7 ns +
+  ~1 ns/row. The 7 ns is `kashi_glyph_ptr` on a built-in; `kashi_font_ptr`
+  is not benched separately and also pays the codepoint resolve (the
+  Unicode map on a built-in, the registry map on a runtime font).
+- `kashi_font_row` (built-in): ~23 ns/call for ASCII, ~41 ns/call for a
+  high-half codepoint (the 1.1.0 mapping).
+- `kashi_font_row` (runtime, no map): ~45 ns/call.
+- `kashi_font_row` (runtime, with codepoint map): ~60 ns/call.
 
 The runtime overhead is the registry lookup + codepoint resolve;
 amortize via the hot-path pattern in render loops.

@@ -1,13 +1,31 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-10-29 (**1.2.0** — cyrius 6.7.9, the 6.7.x
-> language minor; no source change) |
+> **Last refresh**: 2026-10-29 (**1.2.1** — cyrius 6.7.18, no source
+> change; the full-tree doc sweep) |
 > **Refresh cadence**: bumped every release.
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
+
+**1.2.1** — Patch: a toolchain bump plus the full-tree doc sweep that 1.2.0
+left outstanding. `src/`, `tests/` and `docs/examples/` are unchanged.
+- **cyrius 6.7.9 → 6.7.18.** `lib/` was re-vendored from the 6.7.18
+  snapshot and `cyrius.lock` re-locked (17 of 24 hashes moved).
+  `cyrius deps --verify` reports 24 / 0 failed, and `--locked` is clean.
+  kashi has no git deps.
+- **Gates.** The glyph sheet is byte-identical (`5544d63f…`), and so is the
+  demo's output. 454 + 145 assertions pass. Fuzz is clean. `cyrius vet`
+  reports "no dependencies" on all four freestanding files. fmt and strict
+  lint are clean. All four guard mutants are still caught.
+- **Cost.** None. Library **199,968 B** and DCE'd demo **56,816 B**, the
+  same as on 6.7.9. The bench is flat: every row is within ±0.9 %, over
+  nine interleaved rounds.
+- **Bundle.** Only the version stamp moved. A scratch consumer builds and
+  runs the 1.2.1 bundle on 6.6.3, 6.6.6 and 6.7.18.
+- **Docs.** The full-tree sweep owed at the 1.2 minor; the ledger
+  (`docs/doc-health.md`) has the per-file grades.
 
 **1.2.0** — Minor, cut to mark the move to cyrius's 6.7.x language line. It
 is a toolchain-only bump: `src/`, `tests/` and `docs/examples/` are
@@ -181,8 +199,8 @@ out-of-scope; none are booked.
 
 ## Toolchain
 
-- **Cyrius pin**: `6.7.9` (in `cyrius.cyml [package].cyrius`; 6.6.20 at
-  1.1.1, 6.6.6 through 1.1.0).
+- **Cyrius pin**: `6.7.18` (in `cyrius.cyml [package].cyrius`; 6.7.9 at
+  1.2.0, 6.6.20 at 1.1.1, 6.6.6 through 1.1.0).
 - **`cyrius.lock`**: tracked since 1.1.1 — the sha256 of the 24 stdlib
   files `cyrius deps` vendors from the pinned snapshot; moves only with
   the pin (roadmap procedure, step 2).
@@ -285,13 +303,13 @@ See [`roadmap.md`](roadmap.md).
 ## Build & size
 
 - Library build (`cyrius build src/lib.cyr build/kashi`): clean, **199,968 B**
-  (sha256 `ec63caef…`). 1.1.1: 199,952 B on 6.6.20. 1.1.0: 262,656 B on
+  (sha256 `500db6c6…`; 1.2.0 on 6.7.9 was the same size). 1.1.1: 199,952 B on 6.6.20. 1.1.0: 262,656 B on
   6.6.6, 288,528 B on 6.6.20.
 - Demo (`CYRIUS_DCE=1 cyrius build src/main.cyr`): **56,816 B**
-  (sha256 `cfe9c1ec…`). 1.1.1: 56,800 B on 6.6.20. 1.1.0: 144,072 B on
+  (sha256 `b7ab70cb…`; the same size on 6.7.9). 1.1.1: 56,800 B on 6.6.20. 1.1.0: 144,072 B on
   6.6.6, 145,376 B on 6.6.20.
 - 1.2.0's toolchain move (6.6.20 → 6.7.9, no source change) added 16 B to
-  each.
+  each; 1.2.1's (6.7.9 → 6.7.18) added nothing.
 - 1.1.1's two steps, separately: the toolchain (6.6.6 → 6.6.20, no source
   change) grew the library +25,872 B and the demo +1,304 B — stdlib
   growth; the storage fix then took **−88,576 B** off each. The core's
@@ -300,7 +318,7 @@ See [`roadmap.md`](roadmap.md).
   index, two 8-byte scalars, 8 B of alignment. cycc writes it into the file
   image as zeros, so every binary that links `src/font_data.cyr` carries
   it — architecture note 001.
-- Both on cyrius 6.7.9.
+- Both on cyrius 6.7.18.
 
 ## Tests
 
@@ -344,6 +362,7 @@ See [`roadmap.md`](roadmap.md).
   1.1.1: flat — every row within ±2 % across 1.1.0 on 6.6.6, 1.1.0 on
   6.6.20 and 1.1.1 on 6.6.20 (nine interleaved runs each). 1.2.0: flat,
   every row within ±1.6 % of 1.1.1 on 6.6.20 (nine interleaved rounds).
+  1.2.1: flat, every row within ±0.9 % of 1.2.0 on 6.7.9.
 - Glyph-sheet pin — `docs/examples/glyph_sheet.sha256`, checked in CI.
 
 ## Cleanliness (P(-1) gates)
@@ -355,15 +374,15 @@ See [`roadmap.md`](roadmap.md).
   since 1.1.1; a bare `cyrius lint` exits 0 on warnings, so before that the
   step only printed them.)
 - `cyrius deps --verify` — 24 verified, 0 failed against the tracked
-  `cyrius.lock`; `cyrius deps --locked` clean (6.7.9).
+  `cyrius.lock`; `cyrius deps --locked` clean (6.7.18).
 - `cyrius distlib` — tracked `dist/` in sync (CI gate).
 - `cyrius vet src/font_data.cyr` — "no dependencies".
 - `cyrius vet src/font_psf.cyr` — "no dependencies" (incl. the 0.7.2
   overlong-UTF-8 tightening — pure arithmetic, no new deps).
 - `cyrius vet src/font_bdf.cyr` — "no dependencies".
 - `cyrius vet src/font_pcf.cyr` — "no dependencies".
-- `cyrius vet src/lib.cyr` — 4 deps (lib + core + psf + bdf + pcf),
-  0 untrusted. The 0.7.2 attach APIs and the text-tab parser are
+- `cyrius vet src/lib.cyr` — 4 deps (the four files it includes: core,
+  psf, bdf, pcf), 0 untrusted, 0 missing. The 0.7.2 attach APIs and the text-tab parser are
   inline in lib.cyr (no new dependency module).
 - **Security audit** — `docs/audit/2026-05-28-audit-0.8.0.md` (0.8.0
   P(-1) hardening). CVE-research-driven 17-point checklist walk

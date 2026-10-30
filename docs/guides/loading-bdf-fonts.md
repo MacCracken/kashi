@@ -1,8 +1,8 @@
 # Loading BDF fonts at runtime
 
-> **Last Updated**: 2026-05-28 (0.7.0)
+> **Last Updated**: 2026-10-29 (1.2.1 — the consumer include; 0.7.0)
 
-The **library face** (`src/lib.cyr`) can import [BDF][bdf] (Bitmap
+The **library face** (`src/lib.cyr`; consumers vendor it as `lib/kashi.cyr` from `dist/kashi.cyr`) can import [BDF][bdf] (Bitmap
 Distribution Format) source files at runtime alongside the PSF1/PSF2
 path — same runtime registry, same codepoint-addressed accessors. BDF
 is the de-facto X11 source format for bitmap fonts (Terminus, Spleen,
@@ -15,7 +15,7 @@ face does. Design rationale: [ADR 0008](../adr/0008-bdf-import.md).
 ## Loading
 
 ```cyrius
-include "src/lib.cyr"
+include "lib/kashi.cyr"       # "src/lib.cyr" inside this repo
 
 # From a file:
 var id = kashi_load_bdf_file("/usr/share/fonts/X11/misc/terminus-bold-12.bdf");
