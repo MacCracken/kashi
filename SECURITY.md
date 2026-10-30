@@ -77,7 +77,8 @@ a security audit pass belongs before every release; kashi runs one as
 its P(-1) step at minor and v1.0 cuts (`CLAUDE.md`), and findings are
 recorded in `docs/audit/YYYY-MM-DD-audit.md`. ⚠ The newest record is
 2026-05-28 (0.8.0): the 1.x minors (1.1.0, 1.2.0) have no audit file.
-The audit trail to date:
+The next pass is booked as 1.3.x (`docs/development/roadmap.md`). The
+audit trail to date:
 
 - **`docs/audit/2026-05-27-audit.md`** — 0.2.0 P(-1) on the
   freestanding-core accessor surface. Proved memory-safe for the

@@ -6,7 +6,10 @@ type: state
 
 # Documentation Health — kashi
 
-> **Last refresh**: 2026-10-29 (**1.2.2** — touched rows for the PCF fix:
+> **Last refresh**: 2026-10-29 (roadmap cleanup after 1.2.2 — the roadmap
+> rewritten as 1.3.x – 1.x.x milestones; state, SECURITY and benchmarks
+> point at the bookings).
+> Previous: 2026-10-29 (**1.2.2** — touched rows for the PCF fix:
 > the issue resolved, `api/parsers.md`'s caveat retired, state, roadmap,
 > benchmarks, tags; the `src/` comment items closed).
 > Previous: 2026-10-29 (**1.2.1** — the full-tree re-read owed at the
@@ -82,9 +85,9 @@ Left open on purpose:
 |---|---|---|---|
 | `README.md` | 2026-10-29 | ✅ Fresh | 1.2.2: `tag = "1.2.2"`; the status line names the fix. Re-read in full at the 1.2.1 sweep. |
 | `CHANGELOG.md` | 2026-10-29 | ✅ Fresh | `[0.1.0]`–`[1.2.2]`. History; 1.2.2 records the PCF fix, its tests and mutation result, and the comment fixes. |
-| `CLAUDE.md` | 2026-09-21 | 🟡 Stale | Operator-owned, so it was not edited. Five statements are stale: (1) :39-40 "`src/lib.cyr` + future modules … PSF1/PSF2 import" — the parser modules exist and import covers BDF / PCF; (2) :76 "renders 'A' in both fonts" — three built-ins; the demo draws 'A' in the two 8-wide ones, then '…' / '�'; (3) :109 "dep symlinks" — `lib/` holds copies (a symlinked `lib/` is refused); (4) :156 roadmap "Milestones through v1.0" — it is now the open-issue status, the out-of-scope lists and the pin procedure; (5) :53-54 "complete and frozen since 1.0.0" — additive since (1.1.0). |
+| `CLAUDE.md` | 2026-09-21 | 🟡 Stale | Operator-owned, so it was not edited. Five statements are stale: (1) :39-40 "`src/lib.cyr` + future modules … PSF1/PSF2 import" — the parser modules exist and import covers BDF / PCF; (2) :76 "renders 'A' in both fonts" — three built-ins; the demo draws 'A' in the two 8-wide ones, then '…' / '�'; (3) :109 "dep symlinks" — `lib/` holds copies (a symlinked `lib/` is refused); (4) :156 roadmap "Milestones through v1.0" — it now holds the 1.3.x – 1.x.x milestones, the non-goals and the pin procedure; (5) :53-54 "complete and frozen since 1.0.0" — additive since (1.1.0). |
 | `CONTRIBUTING.md` | 2026-10-29 | ✅ Fresh | Sweep: the pin is 6.7.18. Rest current. |
-| `SECURITY.md` | 2026-10-29 | ✅ Fresh | Sweep: fuzz rounds corrected (~8,500: PSF 4,000 / BDF 2,000 / PCF 1,500 / text-tab 1,000; it said ~7,500 across "four parsers"). The audit paragraph now says the P(-1) pass is at minor / v1.0 cuts and that 1.1.0 / 1.2.0 have no audit file (open item below). |
+| `SECURITY.md` | 2026-10-29 | ✅ Fresh | Sweep: fuzz rounds corrected (~8,500: PSF 4,000 / BDF 2,000 / PCF 1,500 / text-tab 1,000; it said ~7,500 across "four parsers"). The audit paragraph now says the P(-1) pass is at minor / v1.0 cuts and that 1.1.0 / 1.2.0 have no audit file (open item below). Roadmap cleanup: the audit line names its 1.3.x booking. |
 | `CODE_OF_CONDUCT.md` | 2026-05-27 | 🔵 Evergreen | Contributor Covenant v2.1 reference + conduct@ address. Re-read: current. |
 | `LICENSE` | 2026-05-27 | 🔵 Evergreen | GPL-3.0-only short notice pointing at gnu.org. Re-read: current. |
 | `VERSION` | 2026-10-29 | ✅ Fresh | `1.2.2`; sole source of truth (`cyrius.cyml` resolves `${file:VERSION}`). |
@@ -119,8 +122,8 @@ Left open on purpose:
 
 | File | Last touched | Status | Notes |
 |---|---|---|---|
-| `development/roadmap.md` | 2026-10-29 | ✅ Fresh | 1.2.2: back to No Open Work; header notes the fix. The 1.2.1 sweep's precedent and the step-4 recipe stand. |
-| `development/state.md` | 2026-10-29 | ✅ Fresh | 1.2.2 entry; unit 464 / total 609; the PCF fuzz contract; hashes; bench line. |
+| `development/roadmap.md` | 2026-10-29 | ✅ Fresh | Rewritten to face forward. Milestones: 1.3.x hardening (next: the owed audit, worst-case load cost, round-trip fuzz, load benches, docs); 1.4.x Unicode coverage; 1.5.x loader breadth; 1.x.x gated items. Then reactive patches and non-goals. The pin procedure absorbs the precedents' lessons, and the precedent sections and the adopted 6.6.17 note are gone; each move's record is its CHANGELOG entry. |
+| `development/state.md` | 2026-10-29 | ✅ Fresh | 1.2.2 entry; unit 464 / total 609; the PCF fuzz contract; hashes; bench line. Roadmap cleanup: "What's booked" lists the 1.3.x – 1.x.x milestones. |
 | `development/issues/2026-10-13-font-arrays-declared-u64-for-byte-tables.md` | 2026-10-13 | ✅ Fresh | Resolved in 1.1.1; re-read — its 454 + 145 and `5544d63f…` still match. |
 | `development/issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md` | 2026-10-29 | ✅ Fresh | RESOLVED in 1.2.2, with a Resolution section: the guard, the unit group, the fuzz probe built from the encoded range, and the mutation result. |
 
@@ -141,7 +144,7 @@ Left open on purpose:
 | `audit/2026-05-27-audit.md` | 2026-10-29 | ✅ Fresh | Sweep: forward notes on the 8× reservation (removed in 1.1.1; the guard test now checksums every core byte) and the `cyaudit` workaround (retired at 1.0.1). |
 | `audit/2026-05-28-audit.md` | 2026-05-28 | ✅ Fresh | 0.6.0 P(-1). Re-read: current as a record. |
 | `audit/2026-05-28-audit-0.8.0.md` | 2026-10-29 | ✅ Fresh | Sweep: "422 assertions total" corrected to 442 (393 + 49, as its own lines and the CHANGELOG say). |
-| `benchmarks.md` | 2026-10-29 | ✅ Fresh | "Current" at 1.2.2 (1.2.1 vs 1.2.2 on 6.7.18, flat); 1.2.1 Previous, 1.2.0 and older Earlier; Trend rows. |
+| `benchmarks.md` | 2026-10-29 | ✅ Fresh | "Current" at 1.2.2 (1.2.1 vs 1.2.2 on 6.7.18, flat); 1.2.1 Previous, 1.2.0 and older Earlier; Trend rows. Roadmap cleanup: the load-path note points at its 1.3.x booking. |
 | `benchmarks/history.csv` | 2026-10-29 | ✅ Fresh | Rows 0.1.0 → 1.2.2; 2026-10-29 has three interleaved sessions (`1.1.1-on-6.6.20` / `1.2.0`, `1.2.0-on-6.7.9` / `1.2.1`, `1.2.1-rerun` / `1.2.2`). |
 | `doc-health.md` | 2026-10-29 | ✅ Fresh | This ledger: a 1.2.2 touched-rows refresh on top of the 1.2.1 full sweep. |
 
@@ -203,7 +206,7 @@ Open at 1.2.2:
   the maintainer to edit.
 - **Security audit record** — no `docs/audit/` file since 0.8.0. The P(-1)
   pass is due at minor cuts and 1.1.0 / 1.2.0 have none (`SECURITY.md` says
-  so).
+  so). Booked as roadmap 1.3.x.
 
 Open at 1.1.0:
 
@@ -211,4 +214,4 @@ Open at 1.1.0:
   ADR 0011). Per-file rows were kept "while churn is toolchain-only; move to
   tier roll-ups if a 1.x feature cut reopens the tree" — 1.1.0 is that
   feature cut. The roll-up is still owed (the full-tree re-read was done at
-  1.2.1).
+  1.2.1); booked as roadmap 1.3.x.

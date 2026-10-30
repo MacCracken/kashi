@@ -1,118 +1,125 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-10-29 (1.2.2)
+> **Last Updated**: 2026-10-29 (after 1.2.2)
 >
-> **Status: No Open Work.**
+> Forward-facing only. What shipped is in [`CHANGELOG.md`](../../CHANGELOG.md);
+> the live state is in [`state.md`](state.md).
 >
-> 1.2.2 (2026-10-29) fixed the one bug the 1.2.1 sweep found
-> ([issue](issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md)):
-> `kashi_pcf_cp_to_idx` wrapped a codepoint above U+FFFF. It also fixed
-> the stale `src/` comments the sweep listed.
+> **Next: 1.3.x, the hardening pass.** It is owed now. The milestones after
+> it each wait for a consumer to need them.
 >
-> 1.2.1 (2026-10-29) moved the pin 6.7.9 → 6.7.18 and did the full-tree
-> doc sweep.
->
-> 1.2.0 (2026-10-29) moved the pin 6.6.20 → 6.7.9, into cyrius's 6.7.x
-> language minor, and changed no source. It is cut as a minor to mark the
-> language line; see the precedent below.
->
-> 1.1.1 (2026-10-13) moved the pin 6.6.6 → 6.6.20 and fixed the one issue
-> filed against 1.1.0: the three glyph buffers reserved 8× the bytes they
-> use — 88 KB of zeros in every binary that links the core, found by agnos
-> against its kernel-image ceiling
-> ([issue](issues/2026-10-13-font-arrays-declared-u64-for-byte-tables.md),
-> architecture note 001). No glyph, symbol or accessor result changed.
->
-> 1.1.0 (2026-10-09) answered the first concrete consumer need since 1.0:
-> the compositor truncates window titles with U+2026 '…', which CP437 has
-> no cell for, and every consumer was drawing UTF-8 as CP437 mojibake.
-> kashi now owns the Unicode → CP437 mapping (`kashi_cp437_from_unicode`)
-> and an extension block for glyphs CP437 lacks ('…', '�'), and the
-> library face's built-in codepoint bug is fixed
-> ([ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md)).
-> Additive; nothing is booked after it.
->
-> kashi reached 1.0.0 with every v1 criterion met. The release
-> narrative lives in [`CHANGELOG.md`](../../CHANGELOG.md); this file
-> tracks only **forward-facing** work.
->
-> The 2026-09-21 review (at 1.0.9) found three items that were not
-> feature work but were real — the 1.0.6 bundle had never actually been
-> published, the fuzz harness false-failed on the 9×16 and never drove
-> the core accessors randomly, and the toolchain-bump verification tool
-> lived outside the repo — and 1.0.10 closed all three along with the
-> documentation-currency backlog from `docs/doc-health.md`. Nothing is
-> booked after it.
->
-> Future work will be added here when a concrete need surfaces —
-> not before. The shape below is "what could reopen this file,"
-> not "what's planned."
+> The version numbers set an order, not a schedule. If a later milestone's
+> trigger arrives first, that milestone ships first and the rest renumber.
+> Toolchain pin moves fall in between as patch releases (see *Moving the
+> cyrius pin* below).
 
-## Out of scope — committed (will not be added in 1.x)
+## 1.3.x — Hardening (next)
 
-These are explicit non-goals. Bringing them in would change kashi
-from a bitmap-font data provider into something else.
+This is the P(-1) pass `CLAUDE.md` asks for before new features and at minor
+cuts. The newest audit record is 2026-05-28 (0.8.0): 1.1.0 and 1.2.0 shipped
+without one. No consumer has to ask for it.
 
-- **Outline / vector fonts** — TrueType / OpenType is a different
-  subsystem entirely. kashi is bitmap-only.
-- **Text shaping / BiDi / complex scripts** — kashi hands back glyph
-  bitmaps; layout / shaping belongs in a separate library (one that
-  could consume kashi as its glyph-data provider).
-- **Anti-aliasing / subpixel rendering** — monochrome 1-bit-per-pixel
-  only.
-- **Rendering policy** (color, scaling, scrolling) — owned by the
-  consumer (agnos `fb_console.cyr` does this).
+- [ ] **Security audit** → `docs/audit/YYYY-MM-DD-audit.md`, covering what
+  changed since 0.8.0:
+  - the Unicode reverse index `kashi_font_init` fills and
+    `kashi_cp437_from_unicode`'s search over it (1.1.0);
+  - the glyph buffers, which have had no slack since 1.1.1, so a packer
+    guard is the only thing between a table typo and the next buffer;
+  - the file paths' cap behaviour: a file over the cap is cut, not refused;
+  - the sidecar attach paths and their rollback on failure.
+- [ ] **Worst-case load cost.** The four codepoint-map builders in
+  `src/lib.cyr` (PSF, BDF, PCF, text table) insertion-sort their pairs.
+  That is quadratic in the number of entries, and the caps (256 KiB for PSF
+  and tables, 4 MiB for BDF and PCF) admit tens of thousands of entries in
+  reverse order. Measure the load time of such a file. If it runs to
+  seconds, move to an O(n log n) sort or bound the entry count. PCF builds
+  its pairs already in order, so it is the least exposed.
+- [ ] **Fuzz contracts that check answers, not only ranges.** The 1.2.2 PCF
+  bug sat behind a range-only check from 0.7.1 to 1.2.2. Give the PSF, BDF
+  and PCF fuzzers a round-trip oracle: generate a valid font, load it, and
+  compare every row and every mapped codepoint with what was generated.
+- [ ] **Load-path benchmarks.** `kashi_load_*` and `kashi_pcf_decode_glyph`
+  are not benched (`docs/benchmarks.md`, *Notes*). They give the
+  worst-case measurement a baseline to compare against.
+- [ ] **Docs.**
+  - Roll the ledger up into tiers (`docs/doc-health.md`, open since 1.1.0).
+  - `CLAUDE.md` has five stale statements (listed in the ledger). It is the
+    maintainer's file.
 
-## Out of scope — unbooked (no plans, but additive if asked)
+**Done when** the audit file exists with every finding fixed or filed, the
+worst case is measured (and fixed if slow), and CI runs the round-trip
+contracts.
 
-These would be additive on top of the 1.0 surface and don't break
-the API freeze. Each is named so that *if* a concrete consumer
-need shows up, the scope is already roughly understood.
+## 1.4.x — Unicode coverage (when a consumer names a glyph)
 
-- **BDF lenient-BBX with cell padding** — accept per-glyph BBX
-  variation by padding into the FONTBOUNDINGBOX. Currently strict
-  (ADR 0008). Would bring display BDFs with italic overhangs /
-  descender variation into scope.
-- **PCF per-glyph metric variation** — analog of the above for PCF.
-  Currently strict-uniform metrics (ADR 0009).
-- **Streaming load APIs** (`kashi_load_*_stream`) — for consumers
-  that can't fit the whole file in a single buffer. No concrete
-  need yet.
-- **Additional built-in fonts** — adding a font id 3 (e.g., a
-  higher-density cell or a different character set) is an additive
-  change kashi-side; would bump `KASHI_RT_FONT_BASE` from 3 to 4.
-  Semver-compatible because the constant is referenced symbolically.
-- **More extension glyphs** (ADR 0011's block) — CP437's `0x01..0x1F`
-  pictures (☺ ♥ ♪ ► ↑ …, which kashi has never encoded), or punctuation a
-  consumer's UI emits (‘ ’ “ ” – — •). Append cells after `KASHI_EXT_LAST`,
-  draw them in every built-in font, extend `kashi_cp437_from_unicode` and
-  re-pin the sheet. Wait for a consumer to name the glyph.
-- **Aliases in `kashi_cp437_from_unicode`** — e.g. U+03B2 'β' → `0xE1`
-  'ß', U+2126 'Ω' → `0xEA`, as Linux's consolemap does. The 1.1.0 map is
-  exactly the codec's inverse so it stays checkable against an external
-  oracle; aliases would be additive.
+Additive, the [ADR 0011](../adr/0011-unicode-to-cp437-and-extension-glyphs.md)
+way: `0x20..0xFF` stays untouched, and new cells are reachable only by
+codepoint.
 
-## What would legitimately reopen this file
+- **More extension glyphs** after `KASHI_EXT_LAST`.
+  - **Candidates:** CP437's `0x01..0x1F` pictures (☺ ♥ ♪ ► ↑ …, which kashi
+    has never encoded), or the punctuation a UI emits (‘ ’ “ ” – — •).
+  - **Each cell needs:**
+    - drawing in all three built-ins;
+    - an entry in `kashi_cp437_from_unicode`;
+    - grown storage sizes (architecture note 001);
+    - a re-pinned glyph sheet.
+- **Aliases in `kashi_cp437_from_unicode`**, as Linux's consolemap has:
+  U+03B2 'β' → `0xE1` 'ß', U+2126 'Ω' → `0xEA`.
+  - Today's map is exactly the CP437 codec's inverse, which is what keeps it
+    checkable against an external oracle.
+  - Aliases would need their own test table.
 
-- A real consumer hits per-glyph metric variation in a PCF / BDF
-  they need to render → lenient-BBX cut.
-- A kernel finds an actual bounds bug → patch + audit entry.
-- agnos picks up a fourth built-in cell size → freestanding-core
-  additive.
-- A consumer needs a glyph CP437 does not have → an extension cell, the
-  ADR 0011 way (codepoint-reachable only; `0x20..0xFF` untouched).
-- A CVE drops against a font format kashi parses → audit + targeted
-  fix.
-- The glyph-sheet pin (`docs/examples/glyph_sheet.sha256`) moves under
-  a toolchain bump with no source change → the compiler changed what
-  the font says. Stop, bisect the toolchain, file it upstream; do not
-  re-pin.
-- A consumer switches to `modules = ["dist/kashi.cyr"]` and hits a
-  problem the scratch-consumer check in 1.0.10 did not → the bundle's
-  first real user; fix and add the case to the CI gate.
+**Trigger:** a consumer shows a blank cell or mojibake for a codepoint it
+actually draws.
 
-Anything else is either shaping-layer work (separate library) or
-out-of-scope feature creep.
+## 1.5.x — Loader breadth (when a font a consumer needs won't load)
+
+- **BDF lenient-BBX.** Accept per-glyph BBX variation by padding into the
+  FONTBOUNDINGBOX. Today the parser is strict
+  ([ADR 0008](../adr/0008-bdf-import.md)), which rejects display BDFs with
+  italic overhangs or descender variation.
+- **PCF per-glyph metrics.** The same for PCF, which today requires uniform
+  metrics ([ADR 0009](../adr/0009-pcf-import.md)).
+- **Streaming loads** (`kashi_load_*_stream`), for a consumer that cannot
+  hold the whole file in one buffer.
+
+**Trigger:** a real font a consumer must render fails to load, or needs a
+bigger buffer than the consumer can give.
+
+## 1.x.x — Later, gated on something outside kashi
+
+- **A fourth built-in font** (id 3, e.g. a denser cell for agnos). It is
+  additive in the freestanding core. `KASHI_RT_FONT_BASE` moves 3 → 4, which
+  is semver-compatible because consumers reference the constant by name.
+  **Gate:** agnos asks for the cell size.
+- **6.7 syntax in the core**, e.g. glyph-buffer sizes written as
+  `[bytes / 8]` (cyrius 6.7.2). **Gate:** every consumer that compiles
+  `src/font_data.cyr` pins cyrius ≥ 6.7.2. Today they are on 6.6.3 – 6.6.20
+  ([`state.md`](state.md), *Consumers*).
+
+## Any time — reactive patches
+
+- A bounds bug in an accessor or parser → a patch plus an audit entry.
+- A CVE against PSF, BDF or PCF → an audit and a targeted fix.
+- A consumer of `dist/kashi.cyr` hits a problem the scratch-consumer check
+  missed → fix it, and add the case to the CI gate.
+- The glyph-sheet pin moves under a toolchain bump with no source change →
+  stop (procedure step 5).
+
+## Out of scope — will not be added in 1.x
+
+These are explicit non-goals. Bringing them in would change kashi from a
+bitmap-font data provider into something else.
+
+- **Outline / vector fonts.** TrueType / OpenType is a different subsystem
+  entirely; kashi is bitmap-only.
+- **Text shaping / BiDi / complex scripts.** kashi hands back glyph bitmaps.
+  Layout and shaping belong in a separate library, which could use kashi as
+  its glyph-data provider.
+- **Anti-aliasing / subpixel rendering.** Monochrome, 1 bit per pixel only.
+- **Rendering policy** (color, scaling, scrolling). The consumer owns it
+  (agnos `fb_console.cyr` does this).
 
 ## Where to look for…
 
@@ -122,242 +129,94 @@ out-of-scope feature creep.
 - **Decisions** → [`../adr/`](../adr/).
 - **Security posture** → [`../../SECURITY.md`](../../SECURITY.md) +
   [`../audit/`](../audit/).
+- **Doc currency** → [`../doc-health.md`](../doc-health.md).
 
 ---
 
 ## Moving the cyrius pin — the procedure
 
-kashi emits fixed data, which makes a toolchain bump unusually
-checkable: the built-in glyph tables rendered by the new compiler must
-be byte-identical to the old render, and everything else is the normal
-gate set. Toolchain bumps are patch releases (1.0.1–1.0.9 were all this);
-the exception is a move to a new cyrius language minor, which is cut as a
-kashi minor (1.2.0, 6.6.x → 6.7.x).
+kashi emits fixed data, so a toolchain bump is unusually checkable: the
+built-in glyph tables rendered by the new compiler must be byte-identical to
+the old render, and the rest is the normal gate set. A pin move is a patch
+release. The exception is a move into a new cyrius language minor, which is
+cut as a kashi minor (1.2.0, for 6.6.x → 6.7.x). Each past move is recorded in
+its CHANGELOG entry.
 
-1. **Read the toolchain changelog for consumer-visible changes** and
-   grep `src/` for each shape it names before bumping — the 6.6.6
-   precedent below lists what that looked like. Zero `struct`s, no
-   `async` / `operator` / SIMD fns, no top-level block `var`s, no file
-   writes, and a longest literal of ~17 KB is the standing profile;
-   anything the changelog flags outside that profile is not kashi's.
-2. **Bump** `cyrius.cyml [package].cyrius`, then `cyrius deps`: it
-   re-vendors `lib/` from the new pin's snapshot (6.6.5+ requires that at
-   every bump — the syscall peers move) and, because the pin moved,
-   re-locks — commit the rewritten `cyrius.lock` (tracked since 1.1.1; at
-   an unchanged pin it refuses a snapshot file whose hash differs, which is
-   CI's integrity check on the toolchain it downloads). Do **not**
-   `cyrius lib sync --full`: it vendors the whole 113-file snapshot and the
-   next `cyrius deps` locks all of it, a lock CI (which vendors only the
-   ~24 declared files) cannot `--verify`. If `lib/` holds strays, `rm -rf
-   lib && cyrius deps` — `lib/` is generated and ignored. `cyrius deps
-   --verify` must report 0 failed.
-3. **Gate set**: `cyrius build` (library + `CYRIUS_DCE=1` demo; record
-   both sizes), `cyrius test` (runs both suites from 6.6.17 — record both
-   assertion counts), `cyrius fuzz tests/kashi.fcyr`, `cyrius vet
-   src/font_data.cyr` → "no dependencies", `cyrius fmt --check` and
-   `cyrius lint --exit-with-count --strict-deferrals` on every source file
-   (a bare `cyrius lint` exits 0 on warnings), `CYRIUS_DCE=1 cyrius bench
-   tests/kashi.bcyr` (append the rows to `docs/benchmarks/history.csv` —
-   until 1.1.1's storage fix the toolchain was the only thing that had
-   moved those numbers since 0.4.0; build the old pin's binary in a
-   scratch copy and interleave the runs).
-4. **Regenerate the tracked bundle**: `cyrius distlib`, commit
-   `dist/kashi.cyr` + `dist/kashi.deps` (the version stamp moves; CI
-   fails on drift). A distlib change can move more than the stamp — 6.6.18
-   added the requires block and shrank the sidecar to the leaves the
-   compile-verify needs; check a scratch consumer still builds against the
-   bundle on the oldest pin a consumer uses. The consumer declares
-   `[deps.kashi]` with `git` + `tag` (any existing tag) + `path` = this
-   checkout + `modules = ["dist/kashi.cyr"]`. Below cyrius 6.7.6 the `path`
-   wins on a plain `cyrius deps`. From 6.7.6 a plain resolve builds the tag;
-   resolve and build with `CYRIUS_LOCAL=1` to get the working tree (it
-   resolves into `build/local-deps/lib/`). A path-only entry is refused
-   from 6.7.6. Check `head -2 lib/kashi.cyr` names the new version.
-5. **The glyph sheet**: `cyrius build docs/examples/glyph_sheet.cyr
+1. **Screen the toolchain's consumer notes.**
+   - **What to read:** cyrius's `docs/development/ecosystem-migration.md`
+     lists, release by release, what changes for code built against it.
+     Read every section from the current pin up to the new one.
+   - **What to grep:** `src/`, `tests/` and `docs/examples/`, for each
+     shape the notes name. Also check every new reserved word and every new
+     public stdlib name against kashi's identifiers.
+   - **The standing profile:**
+     - no `struct`, `impl`, `trait`, generic, closure, `async`, tuple,
+       slice, typed `*T`, `bool` or `f64`;
+     - no `for` loop, no `!`, no compound assignment;
+     - negatives spelled `0 - N`, enum members separated, `include` lines
+       bare;
+     - the longest literal about 17 KB (a single literal over 64 KB needs a
+       pin ≥ 6.6.4).
+
+     A change to a shape outside that profile is not kashi's.
+   - **A range thousands of lines long** is a subagent's job. Give it the
+     file list, the manifest and CI, then settle each item it marks "needs a
+     run" with the gates below.
+2. **Bump and re-vendor.**
+   - Set `cyrius.cyml [package].cyrius`, then run a **plain** `cyrius
+     deps`. It re-vendors `lib/` from the new snapshot and re-locks. Commit
+     the rewritten `cyrius.lock`.
+   - Check: `cyrius deps --verify` reports 0 failed, and `cyrius deps
+     --locked` (6.7.6+) is clean.
+   - **Not `cyrius deps --lock`.** With the old `lib/` present, it leaves
+     the old pin's lock in place and still exits 0. With no `lib/`, it
+     writes an empty lock.
+   - **Not `cyrius lib sync --full`.** It vendors the whole ~113-file
+     snapshot, and the lock then covers files CI never vendors.
+   - If `lib/` holds strays, `rm -rf lib && cyrius deps`. `lib/` is
+     generated and ignored.
+3. **Gate set**, run the way CI runs it:
+   - **Build.** `cyrius build` the library and the `CYRIUS_DCE=1` demo, and
+     record both sizes. `tests/kashi.fcyr` also builds to `build/kashi`, so
+     rebuild the library before comparing sizes or bytes.
+   - **Test.** `cyrius test` runs both suites; record both assertion
+     counts. Then `cyrius fuzz tests/kashi.fcyr`.
+   - **Vet.** `cyrius vet` on the four freestanding files must print "no
+     dependencies".
+   - **Format and lint.** `cyrius fmt --check` and `cyrius lint
+     --exit-with-count --strict-deferrals` on every source file. A bare
+     `cyrius lint` exits 0 on warnings.
+   - **Bench.** Build the previous tag's `tests/kashi.bcyr` in a scratch
+     copy and run nine interleaved rounds against the new one, both
+     `CYRIUS_DCE=1`. Append both sets of rows to
+     `docs/benchmarks/history.csv`. The host drifts more between sessions
+     than the deltas worth reporting.
+   - **Guard mutation.** The fset-guard group sees a removed guard only
+     while cycc lays globals out in declaration order. In a scratch copy,
+     remove each of the four guards in turn and confirm "guard: every core
+     byte unchanged" fails.
+4. **The bundle.**
+   - **Regenerate:** `cyrius distlib`, then commit `dist/kashi.cyr` +
+     `dist/kashi.deps`. CI fails on drift.
+   - **Scratch consumer:** build one against the bundle on the oldest pin a
+     consumer uses and on the new pin. It declares `[deps.kashi]` with
+     `git`, an existing `tag`, `path` = this checkout, and `modules =
+     ["dist/kashi.cyr"]`.
+   - **Below cyrius 6.7.6,** the `path` wins on a plain `cyrius deps`.
+   - **From 6.7.6,** a plain resolve builds the tag. Set `CYRIUS_LOCAL=1`
+     for both `deps` and `build`; it resolves into `build/local-deps/lib/`.
+     A path-only entry is refused.
+   - **Check** that `head -2` of the vendored bundle names the new version.
+5. **The glyph sheet.** `cyrius build docs/examples/glyph_sheet.cyr
    build/glyph_sheet && ./build/glyph_sheet | sha256sum` must equal
-   `docs/examples/glyph_sheet.sha256`. CI does this on every push, so a
-   bump PR proves it by going green. **If the hash moves, stop** — that
-   is the reopen trigger above, not a re-pin.
-6. **Kernel side**: `src/font_data.cyr` is compiled by agnos with *its*
-   pin, not kashi's. The bump is complete only when the kernel's pin
-   accepts the table too — confirm before tagging.
-7. **Record**: CHANGELOG entry with the bench comparison, sizes,
-   assertion counts and the sheet result; `state.md` Version entry;
-   `VERSION`.
-
-(Through 1.1.0 step 2 said to `cyrius lib sync --full` on the dev box, and a
-note here warned that the full snapshot's `sigil.cyr` / `mabda.cyr` folds fail
-`cyrfmt --check`. With `lib/` holding only what `cyrius deps` vendors, neither
-file is there.)
-
-### Precedent — 6.7.9 → 6.7.18 (1.2.1, 2026-10-29)
-
-Nine toolchain releases, all patch-level. **Checked against cyrius's
-`docs/development/ecosystem-migration.md` § 6.7.10 – 6.7.18**, about 6,700
-lines and too long to read inline. A subagent screened it against
-comment-stripped copies of the 11 source files, and its "needs a run" items
-were settled by the gate runs. Nothing reached kashi:
-- **No new reserved words.** The vendored stdlib gained 53 names (none
-  collides with a kashi identifier).
-- **New refusals, none hit:** enum members without a separator, a bare
-  `load*` statement, trailing code on an `include` line, a top-level
-  `return`, redeclared globals or fns.
-- **The new lint rules:** array overrun at a constant offset, and the
-  write length of a literal `syscall(1, …)`.
-- **No change to how module-scope variables are ordered.**
-
-Notes for the next move:
-
-- **A screen this size is a subagent's job.** Give it the source list, the
-  manifest and CI, then run the gates on its "needs a run" items yourself.
-- **After a pin bump, run a plain `cyrius deps`, not `cyrius deps
-  --lock`.** Checked on 6.7.18 in a scratch copy:
-  - With the old `lib/` present, `--lock` declines to re-lock. It leaves the
-    old pin's lock, names `cyrius deps` as the fix, and **still exits 0**.
-  - With no `lib/`, it writes an empty lock ("0 deps locked").
-
-  The first case would leave the lock stale; the second makes CI's next
-  `cyrius deps` fail.
-- **`cyrius tests` is gone** (6.7.12); use `cyrius test`.
-- **`tests/kashi.fcyr` also builds to `build/kashi`.** CI's fuzz loop
-  names each binary after its `.fcyr`, so it overwrites the library build
-  when both run in one checkout. Rebuild the library before comparing
-  sizes or bytes.
-
-**Result:** the glyph sheet was **byte-identical** (`5544d63f…`), and so was
-the demo's output. 454 + 145 assertions passed. Fuzz was clean. `cyrius vet`
-reported "no dependencies" for all four freestanding files. All four guard
-mutants were caught. The bench was flat (every row within ±0.9 %). The
-library and demo were the **same size** as on 6.7.9 (199,968 / 56,816 B),
-though not byte-identical. `dist/kashi.cyr` changed only in its stamp, and a
-scratch consumer built and ran it on 6.6.3, 6.6.6 and 6.7.18. Kernel side:
-unchanged (the core is 1.1.1's). Full numbers in `CHANGELOG.md` *1.2.1*.
-
-### Precedent — 6.6.20 → 6.7.9 (1.2.0, 2026-10-29)
-
-Ten toolchain releases and a language minor. **Checked against cyrius's
-`docs/development/ecosystem-migration.md` § 6.7.0 – 6.7.9** (the consumer
-notes): none of the shapes it names is in `src/`, `tests/` or
-`docs/examples/`.
-- **New reserved words:** `trait`, `const`, `true` / `false`, `do`, `dyn`.
-- **A lone `!`:** the lexer dropped it before 6.7.3. kashi has none outside
-  strings.
-- **Shapes kashi does not use:** `bool` writes, structs, `impl` / `self`,
-  generics, typed `*T` dereference, signed slices, `for` steps, `OP=` on
-  an array.
-- **Unary `-` / `~` on a constant before a literal operator:** none
-  (`0 - N` is the house spelling).
-- **An unmatched module-scope `}`:** none.
-
-Nothing reached kashi's source. Notes for the next move:
-
-- **Step 2 works unchanged.** A bare `cyrius deps` re-vendored and
-  re-locked (14 of 24 hashes moved). `cyrius deps --locked` (6.7.6) checks
-  the lock without writing; `--verify` still works.
-- **6.7.6 makes `[test] files` the name for `[build] test`.** `[build]
-  test` stays a synonym, and no unknown-key warning fires.
-- **6.7.9: a bare `cyrius bench` / `fuzz` with nothing to run exits 1.**
-  kashi has a harness of each, so this does not apply.
-- **6.7.6: a `path` beside `git` / `tag` is a dev override, used only
-  under `--local`.** That changes consumers, not kashi. The
-  getting-started guide says so.
-- **The core stays on 6.6.x syntax.** Every consumer compiles
-  `src/font_data.cyr` on its own pin, all of them 6.6.x at 1.2.0. 6.7-only
-  syntax such as `[3616 / 8]` array sizes (6.7.2) waits until they move.
-- **The fset-guard check depends on cycc's declaration-order layout of
-  globals.** Re-run its mutation at each bump: remove each of the four
-  guards in a scratch copy and see "guard: every core byte unchanged"
-  fail. On 6.7.9 all four failed.
-
-**Result:** the glyph sheet was **byte-identical** (`5544d63f…`). 454 +
-145 assertions passed. `cyrius vet` reported "no dependencies" for all four
-freestanding files. Fuzz was clean. The bench was flat (every row within
-±1.6 %, nine interleaved rounds against 1.1.1 on 6.6.20). The library and
-the DCE'd demo each grew 16 B. `dist/kashi.cyr` differs only in its version
-stamp. Kernel side: the core is byte-identical to 1.1.1's, so agnos's
-compile at its 6.6.20 pin is unchanged. Full numbers in `CHANGELOG.md`
-*1.2.0*.
-
-### Precedent — 6.6.6 → 6.6.20 (1.1.1, 2026-10-13)
-
-Fourteen toolchain releases at once. **Checked against the cyrius changelog
-6.6.7 – 6.6.20** (the per-release consumer notes, and every mention of
-kashi in the cyrius tree): none of the new compiler refusals has a shape in
-`src/`, `tests/` or `docs/examples/` — no top-level `defer`, `#define` /
-`#if`, string escapes outside the known set, `sizeof` / `mulh64` /
-`fncall*` identifiers, array initializer lists, typed array elements,
-nested fns, redefined fns, `syscall()` with more than 6 arguments, or
-stray `@`. What did reach kashi, each handled in 1.1.1:
-
-- **6.6.17 — a bare `cyrius test` runs `[build].test` first.** 448 + 145
-  in two files before the fix (454 + 145 after); CI's separate unit step
-  dropped, as the 6.6.17 note below asked.
-- **6.6.9 — `cyrius deps` writes a `cyrius.lock` for a stdlib-only project**
-  ("commit it"). kashi's policy had been to omit one; every stdlib-only
-  sibling (dhancha, crab, puka, jalwa, aethersafha, rekha) tracks it, and a
-  tampered hash makes `cyrius deps` exit 1. Tracked now — step 2.
-- **6.6.18 — distlib's requires block and compile-verified sidecar.**
-  `dist/kashi.deps` 8 leaves → 4 (`vec alloc string io`; `fmt`,
-  `syscalls`, `assert`, `bench` were never the library face's), and the
-  bundle opens with the four `include "lib/…"` lines. A scratch consumer
-  (`[deps.kashi] path` + `modules = ["dist/kashi.cyr"]`) builds and runs on
-  6.6.20 **and** 6.6.6.
-- **6.6.13 — globals are aligned (16 on x86 for anything over 8 bytes),
-  and the gap between two globals is the compiler's.** kashi never reached
-  one global from another; the 1.1.1 storage tests are written not to
-  depend on it.
-- **6.6.11 — test grading on the assert summary; lint fails on compiler
-  refusals.** Both suites print the summary; lint clean.
-
-**Result:** the glyph sheet was **byte-identical** — 1.1.0 rendered by 6.6.6
-and by 6.6.20 both hash to the pin `5544d63f…`, and so does 1.1.1;
-`cyrius vet` "no dependencies" for all four freestanding files; fuzz clean;
-bench flat (every row within ±2 % across 1.1.0/6.6.6, 1.1.0/6.6.20 and
-1.1.1/6.6.20, nine interleaved runs each). The library grew 262,656 →
-288,528 B and the DCE'd demo 144,072 → 145,376 B on the toolchain alone
-(stdlib growth), before the storage fix took 88,576 B off each. Kernel
-side: the 1.1.1 core compiles freestanding (`--no-deps`) on agnos's 6.6.6
-pin and passes both suites there. Full numbers in `CHANGELOG.md` *1.1.1*.
-
-### Precedent — 6.6.4 → 6.6.6 (1.0.9, 2026-09-21)
-
-**What was checked** (7 `.cyr` under `src/`; vendored `lib/` excluded):
-
-- **Windows write corruption: not a kashi exposure.** `O_APPEND` /
-  `O_TRUNC` appear 52 times, all inside the vendored `lib/` fold, zero in
-  `src/`. kashi never opens a file for writing; its only file I/O is the
-  read-only `file_read_all` calls behind the `_file` loaders.
-- **The read-side PE fix (`file_read_all` no longer requests write
-  access) matches kashi's access pattern but kashi has no Windows
-  target**: CI is `ubuntu-latest` only and `src/` carries no
-  `CYRIUS_TARGET_*` branch.
-- **No shape the new refusals catch.** Zero `struct` declarations, no
-  `async fn`, no `operator` fn, no SIMD-returning fn, no `var` inside a
-  top-level block, no raw `SYS_STATFS`, no `lib/regression.cyr` consumer,
-  no duplicate top-level global, no symlink in `lib/`.
-- **The literal-size question, measured.** `src/font_data.cyr` carries
-  kashi's longest literal at **17,121 bytes** — the largest in this slice
-  of the ecosystem and well under the **64 KB** threshold of the 6.6.4
-  read-back defect. ⚠ Font tables only grow: a single literal past 64 KB
-  needs a pin ≥ 6.6.4 or the table silently reads back from its second
-  byte with `rc=0`. Now a line in the getting-started "adding a font"
-  checklist.
-
-**Result:** every step ran as written. The glyph sheet — 3 fonts × 224
-glyphs, every row byte — was **byte-identical** between the 6.6.4 and
-6.6.6 builds (sha256 `b68ca4d9…`, since pinned); `dist/kashi.cyr`
-differed only in its version stamp; 393 + 49 assertions passed; `cyrius
-vet` stayed dependency-free; bench flat within noise (and ~12 % faster
-than the 1.0.0 / 6.0.3 rows on the sweep and the codepoint search —
-codegen, not source). Full numbers in `CHANGELOG.md` *1.0.9*.
-
-## Recorded by cyrius 6.6.17 (2026-10-05) — for the next cyrius pin move
-
-✅ **Adopted in 1.1.1** (pin 6.6.20): the bare run covers both suites and CI's separate unit step is gone. Kept for
-the record. Docs-only note from the cyrius 6.6.17 lanes; each item was this repo's to adopt when it pinned ≥ 6.6.17.
-
-- **Bare `cyrius test` runs `[build] test = "src/test.cyr"` from 6.6.17** (cyrius m5), BEFORE the `tests/`
-  walk. Checked 2026-10-09 in a scratch copy pinned to 6.6.17: a bare run reports 448 + 145 passed, two files.
-  Until 1.1.0 CI ran only the bare command, so on 6.6.6 it gated `tests/kashi.tcyr` alone and the unit
-  assertions never ran in CI; since 1.1.0 the test job also runs `cyrius test src/test.cyr` as its own step.
-  At the pin move that step only repeats the bare run — **drop it in the same change**.
+   `docs/examples/glyph_sheet.sha256`, which CI checks on every push.
+   **If the hash moves, stop:** the compiler changed what the font says.
+   Bisect the toolchain and file it upstream. Do not re-pin.
+6. **Kernel side and consumer pins.** Consumers compile `src/font_data.cyr`
+   with *their* pins, not kashi's. Build it freestanding (`cyrius build
+   --no-deps`) and run it on each consumer's pin (`state.md`,
+   *Consumers*). The core keeps to syntax the oldest of those pins accepts.
+7. **Record.**
+   - A CHANGELOG entry: what the screen found, the bench table, sizes,
+     assertion counts, and the sheet result.
+   - A `state.md` Version entry, and `VERSION`.

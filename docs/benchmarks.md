@@ -329,5 +329,5 @@ table renders the natural unit.
   baseline is unchanged across them.
 - `kashi_pcf_decode_glyph` (one-shot per glyph at load time) is not
   benched — it's amortized over the font lifetime, not per-render.
-  Load-path numbers would be a worthwhile addition in a future
-  release if a consumer reports load latency as a bottleneck.
+  Load-path benchmarks are booked for 1.3.x (`development/roadmap.md`),
+  as the baseline for measuring the loaders' worst case.

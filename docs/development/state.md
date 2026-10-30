@@ -305,19 +305,18 @@ out-of-scope; none are booked.
 
 ## What's booked (not built — future)
 
-Nothing actively booked post-1.0. Ideas noted in
-[`roadmap.md`](roadmap.md) as out-of-scope:
-
-- BDF lenient-BBX with per-glyph cell padding (display fonts with
-  italic overhangs / descender variation). Would be additive on
-  top of the current strict-BBX policy (ADR 0008).
-- PCF per-glyph metric variation (analog of the above for PCF;
-  ADR 0009 currently strict).
-- Text shaping / BiDi / complex-script handling — kashi exposes
-  data only; shaping is a separate concern that could live in a
-  sibling library.
-
-See [`roadmap.md`](roadmap.md).
+[`roadmap.md`](roadmap.md) holds the milestones:
+- **1.3.x — Hardening, next and owed now:**
+  - the P(-1) security audit (none since 0.8.0);
+  - the worst-case cost of the insertion-sorted codepoint maps;
+  - fuzz contracts with a round-trip oracle;
+  - load-path benchmarks.
+- **1.4.x — Unicode coverage:** more extension glyphs and aliases, when a
+  consumer names a glyph.
+- **1.5.x — Loader breadth:** BDF lenient-BBX, PCF per-glyph metrics and
+  streaming loads, when a consumer's font won't load.
+- **1.x.x:** a fourth built-in font (agnos) and 6.7 syntax in the core
+  (once every consumer pins ≥ 6.7.2).
 
 ## Build & size
 
