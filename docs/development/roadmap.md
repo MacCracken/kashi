@@ -5,9 +5,9 @@
 > Forward-facing only. What shipped is in [`CHANGELOG.md`](../../CHANGELOG.md);
 > the live state is in [`state.md`](state.md).
 >
-> **1.3.0 shipped the hardening pass** (audit 2026-10-30). Three small
-> follow-ups remain under 1.3.x; the milestones after it each wait for a
-> consumer to need them.
+> **1.3.0 shipped the hardening pass** (audit 2026-10-30). One follow-up
+> remains under 1.3.x; the milestones after it each wait for a consumer to
+> need them.
 >
 > The version numbers set an order, not a schedule. If a later milestone's
 > trigger arrives first, that milestone ships first and the rest renumber.
@@ -19,10 +19,6 @@
 - [ ] **aarch64 CI leg** (audit T8). Every suite passes under
   qemu-aarch64 and the test files compile for `--aarch64` since 1.3.0. CI
   still runs x86_64 only, though agnos builds the core for aarch64 too.
-- [ ] **Roll the doc ledger up into tiers** (`docs/doc-health.md`, open
-  since 1.1.0).
-- [ ] **`CLAUDE.md`'s five stale statements** (listed in the ledger). This
-  is the maintainer's file.
 
 ## 1.4.x — Unicode coverage (when a consumer names a glyph)
 

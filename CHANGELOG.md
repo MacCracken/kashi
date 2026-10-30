@@ -7,6 +7,35 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+### Documentation
+
+- **`docs/doc-health.md` rolled up into tiers.** This was open since 1.1.0.
+  - One row per tier replaces the 46 per-file rows, with per-file notes only
+    where a file needs its own attention.
+  - A new *Refresh triggers* table maps each kind of change (release, pin,
+    API, loader behaviour, new font, audit, tests / CI, consumer pins) to the
+    docs it must touch.
+  - The release-by-release refresh chain is gone; the CHANGELOG and git hold
+    it.
+- **`CLAUDE.md` refreshed.** The five statements the 1.2.1 sweep flagged
+  are fixed:
+  - the library face is `src/lib.cyr` plus the three parser modules and
+    loads PSF, BDF and PCF;
+  - the public API grows additively, where it said "complete and frozen";
+  - the demo draws 'A' in the two 8-wide built-ins, then '…' and '�';
+  - `lib/` holds hash-locked copies, not symlinks;
+  - the roadmap is forward-facing milestones plus the pin procedure.
+
+  Updated for 1.3.0:
+  - the Quick Start runs every suite, the poison runs and the fuzz oracles;
+  - P(-1) step 1 uses strict lint and poison;
+  - step 4 measures each loader's worst-case cost within its caps;
+  - the freestanding core keeps to the oldest consumer pin's syntax;
+  - the Documentation list gains `docs/api/`, `docs/audit/`, the issues
+    directory and the benchmarks.
+- The roadmap's 1.3.x follow-ups drop both items; the aarch64 CI leg
+  remains.
+
 ## [1.3.0] - 2026-10-30 — the P(-1) hardening pass
 
 Minor. The security & hardening audit the 1.x minors had skipped since 0.8.0
