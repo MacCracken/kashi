@@ -1,8 +1,8 @@
-# `kashi_pcf_cp_to_idx` wraps a codepoint above U+FFFF into the BMP — OPEN
+# `kashi_pcf_cp_to_idx` wraps a codepoint above U+FFFF into the BMP — RESOLVED (1.2.2)
 
-**Status:** 🟠 **OPEN.** Found 2026-10-29 by the 1.2.1 doc sweep while checking `docs/api/parsers.md` against
-`src/font_pcf.cyr`. Not fixed in 1.2.1 (a toolchain + docs release that changes no source); the API reference carries
-a caveat until it is.
+**Status:** ✅ **RESOLVED in kashi 1.2.2** (2026-10-29) — see *Resolution* at the end. Found 2026-10-29 by the 1.2.1
+doc sweep while checking `docs/api/parsers.md` against `src/font_pcf.cyr`. Not fixed in 1.2.1, a toolchain + docs
+release that changed no source.
 **Severity:** Low. It gives a wrong answer, not an out-of-bounds read. The library face's PCF loader is not affected.
 **Affects:** a direct caller of the public parser function `kashi_pcf_cp_to_idx` that passes `cp > 0xFFFF`. Present
 since 0.7.1 (ADR 0009).
@@ -41,3 +41,20 @@ Add a unit assertion that `kashi_pcf_cp_to_idx` on a supplementary-plane codepoi
 that maps U+0041. Tighten the fuzz contract too: for `cp > 0xFFFF` the result must be `0 - 1`. Then regenerate
 `dist/kashi.cyr`. It is a patch: the documented contract already says `0 - 1`, and only the wrong answer changes.
 Remove the caveat in `docs/api/parsers.md` in the same change.
+
+## Resolution (1.2.2)
+
+Fixed as suggested: `if (cp > 0xFFFF) { return 0 - 1; }` sits in `kashi_pcf_cp_to_idx`'s guard block, after `cp < 0`.
+- **Unit.** A new group "pcf cp_to_idx" (10 assertions) against `_mk_pcf`'s font (0x41..0x43, byte1 = 0) covers:
+  - in-range hits;
+  - out-of-range misses (`0x40`, `0x141`, `0xFFFF`);
+  - `0x10041`, `0x110041` and `0x7FFFFFFFFFFF0041`, whose low 16 bits all map;
+  - a negative.
+- **Fuzz.** The PCF contract gains code 11: a cp above U+FFFF must miss.
+  - The first draft probed random codepoints and did **not** catch the bug with the guard removed. The fuzz template maps
+    two codepoints, so a random cp has about 2 in 65,536 odds of mapped low bits.
+  - The probe now splices a random nonzero high part (up to 2^46) onto a codepoint drawn from the font's own encoded
+    range.
+- **Mutation.** With the guard removed, the unit suite fails 3 assertions and the fuzz harness exits 11.
+- **Gates.** The glyph sheet and the demo output are byte-identical, and the sizes and the bench are unchanged.
+  `dist/kashi.cyr` regenerated.

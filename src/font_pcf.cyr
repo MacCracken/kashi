@@ -1,8 +1,8 @@
 # === kashi — PCF (Portable Compiled Format) parser ===
 #
 # Self-contained, heapless PCF parser. Same posture as src/font_psf.cyr
-# and src/font_bdf.cyr: load8 + arithmetic only — no stdlib, no heap, no
-# allocations. `cyaudit vet src/font_pcf.cyr` must report "no
+# and src/font_bdf.cyr: load / store intrinsics + arithmetic only — no
+# stdlib, no heap, no allocations. `cyrius vet src/font_pcf.cyr` must report "no
 # dependencies", and the parser fuzzes in isolation (tests/kashi.fcyr).
 #
 # PCF is X11's compiled binary bitmap font format — what `bdftopcf`
@@ -22,7 +22,7 @@
 #     width/height/glyph_count. Fills:
 #       hdr (56 bytes):  KIND=4 (PCF), WIDTH, HEIGHT, COUNT, CHARSIZE,
 #                        DATAOFF (offset of bitmap pixel data), UNIOFF=0
-#       ctx (128 bytes): glyph_count, dims, source/target row strides,
+#       ctx (144 bytes, 136 used): glyph_count, dims, source/target row strides,
 #                        table offsets within `buf`, format flags,
 #                        BDF_ENCODINGS range
 #     Returns KASHI_PCF_OK / KASHI_PCF_EINVAL / KASHI_PCF_EFORMAT.
@@ -109,7 +109,7 @@ enum KashiPcfHdr {
     PCF_PH_UNIOFF = 48;               # always 0 — PCF has no separate table
 }
 
-# PCF context (128 bytes). Carries everything `decode_glyph` and
+# PCF context (144 bytes; 136 used). Carries everything `decode_glyph` and
 # `cp_to_idx` need after `parse_header` returns.
 enum KashiPcfCtx {
     PCF_CTX_GLYPH_COUNT = 0;
@@ -128,11 +128,6 @@ enum KashiPcfCtx {
     PCF_CTX_MIN_B1 = 104;
     PCF_CTX_MAX_B1 = 112;
     PCF_CTX_MIN_B2 = 120;
-    # Note: 128 bytes total — caller's `var ctx[128]` is enough.
-    # max_b2 is stored in the high half of MIN_B2's u64? No — we have one
-    # slot left (PCF_CTX_MIN_B2 + 8 = 128, the upper bound). max_b2 has
-    # to go elsewhere or the ctx must be larger. Below we use a 144-byte
-    # convention: caller allocates `var ctx[144]`.
     PCF_CTX_MAX_B2 = 128;
     # Total: 136 bytes used; pad to 144 for headroom.
 }
@@ -667,12 +662,15 @@ fn kashi_pcf_decode_glyph(buf, ctx, glyph_idx, dest, dest_size) {
 # Resolves `cp` through the BDF_ENCODINGS table. The table is a 2D
 # array indexed by (byte1, byte2): byte1 = (cp >> 8), byte2 = cp & 0xFF.
 # Returns the glyph index, or `0 - 1` if cp is unmapped (out of range
-# or the table cell holds the sentinel 0xFFFF).
+# or the table cell holds the sentinel 0xFFFF). Both bytes are 8-bit, so
+# nothing above U+FFFF is encodable; until 1.2.2 the `& 0xFF` on byte1
+# wrapped such a cp into the BMP (0x10041 resolved as U+0041).
 
 fn kashi_pcf_cp_to_idx(buf, ctx, cp) {
     if (buf == 0) { return 0 - 1; }
     if (ctx == 0) { return 0 - 1; }
     if (cp < 0) { return 0 - 1; }
+    if (cp > 0xFFFF) { return 0 - 1; }
     var min_b1 = load64(ctx + PCF_CTX_MIN_B1);
     var max_b1 = load64(ctx + PCF_CTX_MAX_B1);
     var min_b2 = load64(ctx + PCF_CTX_MIN_B2);

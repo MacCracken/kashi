@@ -11,7 +11,9 @@
 > [`accessors.md`](accessors.md)).
 > 1.1.1 (2026-10-13) changed no public symbol: it right-sized the glyph
 > buffers' storage (an internal enum, below). 1.2.0 and 1.2.1
-> (2026-10-29) were toolchain-only and changed nothing here.
+> (2026-10-29) were toolchain-only and changed nothing here. 1.2.2 fixed
+> one result: `kashi_pcf_cp_to_idx` returns `0 - 1` for a codepoint above
+> U+FFFF, as documented (it used to wrap into the BMP).
 
 This is the full reference for kashi's public surface — 44 public
 functions and 21 enum groups across two faces (freestanding + library).

@@ -1,15 +1,16 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-10-29 (1.2.1)
+> **Last Updated**: 2026-10-29 (1.2.2)
 >
-> **Status: one open issue, no feature work booked.**
+> **Status: No Open Work.**
+>
+> 1.2.2 (2026-10-29) fixed the one bug the 1.2.1 sweep found
+> ([issue](issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md)):
+> `kashi_pcf_cp_to_idx` wrapped a codepoint above U+FFFF. It also fixed
+> the stale `src/` comments the sweep listed.
 >
 > 1.2.1 (2026-10-29) moved the pin 6.7.9 → 6.7.18 and did the full-tree
-> doc sweep. The sweep found one code bug, filed as OPEN
-> ([issue](issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md)):
-> `kashi_pcf_cp_to_idx` wraps a codepoint above U+FFFF. Its fix, together
-> with the stale `src/` comments the sweep listed (`../doc-health.md`), is
-> the next source change.
+> doc sweep.
 >
 > 1.2.0 (2026-10-29) moved the pin 6.6.20 → 6.7.9, into cyrius's 6.7.x
 > language minor, and changed no source. It is cut as a minor to mark the

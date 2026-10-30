@@ -14,12 +14,14 @@
 #      and a vendored klib/) `include`s this file DIRECTLY and never
 #      touches the rest of kashi.
 #
-#   2. FULL LIBRARY       — this file (src/lib.cyr) + src/font_psf.cyr.
-#      stdlib-using. Runtime PSF1/PSF2 import (`kashi_load_psf*`,
-#      `kashi_register_font`), codepoint→glyph Unicode mapping, ligature
+#   2. FULL LIBRARY       — this file (src/lib.cyr) + the parsers
+#      src/font_psf.cyr, src/font_bdf.cyr, src/font_pcf.cyr. stdlib-using.
+#      Runtime PSF1/PSF2 / BDF / PCF import (`kashi_load_*`,
+#      `kashi_register_font`), sidecar Unicode-table attach,
+#      codepoint→glyph Unicode mapping, ligature
 #      lookup, unified codepoint-addressed accessors (built-in + runtime),
 #      active-font knob. Do NOT let any of it leak `include`s into
-#      font_data.cyr — the boundary is checked by `cyaudit vet`.
+#      font_data.cyr — the boundary is checked by `cyrius vet`.
 
 include "src/font_data.cyr"
 include "src/font_psf.cyr"
@@ -30,12 +32,12 @@ include "src/font_pcf.cyr"
 # Runtime font surface (M1). The PSF byte parser + result codes (KashiResult)
 # and PSF constants live in src/font_psf.cyr; this file owns the runtime
 # registry, glyph-store allocation, and the unified accessors that dispatch
-# across the built-in (ids 0,1) and runtime (ids >= 2) id spaces. See
-# docs/adr/0002.
+# across the built-in (ids 0..2) and runtime (ids >= KASHI_RT_FONT_BASE = 3)
+# id spaces. See docs/adr/0002 and 0006.
 #
 # Return convention: kashi_load_psf / kashi_register_font return a font_id
 # (>= KASHI_RT_FONT_BASE) on success, or `0 - <KashiResult>` (negative) on
-# failure. Built-in ids 0,1 are never returned by these. (`0 - N` form per
+# failure. Built-in ids 0..2 are never returned by these. (`0 - N` form per
 # the no-negative-literals rule.)
 #
 # Glyph addressing (M2 — see docs/adr/0003; built-ins refined by
@@ -177,7 +179,8 @@ fn _kashi_build_umap(rec, buf, len, kind, unioff) {
         }
     }
 
-    # Insertion sort the w pairs by codepoint (ascending). w <= count <= 512.
+    # Insertion sort the w pairs by codepoint (ascending). w <= n, one pair per
+    # single codepoint in the table (a glyph may list several).
     var i = 1;
     while (i < w) {
         var kc = load64(arr + i * 16 + 0);
@@ -386,7 +389,7 @@ fn kashi_register_font(width, height, glyph_data, glyph_count) {
 
 # Load a PSF1/PSF2 font from an in-memory buffer into a runtime font slot.
 # Validates via kashi_psf_parse, copies the glyph bytes into an owned store,
-# and registers it. Returns font_id (>= 2) or `0 - <KashiResult>` on a
+# and registers it. Returns font_id (>= KASHI_RT_FONT_BASE) or `0 - <KashiResult>` on a
 # malformed / unsupported / truncated font (so a caller can `if (id < 0)`).
 fn kashi_load_psf(buf, len) {
     var hdr[56];
@@ -417,9 +420,10 @@ fn kashi_load_psf(buf, len) {
     return id;
 }
 
-# Load a PSF font from a file path. Reads the file into a capped buffer
-# (256 KiB — ample for any console font; larger is rejected) and hands it to
-# kashi_load_psf. Returns font_id (>= 2) or `0 - <KashiResult>`.
+# Load a PSF font from a file path. Reads at most 256 KiB (ample for any
+# console font) and hands that to kashi_load_psf; a larger file is cut at the
+# cap, and kashi_load_psf rejects it if the cut lands inside the declared
+# glyph data. Returns font_id (>= KASHI_RT_FONT_BASE) or `0 - <KashiResult>`.
 fn kashi_load_psf_file(path) {
     var cap = 262144;
     var buf = alloc(cap);
@@ -1098,7 +1102,7 @@ fn kashi_font_row_byte(font_id, cp, row, byte_idx) {
     return kashi_rt_glyph_row_byte(font_id, idx, row, byte_idx);
 }
 
-# Runtime-font metadata (ids >= 2). Unknown id -> 0.
+# Runtime-font metadata (ids >= KASHI_RT_FONT_BASE). Unknown id -> 0.
 fn kashi_rt_font_width(font_id) {
     var rec = _kashi_rt_get(font_id);
     if (rec == 0) { return 0; }

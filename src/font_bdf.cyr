@@ -1,8 +1,8 @@
 # === kashi — BDF (Bitmap Distribution Format) parser ===
 #
 # Self-contained, heapless BDF parser. Same posture as src/font_psf.cyr:
-# load8 + arithmetic only — no stdlib, no heap, no allocations. So
-# `cyaudit vet src/font_bdf.cyr` must report "no dependencies", and the
+# load / store intrinsics + arithmetic only — no stdlib, no heap, no allocations. So
+# `cyrius vet src/font_bdf.cyr` must report "no dependencies", and the
 # parser fuzzes in isolation (tests/kashi.fcyr).
 #
 # BDF is X11's text source format for bitmap fonts (Terminus, Spleen,

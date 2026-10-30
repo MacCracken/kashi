@@ -1,13 +1,32 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-10-29 (**1.2.1** — cyrius 6.7.18, no source
-> change; the full-tree doc sweep) |
+> **Last refresh**: 2026-10-29 (**1.2.2** — the `kashi_pcf_cp_to_idx`
+> fix and the stale source comments; cyrius 6.7.18) |
 > **Refresh cadence**: bumped every release.
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
+
+**1.2.2** — Patch. Fixes the bug the 1.2.1 sweep found, plus its list of
+stale source comments. The toolchain is unchanged (cyrius 6.7.18).
+- **Fixed: `kashi_pcf_cp_to_idx` above U+FFFF.** byte1 was masked to 8
+  bits, so a codepoint above U+FFFF wrapped into the BMP (`0x10041` →
+  U+0041's glyph). It now returns `0 - 1`. Only direct callers of the
+  parser saw this; the PCF loader passes in-range codepoints only.
+- **Tests.** A new unit group "pcf cp_to_idx" (unit 454 → **464**), and
+  fuzz code 11 in the PCF contract, probed from the font's own encoded
+  range. With the guard removed, the unit suite fails 3 assertions and
+  fuzz exits 11.
+- **Comments.** About 15 stale comments are fixed across the five
+  `src/` modules: runtime ids, the PCF ctx size, `cyrius vet`, and why the
+  slot counts are not expressions. `src/font_data.cyr` changed in comments
+  only and builds on every consumer pin (6.6.3 – 6.6.20).
+- **Gates.** The glyph sheet `5544d63f…` and the demo output are
+  byte-identical. Fuzz is clean. `cyrius vet` reports "no dependencies" on
+  all four freestanding files. Sizes are unchanged. The bench is flat
+  (±2.6 %; the fixed function is not on a benched path).
 
 **1.2.1** — Patch: a toolchain bump plus the full-tree doc sweep that 1.2.0
 left outstanding. `src/`, `tests/` and `docs/examples/` are unchanged.
@@ -303,10 +322,10 @@ See [`roadmap.md`](roadmap.md).
 ## Build & size
 
 - Library build (`cyrius build src/lib.cyr build/kashi`): clean, **199,968 B**
-  (sha256 `500db6c6…`; 1.2.0 on 6.7.9 was the same size). 1.1.1: 199,952 B on 6.6.20. 1.1.0: 262,656 B on
+  (sha256 `55b2766a…`; the same size since 1.2.0). 1.1.1: 199,952 B on 6.6.20. 1.1.0: 262,656 B on
   6.6.6, 288,528 B on 6.6.20.
 - Demo (`CYRIUS_DCE=1 cyrius build src/main.cyr`): **56,816 B**
-  (sha256 `b7ab70cb…`; the same size on 6.7.9). 1.1.1: 56,800 B on 6.6.20. 1.1.0: 144,072 B on
+  (sha256 `b7ab70cb…`, unchanged by 1.2.2; the same size since 1.2.0). 1.1.1: 56,800 B on 6.6.20. 1.1.0: 144,072 B on
   6.6.6, 145,376 B on 6.6.20.
 - 1.2.0's toolchain move (6.6.20 → 6.7.9, no source change) added 16 B to
   each; 1.2.1's (6.7.9 → 6.7.18) added nothing.
@@ -322,13 +341,14 @@ See [`roadmap.md`](roadmap.md).
 
 ## Tests
 
-- `src/test.cyr` — 454 assertions (incl. the 13 audit regression
+- `src/test.cyr` — 464 assertions (incl. the 13 audit regression
   assertions added in 0.8.0 for findings F1, F2, F3, F5, F6, F7, F8,
   F9; F4 was cosmetic; 1.1.0 added the extension-glyph fidelity bytes,
   a Unicode spot group, and moved the out-of-range probes from `0x100`
   to `KASHI_EXT_LAST + 1`; 1.1.1 replaced the fset guard's two padding
   probes with one whole-core checksum and added the 7-assertion
-  "storage" group). **0 failed.** A bare `cyrius test` runs it first
+  "storage" group; 1.2.2 added the 10-assertion "pcf cp_to_idx" group).
+  **0 failed.** A bare `cyrius test` runs it first
   (6.6.17+); on the 6.6.6 pin, through 1.1.0, it needed
   `cyrius test src/test.cyr`, and CI ran it as its own step from 1.1.0
   (never before).
@@ -343,7 +363,7 @@ See [`roadmap.md`](roadmap.md).
   FNV-1a proof that `0x20..0xFF` is byte-for-byte 1.0.10; PSF + BDF + PCF
   file round-trips, PSF + sidecar tab file round-trip, missing-file
   negative cases).
-- **599 assertions total, 0 failed** (two files, one bare `cyrius test`).
+- **609 assertions total, 0 failed** (two files, one bare `cyrius test`).
 - `tests/kashi.fcyr` — the core-accessor bounds contract (three canned
   seeds + 200,000 random `(font, ch, row)` triples across small (9-bit
   cells, so the extension is reached), full-width i64 and near-edge
@@ -351,7 +371,8 @@ See [`roadmap.md`](roadmap.md).
   (1.1.0: 100,000 `(cp, font, row)` triples, codes 9–11 — only 0 or an
   encoded cell, ASCII identity, library face == core of the mapped cell),
   the PSF parser (4000 rounds), the BDF parser (2000 rounds), the PCF
-  parser (1500 rounds), and the text-tab parser (1000 rounds across
+  parser (1500 rounds; since 1.2.2 a cp above U+FFFF must miss, code 11),
+  and the text-tab parser (1000 rounds across
   random / template / mutated / truncated picks). No crashes; all
   accept-paths bounds-safe. Mutation-tested in 1.0.10.
 - `tests/kashi.bcyr` — see `docs/benchmarks.md`; the core hot path is
@@ -362,7 +383,8 @@ See [`roadmap.md`](roadmap.md).
   1.1.1: flat — every row within ±2 % across 1.1.0 on 6.6.6, 1.1.0 on
   6.6.20 and 1.1.1 on 6.6.20 (nine interleaved runs each). 1.2.0: flat,
   every row within ±1.6 % of 1.1.1 on 6.6.20 (nine interleaved rounds).
-  1.2.1: flat, every row within ±0.9 % of 1.2.0 on 6.7.9.
+  1.2.1: flat, every row within ±0.9 % of 1.2.0 on 6.7.9. 1.2.2: flat,
+  every row within ±2.6 % of 1.2.1.
 - Glyph-sheet pin — `docs/examples/glyph_sheet.sha256`, checked in CI.
 
 ## Cleanliness (P(-1) gates)

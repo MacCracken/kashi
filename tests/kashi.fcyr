@@ -586,6 +586,29 @@ fn fuzz_pcf(rounds) {
                 if (idx >= count) {
                     if (idx != 0 - 1) { return 4; }
                 }
+                # 1.2.2: a PCF encodes two bytes per codepoint, so nothing
+                # above U+FFFF maps — here or anywhere in the i64 domain.
+                # Until 1.2.2 such a cp wrapped into the BMP, which the
+                # range checks above could not see.
+                if (cp > 0xFFFF) {
+                    if (idx != 0 - 1) { return 11; }
+                }
+                # A wrap only shows when the low 16 bits map, which a random
+                # cp almost never hits, so build one from the font's own
+                # encoded range and splice a nonzero high part over it.
+                var mn1 = load64(&ctx + PCF_CTX_MIN_B1);
+                var mx1 = load64(&ctx + PCF_CTX_MAX_B1);
+                var mn2 = load64(&ctx + PCF_CTX_MIN_B2);
+                var mx2 = load64(&ctx + PCF_CTX_MAX_B2);
+                if (mx1 >= mn1) {
+                    if (mx2 >= mn2) {
+                        var eb1 = mn1 + rng_next() % (mx1 - mn1 + 1);
+                        var eb2 = mn2 + rng_next() % (mx2 - mn2 + 1);
+                        var hi = (rng_wide() & 0x3FFFFFFFFFFF) + 1;
+                        var cpw = (hi << 16) | (eb1 << 8) | eb2;
+                        if (kashi_pcf_cp_to_idx(buf, &ctx, cpw) != 0 - 1) { return 11; }
+                    }
+                }
                 g = g + 1;
             }
         }

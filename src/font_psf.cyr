@@ -30,7 +30,7 @@
 
 # Result codes for the runtime/library surface. Cyrius enum values must be
 # plain non-negative literals, so errors use a positive 10x namespace; the
-# public load/register functions return font_id (>= 2) on success or
+# public load/register functions return font_id (>= KASHI_RT_FONT_BASE) on success or
 # `0 - <code>` (negative) on failure (see src/lib.cyr).
 enum KashiResult {
     KASHI_OK = 0;
@@ -202,7 +202,7 @@ fn kashi_psf_parse(buf, len, out) {
 #
 # Always bounds-safe: at/over `end`, or on a malformed/truncated unit,
 # returns KASHI_TOK_END (with next = end) so a caller's walk terminates
-# rather than reading past the buffer. Pure — load8 + arithmetic only.
+# rather than reading past the buffer. Pure — load8 + arithmetic, writing only `out`.
 fn kashi_psf_uni_token(buf, pos, end, kind, out) {
     store64(out + KASHI_UT_CP, 0);
     if (pos < 0) {

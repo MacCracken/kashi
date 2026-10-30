@@ -7,6 +7,79 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-10-29 — PCF codepoints above U+FFFF, and the stale source comments
+
+Patch. Fixes the one bug the 1.2.1 doc sweep found, plus the stale `src/` comments it listed. The toolchain is
+unchanged (cyrius 6.7.18). The one code change is a guard in `kashi_pcf_cp_to_idx`; every other `src/` edit is a
+comment. No glyph, symbol, signature or offset changed, and no accessor result changed except the fixed one.
+- The glyph sheet still hashes to `5544d63f…`, and the demo's output is byte-identical to 1.2.1's.
+- 464 + 145 assertions pass (unit +10), and fuzz is clean with a new PCF contract.
+- Sizes are unchanged (199,968 / 56,816 B), and the bench is flat.
+
+### Fixed
+
+- **`kashi_pcf_cp_to_idx` wrapped a codepoint above U+FFFF into the BMP** (present since 0.7.1;
+  [issue](docs/development/issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md)).
+  - **The bug.** byte1 was `(cp >> 8) & 0xFF`, so `cp` and `cp & 0xFFFF` resolved to the same cell. On a font that
+    maps ASCII, `0x10041` returned the glyph for U+0041.
+  - **The fix.** It now returns `0 - 1` for any `cp > 0xFFFF`, as `docs/api/parsers.md` always documented. A PCF's
+    BDF_ENCODINGS ranges are byte-sized, so nothing above U+FFFF is encodable.
+  - **Who saw it.** Only a direct caller of the parser function. The library face's PCF loader passes in-range
+    codepoints only, so `kashi_load_pcf*` fonts, and `kashi_font_row` / `_ptr` on them, are unchanged.
+  - **Not a security fix.** The wrong answer was an in-range glyph index; no read went out of bounds.
+  - **Tests.**
+    - **New unit group "pcf cp_to_idx"** (10 assertions): in-range hits; out-of-range misses (`0x40`, `0x141`,
+      `0xFFFF`); three codepoints above U+FFFF whose low 16 bits map (`0x10041`, `0x110041`, `0x7FFFFFFFFFFF0041`);
+      and a negative.
+    - **The fuzz harness's PCF contract gains code 11:** a cp above U+FFFF must miss. A random cp almost never has
+      mapped low bits, so the first draft of this probe did **not** catch the bug. The probe now splices a random
+      nonzero high part onto a codepoint drawn from the font's own encoded range.
+  - **Mutation-checked.** With the guard removed, the unit suite fails 3 assertions and the fuzz harness exits 11
+    ("fuzz: FAIL pcf").
+
+### Changed
+
+- **Stale source comments** (all listed by the 1.2.1 sweep; comments only):
+  - **`src/lib.cyr`:**
+    - the header names all three parsers and `cyrius vet`;
+    - built-in ids are 0..2 and runtime ids are ≥ `KASHI_RT_FONT_BASE` (3) — five places said "0,1" / "≥ 2";
+    - `kashi_load_psf_file` cuts a file over 256 KiB at the cap; the comment said "rejected";
+    - the codepoint-map sort's bound is one pair per single codepoint; the comment said `w <= count <= 512`.
+  - **`src/font_pcf.cyr`:** the ctx is 144 bytes (136 used), not 128, and a leftover design note about where
+    `max_b2` would fit is gone. It also now names `cyrius vet` and says the parsers use load and store intrinsics.
+  - **`src/font_bdf.cyr`, `src/font_psf.cyr`:** the same `cyrius vet` / stores / runtime-id corrections.
+  - **`src/font_data.cyr`:** why the slot counts are not written `bytes / 8` (the consumers' 6.6.x pins, not the
+    language any more), and the CGA high half came in 0.5.2, not 0.5.1.
+  - **`src/test.cyr`:** two assertion labels said "id >= 2".
+
+  `src/font_data.cyr` changed in comments only. It still builds freestanding (`--no-deps`) and runs on 6.6.3, 6.6.6,
+  6.6.11 and 6.6.20, every consumer's pin, at the same 38,736 B as 1.2.1.
+- **`dist/kashi.cyr`** is regenerated: the guard, the comments and the stamp. `dist/kashi.deps` is unchanged. A
+  scratch consumer builds and runs the 1.2.2 bundle on 6.6.3, 6.6.6 and 6.7.18.
+- **Bench** (1.2.1 vs 1.2.2, both on 6.7.18). Two `CYRIUS_DCE=1` binaries, nine interleaved rounds, medians:
+
+  | Benchmark | 1.2.1 | 1.2.2 | Δ |
+  |---|---|---|---|
+  | `glyph_row` | 17.8 ns | 17.7 ns | −0.6 % |
+  | `glyph_ptr` | 7.1 ns | 6.9 ns | −2.6 % |
+  | `scan_vga_8x16` | 59.0 µs | 59.0 µs | 0.0 % |
+  | `font_row_builtin` | 22.7 ns | 22.7 ns | −0.3 % |
+  | `font_row_runtime` | 45.2 ns | 44.4 ns | −1.8 % |
+  | `font_row_runtime_cp` | 59.3 ns | 60.0 ns | +1.1 % |
+  | `cp437_from_unicode_ascii` | 3.5 ns | 3.5 ns | 0.0 % |
+  | `cp437_from_unicode_high` | 25.1 ns | 25.0 ns | −0.4 % |
+  | `font_row_builtin_cp` | 40.7 ns | 40.9 ns | +0.6 % |
+  | `font_init` | 21.1 µs | 21.1 µs | +0.1 % |
+
+  Flat. The fixed function is not on any benched path, and the largest delta (`glyph_ptr`, 0.2 ns) is in code that
+  did not change. `docs/benchmarks/history.csv` gains `1.2.1-rerun` and `1.2.2` rows.
+- **Docs.**
+  - `docs/api/parsers.md`: the caveat becomes a note that 1.2.2 fixed it.
+  - The issue is marked resolved.
+  - The roadmap is back to *No Open Work*.
+  - Also updated: `state.md` (counts, sizes, hashes), the benchmarks doc, the ledger, and the `tag` lines in
+    `README.md` and the getting-started guide.
+
 ## [1.2.1] - 2026-10-29 — cyrius 6.7.18, and the 1.2 doc sweep
 
 Patch. The pin moves cyrius 6.7.9 → 6.7.18, `lib/` is re-vendored and re-locked from the 6.7.18 snapshot, and the

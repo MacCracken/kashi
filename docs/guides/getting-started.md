@@ -1,6 +1,6 @@
 # Getting started with kashi
 
-> **Last Updated**: 2026-10-29 (1.2.1 — the pin at cyrius 6.7.18, `tag`
+> **Last Updated**: 2026-10-29 (1.2.2 — `tag` lines; 1.2.1 — the pin at cyrius 6.7.18, `tag`
 > lines bumped, the consumer-`path` description matches the stack; 1.2.0 —
 > the 6.7.6 local-`path` rule; 1.1.1 — glyph buffers right-sized, a
 > bare `cyrius test` runs both suites; 1.1.0 — Unicode
@@ -106,7 +106,7 @@ keep commented out):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.2.1"
+tag     = "1.2.2"
 path    = "../kashi"                  # optional; on cyrius >= 6.7.6, only under --local
 modules = ["src/font_data.cyr"]       # vendored as lib/kashi_font_data.cyr
 ```
@@ -219,7 +219,7 @@ amendment):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.2.1"
+tag     = "1.2.2"
 path    = "../kashi"
 modules = ["dist/kashi.cyr"]          # vendored as lib/kashi.cyr
 ```

@@ -280,11 +280,10 @@ Returns the glyph index (`0 ≤ idx < glyph_count`) or `0 - 1` if
 unmapped (out of the encoded range, or the table cell holds the
 sentinel `0xFFFF`).
 
-⚠ **Known bug: pass `cp ≤ 0xFFFF`.** The function keeps only the low
-16 bits of `cp`, so a codepoint above U+FFFF wraps: `0x10041` resolves
-as U+0041. It should return `0 - 1`. The library face's PCF loader is
-not affected, because it walks only the encoded byte ranges. Filed in
-[`../development/issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md`](../development/issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md).
+A PCF encodes two bytes per codepoint, so any `cp` above U+FFFF returns
+`0 - 1`. Before 1.2.2 such a `cp` wrapped into the BMP: `0x10041` resolved
+as U+0041
+([issue](../development/issues/2026-10-29-pcf-cp-to-idx-wraps-above-ffff.md)).
 
 ```cyrius
 var idx = kashi_pcf_cp_to_idx(buf, &ctx, 0x41);

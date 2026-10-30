@@ -682,7 +682,7 @@ fn test_rt_fonts() {
     store8(data + 0, 1); store8(data + 1, 2); store8(data + 2, 3); store8(data + 3, 4);
     store8(data + 4, 0x80); store8(data + 5, 0x40); store8(data + 6, 0x20); store8(data + 7, 0x10);
     var id = kashi_register_font(8, 4, data, 2);
-    assert_gte(id, KASHI_RT_FONT_BASE, "register returns id >= 2");
+    assert_gte(id, KASHI_RT_FONT_BASE, "register returns id >= RT base");
     assert_eq(kashi_font_total(), before + 1, "total grew by 1");
     assert_eq(kashi_rt_font_width(id), 8, "rt width 8");
     assert_eq(kashi_rt_font_height(id), 4, "rt height 4");
@@ -713,7 +713,7 @@ fn test_rt_fonts() {
     store8(pbuf + 4 + 0x41 * 2 + 0, 0xAB);
     store8(pbuf + 4 + 0x41 * 2 + 1, 0xCD);
     var pid = kashi_load_psf(pbuf, plen);
-    assert_gte(pid, KASHI_RT_FONT_BASE, "psf load returns id >= 2");
+    assert_gte(pid, KASHI_RT_FONT_BASE, "psf load returns id >= RT base");
     assert_eq(kashi_rt_font_count(pid), 256, "psf font count 256");
     assert_eq(kashi_font_row(pid, 0x41, 0), 0xAB, "psf glyph 0x41 r0");
     assert_eq(kashi_font_row(pid, 0x41, 1), 0xCD, "psf glyph 0x41 r1");
@@ -1499,6 +1499,30 @@ fn test_pcf_parse() {
     return 0;
 }
 
+# 1.2.2 (issue 2026-10-29): a PCF encodes two bytes per codepoint, so
+# kashi_pcf_cp_to_idx maps nothing above U+FFFF. Until 1.2.2 byte1 was
+# `(cp >> 8) & 0xFF`, and a codepoint whose low 16 bits were mapped resolved
+# to that glyph. _mk_pcf maps 0x41..0x43 with byte1 = 0, so each probe below
+# keeps 0x0041 in its low 16 bits.
+fn test_pcf_cp_to_idx() {
+    test_group("pcf cp_to_idx");
+    var buf = alloc(512);
+    var len = _mk_pcf(buf, 0, 1);
+    var hdr[56];
+    var ctx[144];
+    assert_eq(kashi_pcf_parse_header(buf, len, &hdr, &ctx), KASHI_PCF_OK, "pcf cp parse ok");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x41), 0, "pcf cp 'A' -> 0");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x43), 2, "pcf cp 'C' -> 2");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x40), 0 - 1, "pcf cp '@' unmapped");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x141), 0 - 1, "pcf cp byte1 past max");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0xFFFF), 0 - 1, "pcf cp U+FFFF unmapped");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x10041), 0 - 1, "pcf cp U+10041 no wrap");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x110041), 0 - 1, "pcf cp past U+10FFFF no wrap");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0x7FFFFFFFFFFF0041), 0 - 1, "pcf cp max i64 no wrap");
+    assert_eq(kashi_pcf_cp_to_idx(buf, &ctx, 0 - 1), 0 - 1, "pcf cp negative");
+    return 0;
+}
+
 fn test_pcf_load() {
     test_group("pcf load");
     var buf = alloc(512);
@@ -1977,6 +2001,7 @@ fn main() {
     test_bdf_load();
     test_bdf_load_errors();
     test_pcf_parse();
+    test_pcf_cp_to_idx();
     test_pcf_load();
     test_pcf_lsb_bit();
     test_pcf_uncompressed();
