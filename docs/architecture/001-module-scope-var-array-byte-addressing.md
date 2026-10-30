@@ -38,9 +38,13 @@ bytes used**: no slack past the last cell.
 
 The sizes are an enum, not literals, so that `src/test.cyr`'s "storage"
 group checks the same N the declarations use (`_KASHI_FONT16_SLOTS * 8 ==
-226 * 16`, and its twins). An array size takes a literal or an enum
-constant, not an expression (cyrius 6.6.20; expressions arrive in 6.7.2), so
-it cannot be written `[3616 / 8]`. The `_` prefix marks the enum internal
+226 * 16`, and its twins). Below cyrius 6.7.2 an array size takes a
+literal or an enum constant, not an expression, so it cannot be written
+`[3616 / 8]`. From 6.7.2 it can: on kashi's 6.7.9 pin (1.2.0)
+`var a[3616 / 8];` reserves 452 slots, measured. The core still keeps the
+enum and its literal sizes. agnos, dhancha, crab, puka, jalwa and
+aethersafha compile `src/font_data.cyr` on their own 6.6.x pins, so the core
+must not use syntax added in 6.7. The `_` prefix marks the enum internal
 (`docs/api/README.md`).
 
 ### Adding a cell or a font

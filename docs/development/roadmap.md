@@ -1,8 +1,12 @@
 # kashi — Roadmap
 
-> **Last Updated**: 2026-10-13 (1.1.1)
+> **Last Updated**: 2026-10-29 (1.2.0)
 >
 > **Status: No Open Work.**
+>
+> 1.2.0 (2026-10-29) moved the pin 6.6.20 → 6.7.9, into cyrius's 6.7.x
+> language minor, and changed no source. It is cut as a minor to mark the
+> language line; see the precedent below.
 >
 > 1.1.1 (2026-10-13) moved the pin 6.6.6 → 6.6.20 and fixed the one issue
 > filed against 1.1.0: the three glyph buffers reserved 8× the bytes they
@@ -118,7 +122,9 @@ out-of-scope feature creep.
 kashi emits fixed data, which makes a toolchain bump unusually
 checkable: the built-in glyph tables rendered by the new compiler must
 be byte-identical to the old render, and everything else is the normal
-gate set. Toolchain bumps are patch releases (1.0.1–1.0.9 were all this).
+gate set. Toolchain bumps are patch releases (1.0.1–1.0.9 were all this);
+the exception is a move to a new cyrius language minor, which is cut as a
+kashi minor (1.2.0, 6.6.x → 6.7.x).
 
 1. **Read the toolchain changelog for consumer-visible changes** and
    grep `src/` for each shape it names before bumping — the 6.6.6
@@ -169,6 +175,51 @@ gate set. Toolchain bumps are patch releases (1.0.1–1.0.9 were all this).
 note here warned that the full snapshot's `sigil.cyr` / `mabda.cyr` folds fail
 `cyrfmt --check`. With `lib/` holding only what `cyrius deps` vendors, neither
 file is there.)
+
+### Precedent — 6.6.20 → 6.7.9 (1.2.0, 2026-10-29)
+
+Ten toolchain releases and a language minor. **Checked against cyrius's
+`docs/development/ecosystem-migration.md` § 6.7.0 – 6.7.9** (the consumer
+notes): none of the shapes it names is in `src/`, `tests/` or
+`docs/examples/`.
+- **New reserved words:** `trait`, `const`, `true` / `false`, `do`, `dyn`.
+- **A lone `!`:** the lexer dropped it before 6.7.3. kashi has none outside
+  strings.
+- **Shapes kashi does not use:** `bool` writes, structs, `impl` / `self`,
+  generics, typed `*T` dereference, signed slices, `for` steps, `OP=` on
+  an array.
+- **Unary `-` / `~` on a constant before a literal operator:** none
+  (`0 - N` is the house spelling).
+- **An unmatched module-scope `}`:** none.
+
+Nothing reached kashi's source. Notes for the next move:
+
+- **Step 2 works unchanged.** A bare `cyrius deps` re-vendored and
+  re-locked (14 of 24 hashes moved). `cyrius deps --locked` (6.7.6) checks
+  the lock without writing; `--verify` still works.
+- **6.7.6 makes `[test] files` the name for `[build] test`.** `[build]
+  test` stays a synonym, and no unknown-key warning fires.
+- **6.7.9: a bare `cyrius bench` / `fuzz` with nothing to run exits 1.**
+  kashi has a harness of each, so this does not apply.
+- **6.7.6: a `path` beside `git` / `tag` is a dev override, used only
+  under `--local`.** That changes consumers, not kashi. The
+  getting-started guide says so.
+- **The core stays on 6.6.x syntax.** Every consumer compiles
+  `src/font_data.cyr` on its own pin, all of them 6.6.x at 1.2.0. 6.7-only
+  syntax such as `[3616 / 8]` array sizes (6.7.2) waits until they move.
+- **The fset-guard check depends on cycc's declaration-order layout of
+  globals.** Re-run its mutation at each bump: remove each of the four
+  guards in a scratch copy and see "guard: every core byte unchanged"
+  fail. On 6.7.9 all four failed.
+
+**Result:** the glyph sheet was **byte-identical** (`5544d63f…`). 454 +
+145 assertions passed. `cyrius vet` reported "no dependencies" for all four
+freestanding files. Fuzz was clean. The bench was flat (every row within
+±1.6 %, nine interleaved rounds against 1.1.1 on 6.6.20). The library and
+the DCE'd demo each grew 16 B. `dist/kashi.cyr` differs only in its version
+stamp. Kernel side: the core is byte-identical to 1.1.1's, so agnos's
+compile at its 6.6.20 pin is unchanged. Full numbers in `CHANGELOG.md`
+*1.2.0*.
 
 ### Precedent — 6.6.6 → 6.6.20 (1.1.1, 2026-10-13)
 

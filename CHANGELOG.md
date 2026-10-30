@@ -7,6 +7,83 @@ surface was moving; **as of 1.0.0 the public API is frozen** (see
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-29 — cyrius 6.7.9
+
+Minor. The pin moves cyrius 6.6.20 → 6.7.9, into cyrius's 6.7.x language minor, and `lib/` is re-vendored and
+re-locked from the 6.7.9 snapshot. The pin procedure would call a toolchain-only bump a patch; this one is cut as a
+minor to mark the move to the 6.7 language line. **`src/`, `tests/` and `docs/examples/` are unchanged: no glyph,
+symbol, signature, offset or accessor result changed.**
+- The 678-line glyph sheet still hashes to the pin `5544d63f…`, with no MISMATCH line.
+- 454 + 145 assertions pass, and fuzz is clean.
+- Bench is flat. Every row is within ±1.6 % of 1.1.1 on 6.6.20.
+
+### Changed
+
+- **Toolchain: cyrius 6.6.20 → 6.7.9.** The consumer notes for 6.7.0 – 6.7.9 (cyrius's
+  `docs/development/ecosystem-migration.md`) were read, and `src/`, `tests/` and `docs/examples/` were grepped for
+  every shape they name. None is present:
+  - **New reserved words:** `trait` (6.7.0), `const` (6.7.2), `true` / `false` (6.7.3), `do` (6.7.5) and `dyn`
+    (6.7.8). None is used as a name.
+  - **A lone `!`** (6.7.3). Until 6.7.3 the lexer silently dropped it, so `!x` compiled as `x`. kashi has none
+    outside string literals.
+  - **Shapes kashi does not use at all:**
+    - `bool` writes, structs, `impl` / `self`, traits and generics;
+    - typed `*T` dereference (6.7.8), signed slices and `for` steps (6.7.8, 6.7.9);
+    - `OP=` on an array (6.7.6).
+  - **Unary `-` / `~` on a constant before a literal operator** (6.7.9). There are none: negatives are spelled
+    `0 - N`, per CLAUDE.md.
+  - **An unmatched module-scope `}`** (6.7.9, now an error). None.
+
+  Every file compiles, formats and lints clean on 6.7.9 with no warning.
+- **`lib/` and `cyrius.lock`.** `cyrius deps` re-vendored the 24 declared stdlib files from the 6.7.9 snapshot and
+  re-locked. 14 hashes moved: `alloc`, `alloc_agnos`, `atomic`, `fmt`, `fnptr`, `io`, `vec`, and `syscalls` with its six
+  platform peers.
+  - `lib/` is byte-identical to the snapshot.
+  - `cyrius deps --verify` reports 24 verified, 0 failed.
+  - `cyrius deps --locked` (new in 6.7.6: it checks the lock without writing) is clean.
+- **Size.** The library is 199,952 → **199,968 B** (+16) and the `CYRIUS_DCE=1` demo 56,800 → **56,816 B** (+16), from
+  the toolchain alone.
+- **Checked on 6.7.9:**
+  - **`cyrius vet`.** All four freestanding files report "no dependencies"; `src/lib.cyr` reports 4 deps, 0
+    untrusted.
+  - **The fset-guard check still sees all four guards.** That check relies on cycc's declaration-order layout of
+    module-scope variables, which is the compiler's to change (6.6.13). Each of the four packer guards was removed
+    in turn; each mutant fails "guard: every core byte unchanged" (453 / 454).
+- **`dist/`.** `cyrius distlib` moved only the bundle's version stamp. `dist/kashi.deps` is unchanged (the same 4
+  leaves), and the bundle's code is byte-identical to 1.1.1's for consumers on any pin.
+- **Bench** (cyrius 6.7.9 vs 6.6.20). Two `CYRIUS_DCE=1` binaries, nine interleaved rounds, medians:
+
+  | Benchmark | 1.1.1 / 6.6.20 | 1.2.0 / 6.7.9 | Δ |
+  |---|---|---|---|
+  | `glyph_row` | 17.9 ns | 17.8 ns | −0.6 % |
+  | `glyph_ptr` | 7.4 ns | 7.5 ns | +0.9 % |
+  | `scan_vga_8x16` | 61.9 µs | 61.8 µs | −0.2 % |
+  | `font_row_builtin` | 23.7 ns | 23.3 ns | −1.6 % |
+  | `font_row_runtime` | 46.5 ns | 46.1 ns | −0.9 % |
+  | `font_row_runtime_cp` | 61.3 ns | 61.3 ns | +0.1 % |
+  | `cp437_from_unicode_ascii` | 3.7 ns | 3.8 ns | +1.4 % |
+  | `cp437_from_unicode_high` | 25.8 ns | 26.1 ns | +1.3 % |
+  | `font_row_builtin_cp` | 42.2 ns | 42.2 ns | 0.0 % |
+  | `font_init` | 22.1 µs | 21.7 µs | −1.5 % |
+
+  All flat. `docs/benchmarks/history.csv` gains `1.1.1-on-6.6.20` and `1.2.0` rows.
+- **Kernel side.** `src/font_data.cyr` is byte-identical to 1.1.1's, and agnos compiles it with its own pin (6.6.20).
+  Nothing changes there. The core must keep compiling on every consumer's pin: agnos 6.6.20, aethersafha 6.6.11,
+  dhancha, crab and puka 6.6.6, and jalwa 6.6.3. So it does not adopt 6.7.x-only syntax while any consumer is below
+  6.7. One
+  example: an array size written as an expression (`[3616 / 8]`) compiles from 6.7.2, measured on 6.7.9 at 452
+  slots, but the core keeps its enum sizes.
+- **Docs.**
+  - The getting-started guide:
+    - the pin line;
+    - `tag = "1.2.0"`;
+    - a note that from cyrius 6.7.6 a `path` beside `git` / `tag` is used only in local mode;
+    - the bundle's sidecar named as four stdlib leaves, not eight (stale since 1.1.1).
+  - Architecture note 001: array-size expressions on 6.7.x, and why the core keeps the enum.
+  - `README.md`: status line and tag. `CONTRIBUTING.md`: the pin.
+  - The roadmap: the 6.6.20 → 6.7.9 precedent, and a note that 1.2.0 is a minor.
+  - Also updated: `state.md`, the benchmarks doc and the doc-health ledger.
+
 ## [1.1.1] - 2026-10-13 — cyrius 6.6.20, and 88 KB back
 
 Patch. The pin moves cyrius 6.6.6 → 6.6.20, and the one issue filed against 1.1.0 is fixed

@@ -1,7 +1,8 @@
 # Getting started with kashi
 
-> **Last Updated**: 2026-10-13 (1.1.1 — glyph buffers right-sized, the pin at
-> cyrius 6.6.20 where a bare `cyrius test` runs both suites; 1.1.0 — Unicode
+> **Last Updated**: 2026-10-29 (1.2.0 — the pin at cyrius 6.7.9, `tag` lines
+> bumped, the 6.7.6 local-`path` rule; 1.1.1 — glyph buffers right-sized, a
+> bare `cyrius test` runs both suites; 1.1.0 — Unicode
 > text: `kashi_cp437_from_unicode` and the extension glyphs; rewritten for the
 > frozen 1.0 surface at 1.0.9)
 
@@ -49,7 +50,7 @@ cyrius build docs/examples/glyph_sheet.cyr build/glyph_sheet && ./build/glyph_sh
                                          # must equal docs/examples/glyph_sheet.sha256 (CI checks)
 ```
 
-There are two suites, and on the pinned cyrius (6.6.20; any pin from 6.6.17)
+There are two suites, and on the pinned cyrius (6.7.9; any pin from 6.6.17)
 a bare `cyrius test` runs both: first the `[build].test` entry, `src/test.cyr`
 (~450 assertions, including the byte-fidelity pins for the built-in tables and
 the storage-sizing checks), then every `tests/*.tcyr` (`tests/kashi.tcyr`,
@@ -103,10 +104,15 @@ and, by stack convention, `path` too so a sibling checkout wins):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.1.1"
-path    = "../kashi"                  # optional; a sibling checkout overrides the clone
+tag     = "1.2.0"
+path    = "../kashi"                  # optional; on cyrius >= 6.7.6, only under --local
 modules = ["src/font_data.cyr"]       # vendored as lib/kashi_font_data.cyr
 ```
+
+The sibling wins only below cyrius 6.7.6. From 6.7.6 a `path` beside
+`git` / `tag` is a dev override: a default build builds the tag, the
+sibling is used only in local mode (`--local` / `CYRIUS_LOCAL=1`), and
+an entry with only a local `path` is refused.
 
 `cyrius deps` vendors it as `lib/kashi_font_data.cyr` (named deps are
 namespaced `lib/<dep>_<basename>`). Then, in your source:
@@ -202,8 +208,8 @@ whatever comes back, so this is the trust boundary — see `SECURITY.md`.
 ### Consume it
 
 `cyrius distlib` folds the `[lib]` module list into a single file,
-`dist/kashi.cyr`, and writes `dist/kashi.deps` beside it naming the eight
-stdlib leaves the fold needs. That bundle is what a consumer declares —
+`dist/kashi.cyr`, and writes `dist/kashi.deps` beside it naming the four
+stdlib leaves the fold needs (`vec`, `alloc`, `string`, `io`). That bundle is what a consumer declares —
 **not** `src/lib.cyr`, whose `include "src/font_data.cyr"` is a path
 relative to kashi's own root and cannot resolve once vendored (ADR 0001,
 amendment):
@@ -211,7 +217,7 @@ amendment):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.1.1"
+tag     = "1.2.0"
 path    = "../kashi"
 modules = ["dist/kashi.cyr"]          # vendored as lib/kashi.cyr
 ```

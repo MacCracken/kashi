@@ -37,7 +37,35 @@ few times and take the steady-state figure; sub-microsecond ops use a
 ≥1e6-iteration batch to amortize `clock_gettime` overhead (see the
 `tests/kashi.bcyr` header).
 
-## Current — 1.1.1 (2026-10-13, cyrius 6.6.20)
+## Current — 1.2.0 (2026-10-29, cyrius 6.7.9)
+
+Host: AMD Ryzen 7 5800H, x86_64 Linux (load average ~1.4 at the start).
+Two binaries, both built `CYRIUS_DCE=1` from the same source: **1.1.1 on
+6.6.20** (the previous release, rebuilt in a scratch copy) and **1.2.0 on
+6.7.9**. Nine interleaved rounds; the table gives the median of the per-op
+means. 1.2.0 changes only the toolchain, so this table isolates cyrius
+6.6.20 → 6.7.9.
+
+| Benchmark | 1.2.0 / 6.7.9 | 1.1.1 / 6.6.20 | Δ | iters |
+|---|---|---|---|---|
+| `glyph_row` | 17.8 ns | 17.9 ns | −0.6 % | 1,000,000 |
+| `glyph_ptr` | 7.5 ns | 7.4 ns | +0.9 % | 1,000,000 |
+| `scan_vga_8x16` | 61.8 µs | 61.9 µs | −0.2 % | 10,000 |
+| `font_row_builtin` | 23.3 ns | 23.7 ns | −1.6 % | 1,000,000 |
+| `font_row_runtime` | 46.1 ns | 46.5 ns | −0.9 % | 1,000,000 |
+| `font_row_runtime_cp` | 61.3 ns | 61.3 ns | +0.1 % | 1,000,000 |
+| `cp437_from_unicode_ascii` | 3.8 ns | 3.7 ns | +1.4 % | 1,000,000 |
+| `cp437_from_unicode_high` | 26.1 ns | 25.8 ns | +1.3 % | 1,000,000 |
+| `font_row_builtin_cp` | 42.2 ns | 42.2 ns | 0.0 % | 1,000,000 |
+| `font_init` | 21.7 µs | 22.1 µs | −1.5 % | 10,000 |
+
+**Flat**: every row is within ±1.6 %, and the signs are mixed, so the
+toolchain moved nothing measurable. Absolute figures sit 1–3.5 % below the
+2026-10-13 session on the same host, for both binaries alike. That is
+session-to-session drift, which is why the old pin is re-measured in the
+same session.
+
+## Previous — 1.1.1 (2026-10-13, cyrius 6.6.20)
 
 Host: AMD Ryzen 7 5800H, x86_64 Linux (load not recorded; only a read-only
 file search ran alongside). Three binaries, built `CYRIUS_DCE=1` and run
@@ -65,7 +93,7 @@ changes only how much storage is reserved; every access is the same
 contiguous at the front of each buffer. What it does move is size —
 −88,576 B per binary (`docs/development/state.md`, *Build & size*).
 
-## Previous — 1.1.0 (2026-10-09, cyrius 6.6.6)
+## Earlier — 1.1.0 (2026-10-09, cyrius 6.6.6)
 
 Host: AMD Ryzen 7 5800H, x86_64 Linux, quiet (load average < 1).
 Indicative single-host numbers, not a cross-machine guarantee. Absolute
@@ -143,6 +171,8 @@ noise — only structural shifts are called out below.
 | 1.1.0 (re-run 2026-10-13, 6.6.6) | 18 | 8 | 63,253 | 24 | 47 | 63 |
 | 1.1.0 on 6.6.20 (2026-10-13) | 18 | 8 | 62,884 | 24 | 47 | 63 |
 | **1.1.1** (2026-10-13, 6.6.20) | 18 | 8 | 62,962 | 24 | 47 | 63 |
+| 1.1.1 on 6.6.20 (re-run 2026-10-29) | 18 | 7 | 61,881 | 24 | 46 | 61 |
+| **1.2.0** (2026-10-29, 6.7.9) | 18 | 8 | 61,787 | 23 | 46 | 61 |
 
 > The 0.7.x cuts (BDF, PCF, sidecar tables) added parsers / load paths
 > but **did not touch the hot accessors**, so they aren't separately
@@ -161,7 +191,9 @@ noise — only structural shifts are called out below.
 > one interleaved session (CSV versions `1.1.0-rerun`, `1.1.0-on-6.6.20`,
 > `1.1.1`, all ten benchmarks): compare them with each other.
 > `glyph_ptr` reads 8 there against 7 before — 7.5–7.6 ns rounding up,
-> the same in all three.
+> the same in all three. The two 2026-10-29 rows (`1.1.1-on-6.6.20`,
+> `1.2.0`) are likewise one interleaved session: compare them with each
+> other.
 
 ## Structural shifts called out
 

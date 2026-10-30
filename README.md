@@ -13,7 +13,8 @@ version is in [`VERSION`](VERSION); 1.0.x releases are toolchain
 bumps, test, packaging and docs work; 1.1.0 added the Unicode → CP437
 mapping and two extension glyphs, changing nothing that existed; 1.1.1
 cut the core's glyph storage from 101 KB to 12.7 KB — 88 KB off every
-binary that links it — with no glyph, symbol or result changed). The
+binary that links it — with no glyph, symbol or result changed; 1.2.0
+moved to the cyrius 6.7 language line, changing no source). The
 full surface is documented in [`docs/api/`](docs/api/); stability
 promise is in [`docs/api/README.md`](docs/api/README.md).
 
@@ -128,7 +129,7 @@ the matching `include "lib/…"` lines, cyrius 6.6.18's requires block):
 ```toml
 [deps.kashi]
 git     = "https://github.com/MacCracken/kashi.git"
-tag     = "1.1.1"
+tag     = "1.2.0"
 modules = ["dist/kashi.cyr"]
 ```
 

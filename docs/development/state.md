@@ -1,13 +1,35 @@
 # kashi — Current State
 
-> **Last refresh**: 2026-10-13 (**1.1.1** — cyrius 6.6.20, the glyph
-> buffers right-sized: −88,576 B in every binary that links the core) |
+> **Last refresh**: 2026-10-29 (**1.2.0** — cyrius 6.7.9, the 6.7.x
+> language minor; no source change) |
 > **Refresh cadence**: bumped every release.
 >
 > CLAUDE.md is preferences/process/procedures (durable); this file is
 > **state** (volatile).
 
 ## Version
+
+**1.2.0** — Minor, cut to mark the move to cyrius's 6.7.x language line. It
+is a toolchain-only bump: `src/`, `tests/` and `docs/examples/` are
+unchanged, and no glyph, symbol, signature or accessor result changed.
+- **cyrius 6.6.20 → 6.7.9.** The 6.7.0 – 6.7.9 consumer notes were checked
+  against every source file, and none of their shapes is present. `lib/`
+  was re-vendored from the 6.7.9 snapshot and `cyrius.lock` re-locked
+  (14 of 24 hashes moved). `cyrius deps --verify` reports 24 / 0 failed,
+  and `--locked` is clean.
+- **Gates.** The glyph sheet is byte-identical (`5544d63f…`). 454 + 145
+  assertions pass. Fuzz is clean. `cyrius vet` reports "no dependencies" on
+  all four freestanding files. fmt and strict lint are clean on all 11
+  files. The fset-guard mutation was re-run, and all four guards are still
+  caught.
+- **Cost.** Library 199,952 → **199,968 B**, DCE'd demo 56,800 →
+  **56,816 B** (+16 B each). The bench is flat: every row is within ±1.6 %
+  of 1.1.1 on 6.6.20, over nine interleaved rounds.
+- **Bundle.** `dist/kashi.cyr` changed only in its version stamp, and
+  `dist/kashi.deps` is unchanged.
+- **The core stays on 6.6.x syntax.** Every consumer compiles
+  `src/font_data.cyr` on its own pin: agnos 6.6.20, aethersafha 6.6.11,
+  dhancha, crab and puka 6.6.6, and jalwa 6.6.3.
 
 **1.1.1** — Patch. Toolchain bump + the one issue filed against 1.1.0. No
 glyph, symbol, signature or accessor result changed.
@@ -159,8 +181,8 @@ out-of-scope; none are booked.
 
 ## Toolchain
 
-- **Cyrius pin**: `6.6.20` (in `cyrius.cyml [package].cyrius`; 6.6.6
-  through 1.1.0).
+- **Cyrius pin**: `6.7.9` (in `cyrius.cyml [package].cyrius`; 6.6.20 at
+  1.1.1, 6.6.6 through 1.1.0).
 - **`cyrius.lock`**: tracked since 1.1.1 — the sha256 of the 24 stdlib
   files `cyrius deps` vendors from the pinned snapshot; moves only with
   the pin (roadmap procedure, step 2).
@@ -262,11 +284,15 @@ See [`roadmap.md`](roadmap.md).
 
 ## Build & size
 
-- Library build (`cyrius build src/lib.cyr build/kashi`): clean, **199,952 B**
-  (sha256 `925cff74…`). 1.1.0: 262,656 B on 6.6.6, 288,528 B on 6.6.20.
-- Demo (`CYRIUS_DCE=1 cyrius build src/main.cyr`): **56,800 B**
-  (sha256 `c7c3d86b…`). 1.1.0: 144,072 B on 6.6.6, 145,376 B on 6.6.20.
-- The two steps, separately: the toolchain (6.6.6 → 6.6.20, no source
+- Library build (`cyrius build src/lib.cyr build/kashi`): clean, **199,968 B**
+  (sha256 `ec63caef…`). 1.1.1: 199,952 B on 6.6.20. 1.1.0: 262,656 B on
+  6.6.6, 288,528 B on 6.6.20.
+- Demo (`CYRIUS_DCE=1 cyrius build src/main.cyr`): **56,816 B**
+  (sha256 `cfe9c1ec…`). 1.1.1: 56,800 B on 6.6.20. 1.1.0: 144,072 B on
+  6.6.6, 145,376 B on 6.6.20.
+- 1.2.0's toolchain move (6.6.20 → 6.7.9, no source change) added 16 B to
+  each.
+- 1.1.1's two steps, separately: the toolchain (6.6.6 → 6.6.20, no source
   change) grew the library +25,872 B and the demo +1,304 B — stdlib
   growth; the storage fix then took **−88,576 B** off each. The core's
   module-scope storage is now 13,696 B: the three glyph buffers'
@@ -274,7 +300,7 @@ See [`roadmap.md`](roadmap.md).
   index, two 8-byte scalars, 8 B of alignment. cycc writes it into the file
   image as zeros, so every binary that links `src/font_data.cyr` carries
   it — architecture note 001.
-- Both on cyrius 6.6.20.
+- Both on cyrius 6.7.9.
 
 ## Tests
 
@@ -316,7 +342,8 @@ See [`roadmap.md`](roadmap.md).
   and `font_init`, and costs `font_row_builtin` +3 ns (the mapping) and
   `kashi_font_init` +1.2 µs (the extension glyphs + the index fill).
   1.1.1: flat — every row within ±2 % across 1.1.0 on 6.6.6, 1.1.0 on
-  6.6.20 and 1.1.1 on 6.6.20 (nine interleaved runs each).
+  6.6.20 and 1.1.1 on 6.6.20 (nine interleaved runs each). 1.2.0: flat,
+  every row within ±1.6 % of 1.1.1 on 6.6.20 (nine interleaved rounds).
 - Glyph-sheet pin — `docs/examples/glyph_sheet.sha256`, checked in CI.
 
 ## Cleanliness (P(-1) gates)
@@ -328,7 +355,7 @@ See [`roadmap.md`](roadmap.md).
   since 1.1.1; a bare `cyrius lint` exits 0 on warnings, so before that the
   step only printed them.)
 - `cyrius deps --verify` — 24 verified, 0 failed against the tracked
-  `cyrius.lock`.
+  `cyrius.lock`; `cyrius deps --locked` clean (6.7.9).
 - `cyrius distlib` — tracked `dist/` in sync (CI gate).
 - `cyrius vet src/font_data.cyr` — "no dependencies".
 - `cyrius vet src/font_psf.cyr` — "no dependencies" (incl. the 0.7.2
@@ -375,11 +402,11 @@ compile-verify).
 
 All six take the **freestanding core** (`modules = ["src/font_data.cyr"]`,
 vendored as `lib/kashi_font_data.cyr`); none calls a runtime loader —
-surveyed 2026-09-21 across `~/Repos`. Pins re-read from each `cyrius.cyml` 2026-10-13:
+surveyed 2026-09-21 across `~/Repos`. Pins re-read from each `cyrius.cyml` 2026-10-29:
 
 | Consumer | kashi | their cyrius | notes |
 |---|---|---|---|
-| **agnos** (kernel) | `path` only, no tag | 6.6.6 | Integrated at 1.38.0 (M3, 0.7.0); folds `src/font_data.cyr` into the kernel since 1.57.4. `fb_console.cyr` renders via `kashi_glyph_ptr` + `load8`; `gpu.cyr` via `kashi_glyph_row`. |
+| **agnos** (kernel) | `path` only, no tag | 6.6.20 | Integrated at 1.38.0 (M3, 0.7.0); folds `src/font_data.cyr` into the kernel since 1.57.4. `fb_console.cyr` renders via `kashi_glyph_ptr` + `load8`; `gpu.cyr` via `kashi_glyph_row`. |
 | dhancha | 1.0.10 | 6.6.6 | Default face for `dh_draw_text`. |
 | crab | 1.0.10 | 6.6.6 | |
 | jalwa | 1.0.7 | 6.6.3 | |
@@ -425,4 +452,12 @@ agnos measured its kernel image against a scratch copy with the same three
 sizes: headroom under its 0x400000 ceiling 325,952 → **414,544 B**
 (plain build); it takes 1.1.1 by `path` on its next local build, and
 through `KASHI_REF` (still 1.1.0 in build.sh / test.sh / bench.sh) once
-the tag exists.
+the tag exists. (Re-read 2026-10-29: `KASHI_REF` now says 1.1.1.)
+
+**1.2.0 for consumers** — nothing to change. `src/font_data.cyr` is
+byte-identical to 1.1.1's, and `dist/kashi.cyr` differs only in its version
+stamp. A consumer on any 6.6.x pin compiles the same core as before. The
+6.7.9 pin is kashi's own build. ⚠ When a consumer moves its *own* pin to
+6.7.6 or later, `[deps.kashi]` changes meaning. A `path` beside `git` /
+`tag` (crab) is used only under `--local`; a default build builds the tag.
+A `path`-only entry (agnos) is refused by name.
